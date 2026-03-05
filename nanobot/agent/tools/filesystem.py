@@ -26,7 +26,7 @@ def _resolve_path(
 class ReadFileTool(Tool):
     """Tool to read file contents."""
 
-    _MAX_CHARS = 128_000  # ~128 KB — prevents OOM from reading huge files into LLM context
+    _MAX_CHARS = 768_000  # ~768 KB — ~192K tokens, fits within 256K-token context window — prevents OOM from reading huge files into LLM context
 
     def __init__(self, workspace: Path | None = None, allowed_dir: Path | None = None):
         self._workspace = workspace
