@@ -139,6 +139,28 @@ def _is_content_sufficient(content_bytes: bytes, url: str) -> bool:
         if 'id="comment-tree"' in raw and "shreddit-comment" not in raw:
             return False
 
+    if "bbc.com" in url.lower() or "bbc.co.uk" in url.lower():
+        # BBC SSR sends real HTML but article body is lazy-loaded via XHR.
+        # The initial HTML only has a brief intro block — escalate to browser
+        # unless we see the full article prose markers.
+        # Live blogs (/news/live/) use different component names than standard articles.
+        has_article_body = any(m in raw for m in [
+            'data-component="text-block"',        # article body paragraphs
+            'data-testid="article-body"',         # newer layout
+            '"articleBody"',                      # JSON-LD structured data
+            'data-e2e="article-body"',            # sport/live pages
+            'data-testid="live-post"',            # live blog post block
+            'data-component="livepost"',          # live blog component
+            'data-component="liveblog"',          # live blog wrapper
+            'data-testid="liveblog"',             # live blog testid
+            'data-post-id=',                      # individual live blog post
+            'data-testid="lx-stream-post"',       # live experience stream post
+            'data-e2e="lx-stream-post"',          # live experience stream post (alt)
+            '"liveblogposting"',                  # JSON-LD LiveBlogPosting type
+        ])
+        if not has_article_body:
+            return False
+
     return True
 
 
@@ -266,24 +288,298 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, i
         raise Exception(f"All fetchers failed for {url}: {e}") from e
 
 
-def _html_to_text(raw_html: str, extract_mode: str = "markdown") -> tuple[str, str]:
+def _extract_jsonld_liveblog(raw_html: str, extract_mode: str = "markdown") -> str | None:
+    """
+    Extract BBC (and any site using schema.org) live blog content from JSON-LD.
+    Looks for @type=LiveBlogPosting with liveBlogUpdate array.
+    Returns formatted text or None if not found / insufficient content.
+    """
+    scripts = re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>([\s\S]*?)</script>', raw_html, re.I)
+    for script in scripts:
+        try:
+            data = json.loads(script)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        # Handle @graph wrapper
+        if isinstance(data, dict) and "@graph" in data:
+            candidates = data["@graph"]
+        elif isinstance(data, list):
+            candidates = data
+        else:
+            candidates = [data]
+
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("@type", "")
+            if isinstance(item_type, list):
+                item_type = " ".join(item_type)
+            if "LiveBlogPosting" not in item_type:
+                continue
+
+            updates = item.get("liveBlogUpdate", [])
+            if not updates or len(updates) < 2:
+                continue
+
+            # Build blog title header
+            blog_title = item.get("headline", item.get("name", ""))
+            lines: list[str] = []
+            if blog_title:
+                lines.append(f"# {blog_title}\n")
+
+            for post in updates:
+                if not isinstance(post, dict):
+                    continue
+                headline = post.get("headline", "")
+                date_pub = post.get("datePublished", "")
+                body = post.get("articleBody", post.get("text", ""))
+
+                # articleBody can be plain text or nested HTML — strip tags if needed
+                if body and re.search(r'<[a-z]', body, re.I):
+                    body = _normalize(_strip_tags(body))
+
+                if not headline and not body:
+                    continue
+
+                # Timestamp (ISO → HH:MM if possible)
+                time_str = ""
+                if date_pub:
+                    m = re.search(r'T(\d{2}:\d{2})', date_pub)
+                    time_str = f" — {m.group(1)}" if m else f" — {date_pub}"
+
+                if extract_mode == "markdown":
+                    if headline:
+                        lines.append(f"## {headline}{time_str}")
+                    if body:
+                        lines.append(body)
+                    lines.append("")
+                else:
+                    if headline:
+                        lines.append(f"{headline}{time_str}")
+                    if body:
+                        lines.append(body)
+                    lines.append("")
+
+            text = "\n".join(lines).strip()
+            if len(text) > 200:
+                return text
+
+    return None
+
+
+def _extract_bbc_liveblog_html(raw_html: str, extract_mode: str = "markdown") -> str | None:
+    """
+    Fallback BBC live blog extractor targeting data-testid="content-post" article elements.
+    Used when JSON-LD is absent or too sparse (e.g. BBC strips body text from JSON-LD).
+    Returns formatted text or None.
+    """
+    # Find all live post articles
+    posts = re.findall(
+        r'<article[^>]+data-testid=["\']content-post["\'][^>]*>([\s\S]*?)</article>',
+        raw_html, re.I
+    )
+    if not posts:
+        return None
+
+    lines: list[str] = []
+
+    # Page title from <h1> or og:title
+    title_m = re.search(r'<h1[^>]*>([\s\S]*?)</h1>', raw_html, re.I)
+    if title_m:
+        title = _strip_tags(title_m.group(1)).strip()
+        if title:
+            lines.append(f"# {title}\n")
+
+    for post_html in posts:
+        # Headline: <h3> inside header
+        h_m = re.search(r'<h[23][^>]*>([\s\S]*?)</h[23]>', post_html, re.I)
+        headline = _strip_tags(h_m.group(1)).strip() if h_m else ""
+
+        # Timestamp
+        ts_m = re.search(r'data-testid=["\']timestamp["\'][^>]*>([\s\S]*?)</', post_html, re.I)
+        time_str = f" — {_strip_tags(ts_m.group(1)).strip()}" if ts_m else ""
+
+        # Body paragraphs — grab all <p> not inside <header>
+        # Strip the header block first to avoid picking up lede text twice
+        body_html = re.sub(r'<header[\s\S]*?</header>', '', post_html, flags=re.I)
+        paragraphs = re.findall(r'<p[^>]*>([\s\S]*?)</p>', body_html, re.I)
+        body = "\n\n".join(_strip_tags(p).strip() for p in paragraphs if _strip_tags(p).strip())
+
+        if not headline and not body:
+            continue
+
+        if extract_mode == "markdown":
+            if headline:
+                lines.append(f"## {headline}{time_str}")
+            if body:
+                lines.append(body)
+            lines.append("")
+        else:
+            if headline:
+                lines.append(f"{headline}{time_str}")
+            if body:
+                lines.append(body)
+            lines.append("")
+
+    text = "\n".join(lines).strip()
+    return text if len(text) > 200 else None
+
+
+def _extract_bbc_next_data(raw_html: str, extract_mode: str = "markdown") -> str | None:
+    """
+    Extract BBC standard article content from __NEXT_DATA__ (Optimo CMS / Next.js).
+
+    Actual JSON path (verified 2026-03-12):
+      props -> pageProps -> page -> <article-key> -> contents[]
+
+    Each content block has:
+      { "type": "headline"|"paragraph"|"text"|"subheadline", "model": { "blocks": [...] } }
+
+    Inner blocks carry the actual text:
+      { "type": "fragment", "model": { "text": "..." } }
+    or for paragraphs, a nested "blocks" list of fragments.
+
+    Returns formatted text or None if not found / insufficient content.
+    """
+    next_data_m = re.search(
+        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>([\s\S]*?)</script>', raw_html, re.I
+    )
+    if not next_data_m:
+        return None
+
+    try:
+        data = json.loads(next_data_m.group(1))
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    try:
+        page_props = data.get("props", {}).get("pageProps", {})
+        # The article lives under pageProps.page, keyed by a CMS path string
+        # e.g. '"news","articles","c0e55g03v2zo",' — we don't know the key,
+        # so grab the first dict value that has a "contents" list.
+        page = page_props.get("page", {})
+        article_data: dict | None = None
+        if isinstance(page, dict):
+            for v in page.values():
+                if isinstance(v, dict) and "contents" in v:
+                    article_data = v
+                    break
+
+        if not article_data:
+            return None
+
+        contents = article_data.get("contents", [])
+        if not contents:
+            return None
+
+        def _blocks_to_text(blocks: list) -> str:
+            """Recursively collect text from Optimo fragment/inline blocks."""
+            parts = []
+            for b in blocks:
+                if not isinstance(b, dict):
+                    continue
+                model = b.get("model", {})
+                # Leaf fragment: has direct text
+                if "text" in model and isinstance(model["text"], str):
+                    parts.append(model["text"])
+                # Nested blocks
+                elif "blocks" in model and isinstance(model["blocks"], list):
+                    parts.append(_blocks_to_text(model["blocks"]))
+            return "".join(parts)
+
+        lines: list[str] = []
+
+        # Article-level headline from metadata
+        metadata = article_data.get("metadata", {})
+        title = metadata.get("headline") or metadata.get("title") or ""
+        if not title:
+            # Try pageProps.metadata
+            title = page_props.get("metadata", {}).get("headline", "")
+        if title:
+            lines.append(f"# {title}\n")
+
+        for block in contents:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type", "")
+            model = block.get("model", {})
+            inner_blocks = model.get("blocks", [])
+
+            if btype == "headline":
+                text = _blocks_to_text(inner_blocks).strip()
+                if text:
+                    lines.append(f"# {text}\n")
+
+            elif btype == "subheadline":
+                text = _blocks_to_text(inner_blocks).strip()
+                if text:
+                    lines.append(f"## {text}\n")
+
+            elif btype in ("paragraph", "text"):
+                text = _blocks_to_text(inner_blocks).strip()
+                if text:
+                    lines.append(text)
+                    lines.append("")
+
+            # Skip images, media, crossheads, ads, etc.
+
+        result = "\n".join(lines).strip()
+        return result if len(result) > 300 else None
+
+    except Exception:
+        return None
+
+
+def _html_to_text(raw_html: str, extract_mode: str = "markdown", url: str = "") -> tuple[str, str]:
     """
     Extract main content from HTML.
     Tries trafilatura first (best for articles), falls back to readability.
     Returns (text, extractor_name)
     """
+    is_markdown = extract_mode == "markdown"
+
+    # --- BBC live blog: JSON-LD first, then custom HTML parser ---
+    # trafilatura and readability both fail on BBC's React/SSR live blog structure.
+    # JSON-LD (LiveBlogPosting) is the cleanest source; HTML fallback targets
+    # data-testid="content-post" article elements directly.
+    is_bbc = "bbc.com" in url.lower() or "bbc.co.uk" in url.lower()
+    is_live = "/news/live/" in url.lower() or "/sport/live/" in url.lower()
+    if is_bbc and is_live:
+        result = _extract_jsonld_liveblog(raw_html, extract_mode)
+        if result:
+            return result, "jsonld_liveblog"
+        result = _extract_bbc_liveblog_html(raw_html, extract_mode)
+        if result:
+            return result, "bbc_liveblog_html"
+
+    # --- BBC standard article: Optimo CMS via __NEXT_DATA__ ---
+    # readability/trafilatura cannot reach content stored in Next.js JSON.
+    # Verified path: props.pageProps.page.<cms-key>.contents[]
+    if is_bbc and not is_live:
+        result = _extract_bbc_next_data(raw_html, extract_mode)
+        if result:
+            return result, "bbc_next_data"
+
     # --- Primary: trafilatura ---
     try:
         import trafilatura
-        result = trafilatura.extract(
-            raw_html,
+        common_kwargs = dict(
             include_tables=True,
             include_images=False,
-            include_links=(extract_mode == "markdown"),
-            output_format="markdown" if extract_mode == "markdown" else "txt",
+            include_links=is_markdown,
+            output_format="markdown" if is_markdown else "txt",
             with_metadata=False,
         )
-        if result and len(result.strip()) > 200:
+        result = trafilatura.extract(raw_html, **common_kwargs)
+
+        # BBC (and some other news sites) get rejected by trafilatura's default
+        # paywall/quality heuristic. Re-extract with favour_recall=True which
+        # disables content-length and quality filters.
+        if (not result or len(result.strip()) < 200):
+            result = trafilatura.extract(raw_html, favour_recall=True, **common_kwargs)
+
+        if result and len(result.strip()) > 50:
             return result, "trafilatura"
     except ImportError:
         pass
@@ -515,7 +811,7 @@ class WebFetchTool(Tool):
             elif "text/html" in ctype or content_bytes[:256].lower().startswith((b"<!doctype", b"<html")):
                 raw_html = content_bytes.decode("utf-8", errors="replace")
                 meta = _extract_meta(raw_html)
-                text, extractor = _html_to_text(raw_html, extractMode)
+                text, extractor = _html_to_text(raw_html, extractMode, url=url)
                 text = _smart_truncate(text, self.max_chars)
                 result = json.dumps({
                     "url": url, "status": status_code, "fetcher": fetcher,
