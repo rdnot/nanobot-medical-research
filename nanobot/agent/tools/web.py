@@ -182,7 +182,7 @@ def _readability_to_markdown(raw_html: str) -> str:
         from markdownify import markdownify as md
         return _normalize(md(raw_html, heading_style="ATX", strip=['a'] if False else []))
     except ImportError:
-        pass
+        print("markdownify not installed  –  pip install markdownify")
 
     # Manual fallback (original logic)
     text = re.sub(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>',
