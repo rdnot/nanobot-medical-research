@@ -19,7 +19,7 @@
   - `/c` → Clear session (no memory consolidation)
   - `/rerun` → Run `workspace\rerun.bat` from chat
 
-- **Other**: Increased `web_fetch` limit to 200,000 chars, ExecTool timeout to 90s, context_window_tokens to 200,000 , ReadFileTool._MAX_CHARS 768,000 , ReadFileTool._DEFAULT_LIMIT = 8,000 , Added FORCE_FINAL_THRESHOLD = max_iterations (defualt=40) - 2
+- **Other**: Increased `web_fetch` limit to 500,000 chars, ExecTool timeout to 90s, context_window_tokens to 200,000 , ReadFileTool._MAX_CHARS 768,000 , ReadFileTool._DEFAULT_LIMIT = 8,000 , Added FORCE_FINAL_THRESHOLD = max_iterations (defualt=40) - 2
 
 ---
 

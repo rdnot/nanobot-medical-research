@@ -761,7 +761,7 @@ class WebFetchTool(Tool):
         "required": ["url"]
     }
 
-    def __init__(self, max_chars: int = 200000, proxy: str | None = None):
+    def __init__(self, max_chars: int = 500000, proxy: str | None = None):
         self.max_chars = max_chars
         self.proxy = proxy
         self._cache: dict[str, str] = {}  # session-level URL cache
