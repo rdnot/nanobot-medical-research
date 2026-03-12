@@ -246,6 +246,7 @@ class AgentLoop:
                 tool_call_dicts = [
                     tc.to_openai_tool_call()
                     for tc in response.tool_calls
+                    if tc.name  # Skip malformed tool calls with empty names
                 ]
                 messages = self.context.add_assistant_message(
                     messages, response.content, tool_call_dicts,
