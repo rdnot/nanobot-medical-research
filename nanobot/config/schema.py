@@ -237,7 +237,7 @@ class AgentDefaults(Base):
         "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
     )
     max_tokens: int = 8192
-    context_window_tokens: int = 65_536
+    context_window_tokens: int = 200_000
     temperature: float = 0.1
     max_tool_iterations: int = 40
     # Deprecated compatibility field: accepted from old configs but ignored at runtime.
