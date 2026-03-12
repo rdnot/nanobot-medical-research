@@ -255,9 +255,11 @@ class AgentLoop:
                 )
 
                 for tool_call in response.tool_calls:
+                    if not tool_call.name:
+                        logger.warning("Skipping malformed tool call with empty name")
+                        continue
                     tools_used.append(tool_call.name)
-                    if tool_call.name:
-                        all_tool_calls_log.append({"name": tool_call.name, "arguments": tool_call.arguments or {}})
+                    all_tool_calls_log.append({"name": tool_call.name, "arguments": tool_call.arguments or {}})
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
