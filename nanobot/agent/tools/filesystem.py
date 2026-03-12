@@ -41,8 +41,8 @@ class _FsTool(Tool):
 class ReadFileTool(_FsTool):
     """Read file contents with optional line-based pagination."""
 
-    _MAX_CHARS = 128_000
-    _DEFAULT_LIMIT = 2000
+    _MAX_CHARS = 768_000  # ~768 KB — ~192K tokens, fits within 256K-token context window
+    _DEFAULT_LIMIT = 8000
 
     @property
     def name(self) -> str:
@@ -147,6 +147,8 @@ class WriteFileTool(_FsTool):
 
     async def execute(self, path: str, content: str, **kwargs: Any) -> str:
         try:
+            if not path:
+                return "Error: 'path' argument is required. Please provide the full file path."
             fp = self._resolve(path)
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
