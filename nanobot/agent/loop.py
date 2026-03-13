@@ -194,16 +194,23 @@ class AgentLoop:
             name = item.get("name", "")
             args = item.get("arguments", {})
             if name == "web_search":
-                query = args.get("query", "")
+                query = args.get("query", "") if isinstance(args, dict) else ""
                 lines.append(f"- search({query})")
             elif name in ("web_fetch", "fetch"):
-                url = args.get("url", "")
+                url = args.get("url", "") if isinstance(args, dict) else ""
                 lines.append(f'- fetch("{url}")')
             elif name in ("read_file",):
-                path = args.get("path", next(iter(args.values()), "***") if args else "***")
+                if isinstance(args, dict):
+                    path = args.get("path", next(iter(args.values()), "***") if args else "***")
+                else:
+                    path = str(args)[:60]
                 lines.append(f"- read_file({path})")
             else:
-                val = next(iter(args.values()), "") if args else ""
+                # FIX: Handle malformed arguments (list/other types)
+                if isinstance(args, dict):
+                    val = next(iter(args.values()), "") if args else ""
+                else:
+                    val = str(args)[:60]
                 if isinstance(val, str):
                     val = val[:60] + "…" if len(val) > 60 else val
                     lines.append(f"- {name}({val})")
