@@ -402,6 +402,13 @@ class WebFetchTool(Tool):
         if not is_valid:
             return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
 
+        # Convert Reddit URLs to JSON API endpoints
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(url)
+        if "reddit.com" in parsed.netloc.lower() and not parsed.path.endswith(".json"):
+            new_path = parsed.path.rstrip('/') + '/.json'
+            url = urlunparse(parsed._replace(path=new_path))
+
         # Cache hit
         cache_key = f"{url}::{extractMode}"
         if cache_key in self._cache:
