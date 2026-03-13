@@ -7,7 +7,7 @@
 
 -  **Web_fetch improvements** : curl_cffi + trafilatura upgrade (better anti-bot evasion and text extraction)
 
-- **Privacy-Focused Search**: Uses local SearXNG first (if provide SearXNG URL), falls back to Brave
+- **Privacy-Focused Search**: Hardcoded SearXNG override: DEFAULT_SEARXNG_URL forces SearXNG provider when set in web.py, falls back to config provider
 
 - **New Commands**:
   - `/c` → Clear session (no memory consolidation)
