@@ -192,6 +192,36 @@ class AgentLoop:
         """Build a separate 'Tools used' message from accumulated tool call records."""
         if not all_tool_calls:
             return ""
+        
+        def _shorten_path(path: str) -> str:
+            r"""Shorten paths containing .nanobot to ~\.nanobot\...\lastfolder\file."""
+            if not path or not isinstance(path, str):
+                return str(path) if path else ""
+            if "\\.nanobot\\" in path or "/.nanobot/" in path:
+                parts = path.replace("/", "\\").split("\\.nanobot\\")
+                if len(parts) > 1:
+                    # Get the part after .nanobot
+                    after_nanobot = parts[1]
+                    # Split into path components and filter out empty ones
+                    components = [c for c in after_nanobot.split("\\") if c]
+                    if len(components) > 2:
+                        # Show ~\.nanobot\...\last_folder\file
+                        return f"~\\.nanobot\\...\\{components[-2]}\\{components[-1]}"
+                    elif len(components) > 0:
+                        # Short path, show as-is
+                        return f"~\\.nanobot\\{after_nanobot}"
+                    else:
+                        # Edge case: path ends with .nanobot\ with nothing after
+                        return "~\\.nanobot\\"
+            return path
+        
+        def _to_single_line(text: str, max_len: int = 60) -> str:
+            """Force text to single line by replacing newlines/tabs with spaces, then truncate."""
+            if not isinstance(text, str):
+                text = str(text) if text is not None else ""
+            single = " ".join(text.split())  # Replaces all whitespace (including \n, \t) with single spaces
+            return single[:max_len] + "…" if len(single) > max_len else single
+        
         lines = ["**Tools used:**"]
         for item in all_tool_calls:
             name = item.get("name", "")
@@ -207,7 +237,37 @@ class AgentLoop:
                     path = args.get("path", next(iter(args.values()), "***") if args else "***")
                 else:
                     path = str(args)[:60]
+                path = _shorten_path(path)
                 lines.append(f"- read_file({path})")
+            elif name in ("write_file",):
+                # Show only filename + brief 1-line summary for write_file
+                if isinstance(args, dict):
+                    path = _shorten_path(args.get("path", ""))
+                    content = args.get("file_text", "")
+                    # Extract first line of content as brief summary and force to single line
+                    first_line = _to_single_line(content, 60) if isinstance(content, str) else ""
+                    lines.append(f"- write_file({path}: {first_line})")
+                else:
+                    lines.append(f"- write_file(...)")
+            elif name in ("edit_file",):
+                # Show only filename + brief 1-line summary for edit_file
+                if isinstance(args, dict):
+                    path = _shorten_path(args.get("path", ""))
+                    old_str = args.get("old_str", "")
+                    # Extract first line of old_str as brief summary and force to single line
+                    first_line = _to_single_line(old_str, 60) if isinstance(old_str, str) else ""
+                    lines.append(f"- edit_file({path}: {first_line})")
+                else:
+                    lines.append(f"- edit_file(...)")
+            elif name in ("message",):
+                # Show only 1 line for message tool
+                if isinstance(args, dict):
+                    content = args.get("content", "")
+                    # Extract first line of message content and force to single line
+                    first_line = _to_single_line(content, 60) if isinstance(content, str) else ""
+                    lines.append(f"- message({first_line})")
+                else:
+                    lines.append(f"- message(...)")
             else:
                 # FIX: Handle malformed arguments (list/other types)
                 if isinstance(args, dict):
