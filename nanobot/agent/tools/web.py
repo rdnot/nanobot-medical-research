@@ -402,6 +402,7 @@ class WebFetchTool(Tool):
         self.max_chars = max_chars
         self.proxy = proxy
         self._cache: dict[str, str] = {}  # session-level URL cache
+        self._cache_max = 50  # prevent unbounded memory growth
 
     async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
         max_chars = maxChars or self.max_chars
@@ -489,6 +490,8 @@ class WebFetchTool(Tool):
                     "untrusted": True, "text": text
                 }, ensure_ascii=False)
 
+            if len(self._cache) >= self._cache_max:
+                self._cache.pop(next(iter(self._cache)))
             self._cache[cache_key] = result
             return result
 
