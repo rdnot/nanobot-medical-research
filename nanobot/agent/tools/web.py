@@ -674,25 +674,63 @@ def _extract_ext_to(raw_html: str, extract_mode: str = "markdown") -> str | None
                 lines.append(f"# {title}\n")
 
         # Find each torrent row.
-        # ext.to table rows contain an <a href="/...XXXXXXXX/"> with <b>name</b>.
-        # We locate every such anchor, then look at its surrounding <tr>...</tr>.
-        torrent_link_re = re.compile(
-            r'<a\s+href="(/[^"]+/)"[^>]*><b>([^<]+)</b></a>',
-            re.I,
-        )
+        # ext.to uses various structures for torrent links. Try multiple patterns:
+        # Pattern 1: <a href="/.../"><b>Name</b></a> (old structure)
+        # Pattern 2: <a href="/.../" title="Name"> (title attribute)
+        # Pattern 3: <a href="/.../">...<span>Name</span>...</a> (span inside)
 
-        entries: list[str] = []
+        entries: list[tuple[str, str]] = []
+        seen_urls: set[str] = set()
+
+        # Try pattern 1: <b> tag (primary)
+        torrent_link_re = re.compile(r'<a\s+href="(/[^"]+/)"[^>]*><b>([^<]+)</b></a>', re.I)
         for m in torrent_link_re.finditer(raw_html):
-            url_path = m.group(1)
-            name = html.unescape(m.group(2).strip())
+            url_path, name = m.group(1), html.unescape(m.group(2).strip())
+            if url_path not in seen_urls and name and name not in ['file_upload', 'storage', 'access_time']:
+                seen_urls.add(url_path)
+                entries.append((url_path, name))
 
-            # Isolate the <tr> that contains this anchor
-            pos = m.start()
-            tr_start = raw_html.rfind('<tr', max(0, pos - 600), pos)
-            tr_end = raw_html.find('</tr>', pos, pos + 1200)
-            if tr_start == -1 or tr_end == -1:
+        # Try pattern 2: title attribute
+        if len(entries) < 5:
+            title_re = re.compile(r'<a\s+href="(/[^"]+/)"[^>]*title="([^"]+)"', re.I)
+            for m in title_re.finditer(raw_html):
+                url_path, name = m.group(1), html.unescape(m.group(2).strip())
+                if url_path not in seen_urls and name and len(name) > 3:
+                    seen_urls.add(url_path)
+                    entries.append((url_path, name))
+
+        # Try pattern 3: table rows with nested name
+        if len(entries) < 5:
+            tr_re = re.compile(r'<tr[^>]*>([\s\S]*?)</tr>', re.I)
+            for tr_m in tr_re.finditer(raw_html):
+                row = tr_m.group(1)
+                link_m = re.search(r'<a\s+href="(/[^"]+/)"[^>]*>([\s\S]*?)</a>', row, re.I)
+                if link_m:
+                    url_path = link_m.group(1)
+                    if url_path in seen_urls:
+                        continue
+                    link_content = link_m.group(2)
+                    name_m = re.search(r'<(?:span|div|b)[^>]*>([^<]+)</(?:span|div|b)>', link_content, re.I)
+                    if name_m:
+                        name = html.unescape(name_m.group(1).strip())
+                        if name and name not in ['file_upload', 'storage', 'access_time'] and len(name) > 3:
+                            seen_urls.add(url_path)
+                            entries.append((url_path, name))
+
+        logger.debug("ext.to extractor found {} valid entries", len(entries))
+
+        # Process entries — locate each row and extract metadata
+        final_entries: list[str] = []
+        for url_path, name in entries:
+            # Find the row containing this URL
+            tr_start = raw_html.find(f'href="{url_path}"')
+            if tr_start == -1:
                 continue
-            row = raw_html[tr_start : tr_end + 5]
+            tr_open = raw_html.rfind('<tr', 0, tr_start)
+            tr_close = raw_html.find('</tr>', tr_start)
+            if tr_open == -1 or tr_close == -1:
+                continue
+            row = raw_html[tr_open:tr_close + 5]
 
             # Size — matches "1.45 GB", "780 MB", "320 KB", etc.
             size_m = re.search(
@@ -719,22 +757,23 @@ def _extract_ext_to(raw_html: str, extract_mode: str = "markdown") -> str | None
             torrent_url = f"https://ext.to{url_path}"
 
             if extract_mode == "markdown":
-                entries.append(
+                final_entries.append(
                     f"**{name}**\n"
                     f"  URL: {torrent_url}\n"
                     f"  Size: {size} | Seeds: {seeds} | Leeches: {leeches} | Age: {age}"
                 )
             else:
-                entries.append(
+                final_entries.append(
                     f"{name}\n"
                     f"  URL: {torrent_url}\n"
                     f"  Size: {size} | Seeds: {seeds} | Leeches: {leeches} | Age: {age}"
                 )
 
-        if not entries:
+        if not final_entries:
+            logger.warning("ext.to extractor found 0 entries after parsing")
             return None
 
-        lines.extend(entries)
+        lines.extend(final_entries)
         return "\n\n".join(lines)
 
     except Exception as e:
