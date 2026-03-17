@@ -84,7 +84,7 @@ class ReadFileTool(_FsTool):
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of lines to read (default 2000)",
+                    "description": "Maximum number of lines to read (default 8000), recommend at least 300",
                     "minimum": 1,
                 },
             },
