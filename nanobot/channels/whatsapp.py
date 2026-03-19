@@ -83,7 +83,10 @@ def _markdown_to_whatsapp(text: str) -> str:
     # 8. Handle __text__ -> _text_
     text = re.sub(r'__(.+?)__', r'_\1_', text)
 
-    # 9. Convert markdown tables to simple text format
+    # 9. Strikethrough ~~text~~ -> ~text~
+    text = re.sub(r'~~(.+?)~~', r'~\1~', text)
+
+    # 10. Convert markdown tables to simple text format
     lines = text.split('\n')
     result_lines: list[str] = []
     in_table = False
@@ -95,23 +98,23 @@ def _markdown_to_whatsapp(text: str) -> str:
             result_lines.append(' | '.join(cells))
             in_table = True
         else:
-            if in_table and line.strip() == '':
+            if in_table:
                 in_table = False
             result_lines.append(line)
     text = '\n'.join(result_lines)
 
-    # 10. Convert bullet lists: - item or * item -> • item
+    # 11. Convert bullet lists: - item or * item -> • item
     text = re.sub(r'^[-*]\s+', '• ', text, flags=re.MULTILINE)
 
-    # 11. Restore inline code
+    # 12. Restore inline code
     for i, code in enumerate(inline_codes):
         text = text.replace(f"{_PH_INLINE_CODE}{i}\x02", f"`{code}`")
 
-    # 12. Restore code blocks
+    # 13. Restore code blocks
     for i, code in enumerate(code_blocks):
         text = text.replace(f"{_PH_CODE_BLOCK}{i}\x02", f"```\n{code}\n```")
 
-    # 13. Restore escaped chars as plain literals
+    # 14. Restore escaped chars as plain literals
     for i, ch in enumerate(escaped_chars):
         text = text.replace(f"\x02ESC{i}\x02", ch)
 
