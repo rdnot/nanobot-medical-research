@@ -20,6 +20,8 @@ from nanobot.config.schema import Base
 # Safe placeholders using STX/ETX control characters (rarely appear in text)
 _PH_BOLD_START = "\x02B\x02"
 _PH_BOLD_END = "\x02/B\x02"
+_PH_BOLD_ITALIC_START = "\x02BI\x02"
+_PH_BOLD_ITALIC_END = "\x02/BI\x02"
 _PH_CODE_BLOCK = "\x02CB"
 _PH_INLINE_CODE = "\x02IC"
 
@@ -58,8 +60,8 @@ def _markdown_to_whatsapp(text: str) -> str:
         return f"*{m.group(1).strip().upper()}*"
     text = re.sub(r'^#{1,6}\s+(.+)$', convert_header, text, flags=re.MULTILINE)
 
-    # 4. Handle ***bold italic*** -> *_bold italic_*
-    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'*_\1_*', text)
+    # 4. Handle ***bold italic*** -> *_bold italic_* (via placeholder to avoid later corruption)
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', f'{_PH_BOLD_ITALIC_START}\\1{_PH_BOLD_ITALIC_END}', text)
 
     # 5. Convert bold: **text** -> *text* (via placeholders)
     text = re.sub(r'\*\*(.+?)\*\*', f'{_PH_BOLD_START}\\1{_PH_BOLD_END}', text)
@@ -69,6 +71,7 @@ def _markdown_to_whatsapp(text: str) -> str:
 
     # 7. Restore bold placeholders as WhatsApp bold
     text = text.replace(_PH_BOLD_START, '*').replace(_PH_BOLD_END, '*')
+    text = text.replace(_PH_BOLD_ITALIC_START, '*_').replace(_PH_BOLD_ITALIC_END, '_*')
 
     # 8. Handle __text__ -> _text_
     text = re.sub(r'__(.+?)__', r'_\1_', text)
