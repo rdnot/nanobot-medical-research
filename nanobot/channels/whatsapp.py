@@ -3,6 +3,7 @@
 import asyncio
 import json
 import mimetypes
+import re
 from collections import OrderedDict
 from typing import Any
 
@@ -14,6 +15,93 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
+
+
+# Safe placeholders using STX/ETX control characters (rarely appear in text)
+_PH_BOLD_START = "\x02B\x02"
+_PH_BOLD_END = "\x02/B\x02"
+_PH_CODE_BLOCK = "\x02CB"
+_PH_INLINE_CODE = "\x02IC"
+
+
+def _markdown_to_whatsapp(text: str) -> str:
+    """
+    Convert markdown to WhatsApp formatting.
+
+    WhatsApp supports:
+    - *bold* (single asterisk)
+    - _italic_
+    - ~strikethrough~
+    - `monospace`
+
+    Does NOT support headers (#, ##) or tables.
+    """
+    if not text:
+        return ""
+
+    # 1. Protect code blocks first
+    code_blocks: list[str] = []
+    def save_code_block(m: re.Match) -> str:
+        code_blocks.append(m.group(1))
+        return f"{_PH_CODE_BLOCK}{len(code_blocks) - 1}\x02"
+    text = re.sub(r'```[\w]*\n?([\s\S]*?)```', save_code_block, text)
+
+    # 2. Protect inline code
+    inline_codes: list[str] = []
+    def save_inline_code(m: re.Match) -> str:
+        inline_codes.append(m.group(1))
+        return f"{_PH_INLINE_CODE}{len(inline_codes) - 1}\x02"
+    text = re.sub(r'`([^`]+)`', save_inline_code, text)
+
+    # 3. Convert headers to bold (WhatsApp doesn't support # headers)
+    def convert_header(m: re.Match) -> str:
+        return f"*{m.group(1).strip().upper()}*"
+    text = re.sub(r'^#{1,6}\s+(.+)$', convert_header, text, flags=re.MULTILINE)
+
+    # 4. Handle ***bold italic*** -> *_bold italic_*
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'*_\1_*', text)
+
+    # 5. Convert bold: **text** -> *text* (via placeholders)
+    text = re.sub(r'\*\*(.+?)\*\*', f'{_PH_BOLD_START}\\1{_PH_BOLD_END}', text)
+
+    # 6. Convert markdown italic: *text* -> _text_
+    text = re.sub(r'\*([^*]+)\*', r'_\1_', text)
+
+    # 7. Restore bold placeholders as WhatsApp bold
+    text = text.replace(_PH_BOLD_START, '*').replace(_PH_BOLD_END, '*')
+
+    # 8. Handle __text__ -> _text_
+    text = re.sub(r'__(.+?)__', r'_\1_', text)
+
+    # 9. Convert markdown tables to simple text format
+    lines = text.split('\n')
+    result_lines: list[str] = []
+    in_table = False
+    for line in lines:
+        if re.match(r'^\s*\|.+\|\s*$', line):
+            if re.match(r'^\s*\|[\s\-:|]+\|\s*$', line):
+                continue  # Skip separator
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            result_lines.append(' | '.join(cells))
+            in_table = True
+        else:
+            if in_table and line.strip() == '':
+                in_table = False
+            result_lines.append(line)
+    text = '\n'.join(result_lines)
+
+    # 10. Convert bullet lists: - item or * item -> • item
+    text = re.sub(r'^[-*]\s+', '• ', text, flags=re.MULTILINE)
+
+    # 11. Restore inline code
+    for i, code in enumerate(inline_codes):
+        text = text.replace(f"{_PH_INLINE_CODE}{i}\x02", f"`{code}`")
+
+    # 12. Restore code blocks
+    for i, code in enumerate(code_blocks):
+        text = text.replace(f"{_PH_CODE_BLOCK}{i}\x02", f"```\n{code}\n```")
+
+    return text
 
 
 class WhatsAppConfig(Base):
@@ -105,7 +193,7 @@ class WhatsAppChannel(BaseChannel):
             payload = {
                 "type": "send",
                 "to": msg.chat_id,
-                "text": msg.content
+                "text": _markdown_to_whatsapp(msg.content) if msg.content else ""
             }
             await self._ws.send(json.dumps(payload, ensure_ascii=False))
         except Exception as e:
