@@ -109,6 +109,22 @@ def _extract_meta(raw_html: str) -> dict[str, str]:
     return meta
 
 
+def _build_image_blocks(data: bytes, content_type: str, url: str) -> list[dict[str, Any]]:
+    """Convert raw image bytes into multimodal content blocks for vision-capable LLMs."""
+    import base64
+    b64 = base64.b64encode(data).decode("ascii")
+    # Normalise content-type: strip params like "; charset=..."
+    mime = content_type.split(";")[0].strip() or "image/jpeg"
+    return [
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"},
+            "_meta": {"path": url},
+        },
+        {"type": "text", "text": f"(Image fetched from: {url})"},
+    ]
+
+
 def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
     """Format provider results into shared plaintext output."""
     if not items:
@@ -426,8 +442,16 @@ class WebFetchTool(Tool):
             content_bytes, headers, status_code, fetcher = await _fetch_raw(url, self.proxy)
             ctype = headers.get("content-type", "").lower()
 
+            # --- Image ---
+            if ctype.startswith("image/") or re.search(r'\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|$)', url, re.I):
+                result = json.dumps({
+                    "url": url, "status": status_code, "fetcher": fetcher,
+                    "extractor": "image", "untrusted": True,
+                    "blocks": _build_image_blocks(content_bytes, ctype or "image/jpeg", url),
+                }, ensure_ascii=False)
+
             # --- PDF ---
-            if "application/pdf" in ctype or url.lower().endswith(".pdf"):
+            elif "application/pdf" in ctype or url.lower().endswith(".pdf"):
                 text = _extract_pdf_text(content_bytes)
                 text = f"{_UNTRUSTED_BANNER}\n\n{text}"
                 text = _smart_truncate(text, max_chars)
