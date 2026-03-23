@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import sys
 
 from nanobot import __version__
@@ -39,6 +40,35 @@ async def cmd_restart(ctx: CommandContext) -> OutboundMessage:
 
     asyncio.create_task(_do_restart())
     return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content="Restarting...")
+
+
+async def cmd_clear(ctx: CommandContext) -> OutboundMessage:
+    """Clear session instantly (no memory consolidation)."""
+    session = ctx.session or ctx.loop.sessions.get_or_create(ctx.key)
+    session.clear()
+    ctx.loop.sessions.save(session)
+    ctx.loop.sessions.invalidate(session.key)
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content="🐈 Session cleared (no memory consolidation).",
+    )
+
+
+async def cmd_rerun(ctx: CommandContext) -> OutboundMessage:
+    """Run rerun.bat from the workspace."""
+    msg = ctx.msg
+    rerun_bat = ctx.loop.workspace / "rerun.bat"
+    if not rerun_bat.exists():
+        return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                              content="❌ rerun.bat not found in workspace.")
+    try:
+        subprocess.Popen(str(rerun_bat), shell=True, cwd=str(ctx.loop.workspace))
+        return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                              content="✅ rerun.bat started.")
+    except Exception as e:
+        return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
+                              content=f"❌ Failed to run rerun.bat: {e}")
 
 
 async def cmd_status(ctx: CommandContext) -> OutboundMessage:
@@ -90,6 +120,8 @@ async def cmd_help(ctx: CommandContext) -> OutboundMessage:
         "/stop — Stop the current task",
         "/restart — Restart the bot",
         "/status — Show bot status",
+        "/c — Clear session instantly (no memory saved)",
+        "/rerun — Run rerun.bat in workspace",
         "/help — Show available commands",
     ]
     return OutboundMessage(
@@ -106,5 +138,7 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.priority("/restart", cmd_restart)
     router.priority("/status", cmd_status)
     router.exact("/new", cmd_new)
+    router.exact("/c", cmd_clear)
+    router.exact("/rerun", cmd_rerun)
     router.exact("/status", cmd_status)
     router.exact("/help", cmd_help)
