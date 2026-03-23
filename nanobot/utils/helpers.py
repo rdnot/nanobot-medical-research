@@ -11,6 +11,13 @@ from typing import Any
 import tiktoken
 
 
+def strip_think(text: str) -> str:
+    """Remove <think>…</think> blocks and any unclosed trailing <think> tag."""
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text)
+    text = re.sub(r"<think>[\s\S]*$", "", text)
+    return text.strip()
+
+
 def detect_image_mime(data: bytes) -> str | None:
     """Detect image MIME type from magic bytes, ignoring file extension."""
     if data[:8] == b"\x89PNG\r\n\x1a\n":
@@ -115,7 +122,11 @@ def estimate_prompt_tokens(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
 ) -> int:
-    """Estimate prompt tokens with tiktoken."""
+    """Estimate prompt tokens with tiktoken.
+
+    Counts all fields that providers send to the LLM: content, tool_calls,
+    reasoning_content, tool_call_id, name, plus per-message framing overhead.
+    """
     try:
         enc = tiktoken.get_encoding("cl100k_base")
         parts: list[str] = []
@@ -129,9 +140,25 @@ def estimate_prompt_tokens(
                         txt = part.get("text", "")
                         if txt:
                             parts.append(txt)
+
+            tc = msg.get("tool_calls")
+            if tc:
+                parts.append(json.dumps(tc, ensure_ascii=False))
+
+            rc = msg.get("reasoning_content")
+            if isinstance(rc, str) and rc:
+                parts.append(rc)
+
+            for key in ("name", "tool_call_id"):
+                value = msg.get(key)
+                if isinstance(value, str) and value:
+                    parts.append(value)
+
         if tools:
             parts.append(json.dumps(tools, ensure_ascii=False))
-        return len(enc.encode("\n".join(parts)))
+
+        per_message_overhead = len(messages) * 4
+        return len(enc.encode("\n".join(parts))) + per_message_overhead
     except Exception:
         return 0
 
@@ -160,14 +187,18 @@ def estimate_message_tokens(message: dict[str, Any]) -> int:
     if message.get("tool_calls"):
         parts.append(json.dumps(message["tool_calls"], ensure_ascii=False))
 
+    rc = message.get("reasoning_content")
+    if isinstance(rc, str) and rc:
+        parts.append(rc)
+
     payload = "\n".join(parts)
     if not payload:
-        return 1
+        return 4
     try:
         enc = tiktoken.get_encoding("cl100k_base")
-        return max(1, len(enc.encode(payload)))
+        return max(4, len(enc.encode(payload)) + 4)
     except Exception:
-        return max(1, len(payload) // 4)
+        return max(4, len(payload) // 4 + 4)
 
 
 def estimate_prompt_tokens_chain(
