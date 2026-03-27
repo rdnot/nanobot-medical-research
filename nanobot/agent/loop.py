@@ -14,7 +14,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.hook import AgentHook, AgentHookContext
 from nanobot.agent.memory import MemoryConsolidator
+from nanobot.agent.runner import AgentRunSpec, AgentRunner
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.skills import BUILTIN_SKILLS_DIR
@@ -56,7 +58,7 @@ class AgentLoop:
         workspace: Path,
         model: str | None = None,
         max_iterations: int = 40,
-        context_window_tokens: int = 200_000,
+        context_window_tokens: int = 200_000,  # FORK: Increased from 65_536
         web_search_config: WebSearchConfig | None = None,
         web_proxy: str | None = None,
         exec_config: ExecToolConfig | None = None,
@@ -87,6 +89,7 @@ class AgentLoop:
         self.context = ContextBuilder(workspace, timezone=timezone)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
+        self.runner = AgentRunner(provider)
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -189,6 +192,7 @@ class AgentLoop:
     def _tool_hint(tool_calls: list) -> str:
         """Format tool calls as concise hint, e.g. 'web_search("query")'."""
         def _fmt(tc):
+            # FORK: Enhanced formatting for web_search and web_fetch
             if tc.name == "web_search":
                 val = tc.arguments.get("query", "") if tc.arguments else ""
                 val = val[:40] + "…" if len(val) > 40 else val
@@ -206,6 +210,7 @@ class AgentLoop:
 
     @staticmethod
     def _build_tools_summary(all_tool_calls: list[dict]) -> str:
+        """FORK: Build a tools summary message showing all tools used in the conversation."""
         if not all_tool_calls:
             return ""
 
@@ -288,7 +293,7 @@ class AgentLoop:
         channel: str = "cli",
         chat_id: str = "direct",
         message_id: str | None = None,
-    ) -> tuple[str | None, list[str], list[dict], list[dict]]:
+    ) -> tuple[str | None, list[str], list[dict], list[dict]]:  # FORK: 4-tuple return
         """Run the agent iteration loop.
 
         *on_stream*: called with each content delta during streaming.
@@ -296,140 +301,85 @@ class AgentLoop:
         ``resuming=True`` means tool calls follow (spinner should restart);
         ``resuming=False`` means this is the final response.
         """
-        messages = initial_messages
-        iteration = 0
-        final_content = None
-        tools_used: list[str] = []
-        all_tool_calls_log: list[dict] = []
-
+        loop_self = self
+        # FORK: Force final answer threshold
         FORCE_FINAL_THRESHOLD = max(1, self.max_iterations - 2)
 
-        # Wrap on_stream with stateful think-tag filter so downstream
-        # consumers (CLI, channels) never see <think> blocks.
-        _raw_stream = on_stream
-        _stream_buf = ""
+        class _LoopHook(AgentHook):
+            def __init__(self) -> None:
+                self._stream_buf = ""
+                self.all_tool_calls_log: list[dict] = []  # FORK: Track all tool calls
 
-        async def _filtered_stream(delta: str) -> None:
-            nonlocal _stream_buf
-            from nanobot.utils.helpers import strip_think
-            prev_clean = strip_think(_stream_buf)
-            _stream_buf += delta
-            new_clean = strip_think(_stream_buf)
-            incremental = new_clean[len(prev_clean):]
-            if incremental and _raw_stream:
-                await _raw_stream(incremental)
+            def wants_streaming(self) -> bool:
+                return on_stream is not None
 
-        while iteration < self.max_iterations:
-            iteration += 1
+            async def on_stream(self, context: AgentHookContext, delta: str) -> None:
+                from nanobot.utils.helpers import strip_think
 
-            tool_defs = self.tools.get_definitions()
+                prev_clean = strip_think(self._stream_buf)
+                self._stream_buf += delta
+                new_clean = strip_think(self._stream_buf)
+                incremental = new_clean[len(prev_clean):]
+                if incremental and on_stream:
+                    await on_stream(incremental)
 
-            if on_stream:
-                response = await self.provider.chat_stream_with_retry(
-                    messages=messages,
-                    tools=tool_defs,
-                    model=self.model,
-                    on_content_delta=_filtered_stream,
-                )
-            else:
-                response = await self.provider.chat_with_retry(
-                    messages=messages,
-                    tools=tool_defs,
-                    model=self.model,
-                )
+            async def on_stream_end(self, context: AgentHookContext, *, resuming: bool) -> None:
+                if on_stream_end:
+                    await on_stream_end(resuming=resuming)
+                self._stream_buf = ""
 
-            usage = response.usage or {}
-            self._last_usage = {
-                "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
-                "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
-            }
-
-            if response.has_tool_calls:
-                if on_stream and on_stream_end:
-                    await on_stream_end(resuming=True)
-                    _stream_buf = ""
-
-                if on_progress:
-                    if not on_stream:
-                        thought = self._strip_think(response.content)
-                        if thought:
-                            await on_progress(thought)
-                    tool_hint = self._tool_hint(response.tool_calls)
-                    tool_hint = self._strip_think(tool_hint)
-                    await on_progress(tool_hint, tool_hint=True)
-
-                tool_call_dicts = [
-                    tc.to_openai_tool_call()
-                    for tc in response.tool_calls
-                    if tc.name
-                ]
-                messages = self.context.add_assistant_message(
-                    messages, response.content, tool_call_dicts,
-                    reasoning_content=response.reasoning_content,
-                    thinking_blocks=response.thinking_blocks,
-                )
-
-                for tc in response.tool_calls:
+            async def before_execute_tools(self, context: AgentHookContext) -> None:
+                # FORK: Track tool calls for summary
+                for tc in context.tool_calls:
                     if not tc.name:
                         continue
-                    tools_used.append(tc.name)
-                    all_tool_calls_log.append({"name": tc.name, "arguments": tc.arguments or {}})
+                    self.all_tool_calls_log.append({
+                        "name": tc.name,
+                        "arguments": tc.arguments or {}
+                    })
                     args_str = json.dumps(tc.arguments, ensure_ascii=False)
                     logger.info("Tool call: {}({})", tc.name, args_str[:200])
 
-                # Re-bind tool context right before execution so that
-                # concurrent sessions don't clobber each other's routing.
-                self._set_tool_context(channel, chat_id, message_id)
+                if on_progress:
+                    if not on_stream:
+                        thought = loop_self._strip_think(context.response.content if context.response else None)
+                        if thought:
+                            await on_progress(thought)
+                    tool_hint = loop_self._strip_think(loop_self._tool_hint(context.tool_calls))
+                    await on_progress(tool_hint, tool_hint=True)
+                loop_self._set_tool_context(channel, chat_id, message_id)
 
-                # Execute all tool calls concurrently — the LLM batches
-                # independent calls in a single response on purpose.
-                # return_exceptions=True ensures all results are collected
-                # even if one tool is cancelled or raises BaseException.
-                results = await asyncio.gather(*(
-                    self.tools.execute(tc.name, tc.arguments)
-                    for tc in response.tool_calls
-                ), return_exceptions=True)
+            async def after_iteration(self, context: AgentHookContext) -> None:
+                # FORK: Force final answer after FORCE_FINAL_THRESHOLD iterations
+                if context.iteration >= FORCE_FINAL_THRESHOLD and context.tool_calls:
+                    context.messages.append({
+                        "role": "user",
+                        "content": (
+                            "For research query, don't use any more tools. "
+                            "Provide your final answer now based on all the information gathered."
+                        )
+                    })
 
-                for tool_call, result in zip(response.tool_calls, results):
-                    if isinstance(result, BaseException):
-                        result = f"Error: {type(result).__name__}: {result}"
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
-                    )
+            def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
+                return loop_self._strip_think(content)
 
-                    if iteration >= FORCE_FINAL_THRESHOLD:
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                "For research query, don't use any more tools. "
-                                "Provide your final answer now based on all the information gathered."
-                            )
-                        })
-            else:
-                if on_stream and on_stream_end:
-                    await on_stream_end(resuming=False)
-                    _stream_buf = ""
-
-                clean = self._strip_think(response.content)
-                if response.finish_reason == "error":
-                    logger.error("LLM returned error: {}", (clean or "")[:200])
-                    final_content = clean or "Sorry, I encountered an error calling the AI model."
-                    break
-                messages = self.context.add_assistant_message(
-                    messages, clean, reasoning_content=response.reasoning_content,
-                    thinking_blocks=response.thinking_blocks,
-                )
-                final_content = clean
-                break
-
-        if final_content is None and iteration >= self.max_iterations:
+        hook = _LoopHook()
+        result = await self.runner.run(AgentRunSpec(
+            initial_messages=initial_messages,
+            tools=self.tools,
+            model=self.model,
+            max_iterations=self.max_iterations,
+            hook=hook,
+            error_message="Sorry, I encountered an error calling the AI model.",
+            concurrent_tools=True,
+        ))
+        self._last_usage = result.usage
+        if result.stop_reason == "max_iterations":
             logger.warning("Max iterations ({}) reached", self.max_iterations)
-            final_content = (
-                f"I reached the maximum number of tool call iterations ({self.max_iterations}) "
-                "without completing the task. You can try breaking the task into smaller steps."
-            )
-
-        return final_content, tools_used, messages, all_tool_calls_log
+        elif result.stop_reason == "error":
+            logger.error("LLM returned error: {}", (result.final_content or "")[:200])
+        # FORK: Return tool calls log as 4th element
+        return result.final_content, result.tools_used, result.messages, hook.all_tool_calls_log
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
@@ -584,6 +534,7 @@ class AgentLoop:
 
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
+
         # Slash commands
         raw = msg.content.strip()
         ctx = CommandContext(msg=msg, session=session, key=key, raw=raw, loop=self)
@@ -591,6 +542,7 @@ class AgentLoop:
             return result
 
         await self.memory_consolidator.maybe_consolidate_by_tokens(session)
+
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
@@ -612,7 +564,7 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
 
-        final_content, _, all_msgs, tool_calls_log = await self._run_agent_loop(
+        final_content, _, all_msgs, tool_calls_log = await self._run_agent_loop(  # FORK: Capture tool_calls_log
             initial_messages,
             on_progress=on_progress or _bus_progress,
             on_stream=on_stream,
@@ -628,6 +580,7 @@ class AgentLoop:
         self.sessions.save(session)
         self._schedule_background(self.memory_consolidator.maybe_consolidate_by_tokens(session))
 
+        # FORK: Send tools summary message
         if tool_calls_log:
             tools_summary = self._build_tools_summary(tool_calls_log)
             await self.bus.publish_outbound(OutboundMessage(
