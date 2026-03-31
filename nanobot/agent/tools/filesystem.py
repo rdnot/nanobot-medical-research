@@ -154,8 +154,45 @@ class ReadFileTool(_FsTool):
 # write_file
 # ---------------------------------------------------------------------------
 
+# Conservative chars-per-token ratio. Actual ratio varies (code/ASCII skews higher,
+# CJK/emoji skews lower) but this keeps us safely within model output limits.
+_CHARS_PER_TOKEN = 3
+# Headroom reserved for JSON wrapper, tool metadata, etc.
+_OVERHEAD_CHARS = 1_500
+# Floor so we never set a limit so low it becomes unusable.
+_MIN_CONTENT_CHARS = 4_000
+
+
+def _max_content_chars_for_tokens(max_tokens: int) -> int:
+    return max(max_tokens * _CHARS_PER_TOKEN - _OVERHEAD_CHARS, _MIN_CONTENT_CHARS)
+
+
+def _load_max_tokens_from_config() -> int | None:
+    """Return configured max_tokens, or None if unavailable. Raises on malformed config."""
+    from nanobot.config.loader import load_config  # local import to avoid circular deps
+    config = load_config()
+    return config.agents.defaults.max_tokens or None
+
+
 class WriteFileTool(_FsTool):
-    """Write content to a file."""
+    """Write content to a file, enforcing a size limit derived from the model's max_tokens."""
+
+    # Fallback when no max_tokens is available (matches a typical 4 096-token model).
+    _DEFAULT_MAX_TOKENS = 4_096
+
+    def __init__(
+        self,
+        workspace: Path | None = None,
+        allowed_dir: Path | None = None,
+        extra_allowed_dirs: list[Path] | None = None,
+        max_tokens: int | None = None,
+    ):
+        super().__init__(workspace, allowed_dir, extra_allowed_dirs)
+
+        if max_tokens is None:
+            max_tokens = _load_max_tokens_from_config() or self._DEFAULT_MAX_TOKENS
+
+        self._max_content_chars = _max_content_chars_for_tokens(max_tokens)
 
     @property
     def name(self) -> str:
@@ -163,7 +200,10 @@ class WriteFileTool(_FsTool):
 
     @property
     def description(self) -> str:
-        return "Write content to a file at the given path. Creates parent directories if needed."
+        return (
+            f"Write content to a file at the given path. Creates parent directories if needed. "
+            f"Content must not exceed {self._max_content_chars:,} characters."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -171,7 +211,11 @@ class WriteFileTool(_FsTool):
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "The file path to write to"},
-                "content": {"type": "string", "description": "The content to write"},
+                "content": {
+                    "type": "string",
+                    "description": f"The content to write. Must be under {self._max_content_chars:,} characters.",
+                    "maxLength": self._max_content_chars,
+                },
             },
             "required": ["path", "content"],
         }
@@ -225,6 +269,22 @@ def _find_match(content: str, old_text: str) -> tuple[str | None, int]:
 class EditFileTool(_FsTool):
     """Edit a file by replacing text with fallback matching."""
 
+    _DEFAULT_MAX_TOKENS = 4_096
+
+    def __init__(
+        self,
+        workspace: Path | None = None,
+        allowed_dir: Path | None = None,
+        extra_allowed_dirs: list[Path] | None = None,
+        max_tokens: int | None = None,
+    ):
+        super().__init__(workspace, allowed_dir, extra_allowed_dirs)
+
+        if max_tokens is None:
+            max_tokens = _load_max_tokens_from_config() or self._DEFAULT_MAX_TOKENS
+
+        self._max_content_chars = _max_content_chars_for_tokens(max_tokens)
+
     @property
     def name(self) -> str:
         return "edit_file"
@@ -234,7 +294,8 @@ class EditFileTool(_FsTool):
         return (
             "Edit a file by replacing old_text with new_text. "
             "Supports minor whitespace/line-ending differences. "
-            "Set replace_all=true to replace every occurrence."
+            "Set replace_all=true to replace every occurrence. "
+            f"new_text must not exceed {self._max_content_chars:,} characters."
         )
 
     @property
@@ -244,7 +305,11 @@ class EditFileTool(_FsTool):
             "properties": {
                 "path": {"type": "string", "description": "The file path to edit"},
                 "old_text": {"type": "string", "description": "The text to find and replace"},
-                "new_text": {"type": "string", "description": "The text to replace with"},
+                "new_text": {
+                    "type": "string",
+                    "description": f"The text to replace with. Must be under {self._max_content_chars:,} characters.",
+                    "maxLength": self._max_content_chars,
+                },
                 "replace_all": {
                     "type": "boolean",
                     "description": "Replace all occurrences (default false)",
@@ -265,7 +330,6 @@ class EditFileTool(_FsTool):
                 raise ValueError("Unknown old_text")
             if new_text is None:
                 raise ValueError("Unknown new_text")
-
             fp = self._resolve(path)
             if not fp.exists():
                 return f"Error: File not found: {path}"
