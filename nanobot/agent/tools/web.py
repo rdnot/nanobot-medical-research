@@ -831,6 +831,10 @@ class WebSearchTool(Tool):
         self.config = config if config is not None else WebSearchConfig()
         self.proxy = proxy
 
+    @property
+    def read_only(self) -> bool:
+        return True
+
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
         # Force searxng provider if DEFAULT_SEARXNG_URL is hardcoded
         if DEFAULT_SEARXNG_URL:
@@ -999,6 +1003,10 @@ class WebFetchTool(Tool):
         self.proxy = proxy
         self._cache: dict[str, str] = {}  # session-level URL cache
         self._cache_max = 50  # prevent unbounded memory growth
+
+    @property
+    def read_only(self) -> bool:
+        return True
 
     async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
         max_chars = maxChars or self.max_chars
