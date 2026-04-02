@@ -5,15 +5,26 @@
 
 - **PDF Support**: `web_fetch` now properly reads direct PDF files (no more "binary data" error)
 
--  **Web_fetch improvements** : curl_cffi + trafilatura upgrade (better anti-bot evasion and text extraction)
+-  **Web_fetch improvements** : `curl_cffi + trafilatura` upgrade (better anti-bot evasion and text extraction)
 
-- **Privacy-Focused Search**: Hardcoded SearXNG override: DEFAULT_SEARXNG_URL forces SearXNG provider when set in web.py, falls back to config provider
+- **Privacy-Focused Search**: Hardcoded SearXNG override: `DEFAULT_SEARXNG_URL` forces SearXNG provider when set in web.py, falls back to config provider
+
+- **Loop Control**: `FORCE_FINAL_THRESHOLD = max_iterations - 2` — Forces final answer after [max_iterations - 2] iterations (default max_iterations = 200, unless specify in config `maxToolIterations`) to prevent infinite tool loops
+
+- **WhatsApp Channel**: Enhanced message markdown rendering for WhatsApp integration
 
 - **New Commands**:
   - `/c` → Clear session (no memory consolidation)
   - `/rerun` → Run `workspace\rerun.bat` from chat
 
-- **Other**: Increased `web_fetch` limit to 500,000 chars, ExecTool timeout to 90s, context_window_tokens to 200,000 , ReadFileTool._MAX_CHARS 768,000 , ReadFileTool._DEFAULT_LIMIT = 8,000 , Added FORCE_FINAL_THRESHOLD = max_iterations (defualt=40) - 2
+- **Other**:
+  - Increased web_fetch limit to 500,000 chars
+  - ExecTool timeout to 90s
+  - context_window_tokens to 200,000
+  - ReadFileTool._MAX_CHARS 768,000
+  - ReadFileTool._DEFAULT_LIMIT = 8,000
+  - max_tool_result_chars: 400_000 → Prevents large tool results from being offloaded to .nanobot/tool-results/
+  - _CHAT_RETRY_DELAYS = (1, 2, 4, 8, 16) → Increased LLM API retries from 3 to 5 attempts
 
 ---
 
