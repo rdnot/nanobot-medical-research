@@ -174,6 +174,13 @@ def _load_max_tokens_from_config() -> int | None:
     return config.agents.defaults.max_tokens or None
 
 
+@tool_parameters(
+    tool_parameters_schema(
+        path=StringSchema("The file path to write to"),
+        content=StringSchema("The content to write"),
+        required=["path", "content"],
+    )
+)
 class WriteFileTool(_FsTool):
     """Write content to a file, enforcing a size limit derived from the model's max_tokens."""
 
@@ -204,21 +211,6 @@ class WriteFileTool(_FsTool):
             f"Write content to a file at the given path. Creates parent directories if needed. "
             f"Content must not exceed {self._max_content_chars:,} characters."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "The file path to write to"},
-                "content": {
-                    "type": "string",
-                    "description": f"The content to write. Must be under {self._max_content_chars:,} characters.",
-                    "maxLength": self._max_content_chars,
-                },
-            },
-            "required": ["path", "content"],
-        }
 
     async def execute(self, path: str | None = None, content: str | None = None, **kwargs: Any) -> str:
         try:
@@ -266,6 +258,15 @@ def _find_match(content: str, old_text: str) -> tuple[str | None, int]:
     return None, 0
 
 
+@tool_parameters(
+    tool_parameters_schema(
+        path=StringSchema("The file path to edit"),
+        old_text=StringSchema("The text to find and replace"),
+        new_text=StringSchema("The text to replace with"),
+        replace_all=BooleanSchema(description="Replace all occurrences (default false)"),
+        required=["path", "old_text", "new_text"],
+    )
+)
 class EditFileTool(_FsTool):
     """Edit a file by replacing text with fallback matching."""
 
@@ -298,26 +299,6 @@ class EditFileTool(_FsTool):
             "Set replace_all=true to replace every occurrence. "
             f"new_text must not exceed {self._max_content_chars:,} characters."
         )
-
-    @property
-    def parameters(self) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "The file path to edit"},
-                "old_text": {"type": "string", "description": "The text to find and replace"},
-                "new_text": {
-                    "type": "string",
-                    "description": f"The text to replace with. Must be under {self._max_content_chars:,} characters.",
-                    "maxLength": self._max_content_chars,
-                },
-                "replace_all": {
-                    "type": "boolean",
-                    "description": "Replace all occurrences (default false)",
-                },
-            },
-            "required": ["path", "old_text", "new_text"],
-        }
 
     async def execute(
         self, path: str | None = None, old_text: str | None = None,
