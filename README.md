@@ -14,6 +14,7 @@
 - **WhatsApp Channel**: Enhanced message markdown rendering for WhatsApp integration
 
 - **New Commands**:
+  - `/s`  → alias for /status
   - `/c` → Clear session (no memory consolidation)
   - `/rerun` → Run `workspace\rerun.bat` from chat
 
