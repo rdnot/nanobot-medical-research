@@ -1055,21 +1055,28 @@ class WebFetchTool(Tool):
 
             # --- JSON ---
             elif "application/json" in ctype or url.endswith(".json"):
+                # Minimal fix: Reddit now returns HTML-wrapped + escaped JSON inside <p>
+                content_str = content_bytes.decode("utf-8", errors="replace")
+                
+                if "reddit.com" in url.lower() and url.endswith(".json"):
+                    # Extract the actual JSON from <html><body><p>[{...}]</p></body></html>
+                    p_match = re.search(r'<p[^>]*>([\s\S]*?)</p>', content_str, re.IGNORECASE)
+                    if p_match:
+                        content_str = html.unescape(p_match.group(1).strip())
+
                 try:
-                    raw = json.loads(content_bytes)
+                    raw = json.loads(content_str)
                 except json.JSONDecodeError as e:
                     is_reddit = "reddit.com" in url.lower()
                     if is_reddit:
-                        # Minimal fix: Reddit .json now returns HTML (even with Scrapling)
-                        # → fall back to clean HTML extractor instead of error + raw garbage
-                        logger.debug("Reddit .json returned non-JSON (HTML), falling back to HTML extractor")
-                        raw_html = content_bytes.decode("utf-8", errors="replace")
-                        text, extractor = _html_to_text(raw_html, extractMode, url)
+                        logger.debug("Reddit .json HTML wrapper cleaned, but still failed parse → fallback")
+                        text, extractor = _html_to_text(content_bytes.decode("utf-8", errors="replace"), extractMode, url)
                         text = f"{_UNTRUSTED_BANNER}\n\n{text}"
                     else:
                         logger.warning("JSON parse failed for {} ({}): falling back to raw text", url, e)
-                    text = content_bytes.decode("utf-8", errors="replace")
-                    text = f"{_UNTRUSTED_BANNER}\n\n[JSON parse failed]\n\n{text}"
+                        text = content_bytes.decode("utf-8", errors="replace")
+                        text = f"{_UNTRUSTED_BANNER}\n\n[JSON parse failed]\n\n{text}"
+                    
                     text = _smart_truncate(text, max_chars)
                     result = json.dumps({   
                         "url": url, "status": status_code, "fetcher": fetcher,
@@ -1079,7 +1086,7 @@ class WebFetchTool(Tool):
                         "untrusted": True, "text": text
                     }, ensure_ascii=False)
                 else:
-                    # Reddit thread: extract post + nested comments instead of dumping raw JSON
+                    # Reddit thread: extract post + nested comments (your original beautiful parser)
                     if (
                         "reddit.com" in url
                         and isinstance(raw, list) and len(raw) == 2
@@ -1090,12 +1097,11 @@ class WebFetchTool(Tool):
                         parts.append(f"[POST] r/{post.get('subreddit')} | {post.get('author')} | score:{post.get('score')}")
                         parts.append(f"Title: {post.get('title', '')}")
                         if post.get('selftext'):
-                            # expand markdown links [text](url) -> text (url)
                             body = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', post['selftext'])
                             parts.append(f"Body: {body}")
                         if not post.get('is_self') and post.get('url_overridden_by_dest'):
                             parts.append(f"Link: {post['url_overridden_by_dest']}")
-                        # extract gallery images as i.redd.it direct links
+                        # extract gallery images
                         if post.get('media_metadata'):
                             for media_id, media in post['media_metadata'].items():
                                 if media.get('status') == 'valid':
