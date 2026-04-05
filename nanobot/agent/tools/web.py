@@ -476,12 +476,55 @@ class WebFetchTool(Tool):
 
             # --- JSON ---
             elif "application/json" in ctype:
-                text = json.dumps(json.loads(content_bytes), indent=2, ensure_ascii=False)
-                text = f"{_UNTRUSTED_BANNER}\n\n{text}"
+                raw = json.loads(content_bytes)
+                # Reddit thread: extract post + nested comments instead of dumping raw JSON
+                if (
+                    "reddit.com" in url
+                    and isinstance(raw, list) and len(raw) == 2
+                    and raw[0].get("kind") == "Listing"
+                ):
+                    parts = []
+                    post = raw[0]["data"]["children"][0]["data"]
+                    parts.append(f"[POST] r/{post.get('subreddit')} | {post.get('author')} | score:{post.get('score')}")
+                    parts.append(f"Title: {post.get('title', '')}")
+                    if post.get('selftext'):
+                        # expand markdown links [text](url) -> text (url)
+                        body = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', post['selftext'])
+                        parts.append(f"Body: {body}")
+                    if not post.get('is_self') and post.get('url_overridden_by_dest'):
+                        parts.append(f"Link: {post['url_overridden_by_dest']}")
+                    # extract gallery images as i.redd.it direct links
+                    if post.get('media_metadata'):
+                        for media_id, media in post['media_metadata'].items():
+                            if media.get('status') == 'valid':
+                                parts.append(f"Image: https://i.redd.it/{media_id}.png")
+                    parts.append("---")
+                    def _walk(children: list, depth: int = 0) -> None:
+                        for child in children:
+                            if child.get("kind") == "more":
+                                continue
+                            d = child.get("data", {})
+                            body = d.get("body", "")
+                            if body in ("[deleted]", "[removed]", ""):
+                                replies = d.get("replies")
+                                if isinstance(replies, dict):
+                                    _walk(replies["data"]["children"], depth)
+                                continue
+                            indent = "  " * depth
+                            parts.append(f"{indent}[{d.get('author','?')} | score:{d.get('score',0)}] {body}")
+                            replies = d.get("replies")
+                            if isinstance(replies, dict):
+                                _walk(replies["data"]["children"], depth + 1)
+                    _walk(raw[1]["data"]["children"])
+                    text = f"{_UNTRUSTED_BANNER}\n\n" + "\n\n".join(parts)
+                else:
+                    text = json.dumps(raw, indent=2, ensure_ascii=False)
+                    text = f"{_UNTRUSTED_BANNER}\n\n{text}"
                 text = _smart_truncate(text, max_chars)
                 result = json.dumps({
                     "url": url, "status": status_code, "fetcher": fetcher,
-                    "extractor": "json", "truncated": "[...truncated...]" in text,
+                    "extractor": "reddit" if "reddit.com" in url else "json",
+                    "truncated": "[...truncated...]" in text,
                     "word_count": len(text.split()), "length": len(text),
                     "untrusted": True, "text": text
                 }, ensure_ascii=False)
