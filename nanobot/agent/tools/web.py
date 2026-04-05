@@ -292,7 +292,7 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, i
                     status = getattr(page, "status", getattr(page, "status_code", 200))
                     if status < 400:
                         html_bytes = getattr(page, "html_content", getattr(page, "html", "")).encode("utf-8", errors="replace")
-                        headers = {"content-type": "text/html; charset=utf-8"}
+                        headers = {"content-type": "application/json; charset=utf-8" if url.endswith(".json") else "text/html; charset=utf-8"}
                         logger.debug("Scrapling browser fetch succeeded")
                         return html_bytes, headers, status, "scrapling"
         except Exception as e:
