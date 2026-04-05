@@ -481,21 +481,15 @@ class WebFetchTool(Tool):
                 except json.JSONDecodeError as e:
                     is_reddit = "reddit.com" in url.lower()
                     if is_reddit:
-                        # Minimal fix: Reddit .json now returns HTML (even with Scrapling)
-                        # → fall back to clean HTML extractor instead of error + raw garbage
-                        logger.debug("Reddit .json returned non-JSON (HTML), falling back to HTML extractor")
-                        raw_html = content_bytes.decode("utf-8", errors="replace")
-                        text, extractor = _html_to_text(raw_html, extractMode, url)
-                        text = f"{_UNTRUSTED_BANNER}\n\n{text}"
+                        logger.error("Reddit JSON API blocked {} - non-JSON response (status: {}, fetcher: {})", url, status_code, fetcher)
                     else:
                         logger.warning("JSON parse failed for {} ({}): falling back to raw text", url, e)
                     text = content_bytes.decode("utf-8", errors="replace")
                     text = f"{_UNTRUSTED_BANNER}\n\n[JSON parse failed]\n\n{text}"
                     text = _smart_truncate(text, max_chars)
-                    result = json.dumps({   
+                    result = json.dumps({   # <-- must build result here  
                         "url": url, "status": status_code, "fetcher": fetcher,
-                        "extractor": "reddit_html_fallback" if is_reddit else "raw", 
-                        "truncated": "[...truncated...]" in text,
+                        "extractor": "raw", "truncated": "[...truncated...]" in text,
                         "word_count": len(text.split()), "length": len(text),
                         "untrusted": True, "text": text
                     }, ensure_ascii=False)
@@ -551,11 +545,6 @@ class WebFetchTool(Tool):
                         "word_count": len(text.split()), "length": len(text),
                         "untrusted": True, "text": text
                     }, ensure_ascii=False)
-
-                if len(self._cache) >= self._cache_max:
-                    self._cache.pop(next(iter(self._cache)))
-                self._cache[cache_key] = result
-                return result
 
             # --- HTML ---
             elif "text/html" in ctype or content_bytes[:256].lower().startswith((b"<!doctype", b"<html")):
