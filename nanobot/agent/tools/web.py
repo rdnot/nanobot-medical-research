@@ -1054,7 +1054,7 @@ class WebFetchTool(Tool):
                 }, ensure_ascii=False)
 
             # --- JSON ---
-            elif "application/json" in ctype:
+            elif "application/json" in ctype or url.endswith(".json"):
                 raw = json.loads(content_bytes)
                 # Reddit thread: extract post + nested comments instead of dumping raw JSON
                 if (
