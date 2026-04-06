@@ -32,6 +32,13 @@
 A real-world example system prompt for a medical research use case is available here:  
 📄 [`medical-research_example-system-prompt/example-system-prompt.md`](medical-research_example-system-prompt/example-system-prompt.md)
 
+## Third-Party Licenses
+This fork introduces the following additional dependencies beyond the original nanobot project:
+- [Trafilatura](https://github.com/adbar/trafilatura) — Apache License 2.0
+- [Scrapling](https://github.com/D4Vinci/Scrapling) — BSD-3-Clause License
+- [markdownify](https://github.com/matthewwithanm/python-markdownify) — MIT License
+- [curl_cffi](https://github.com/yifeikong/curl_cffi) — MIT License
+- [PyMuPDF](https://github.com/pymupdf/PyMuPDF) *(optional)* — GNU AGPL v3. Users must comply with PyMuPDF's license terms when using PDF extraction features.
 
 ---
 
