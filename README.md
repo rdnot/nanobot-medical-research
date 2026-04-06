@@ -27,6 +27,11 @@
   - max_tool_result_chars: 400_000 → Prevents large tool results from being offloaded to .nanobot/tool-results/
   - _CHAT_RETRY_DELAYS = (1, 2, 4, 8, 16) → Increased LLM API retries from 3 to 5 attempts
 
+## Example System Prompt
+A real-world example system prompt for a medical research use case is available here:  
+📄 [`medical-research_example-system-prompt/example-system-prompt.txt`](medical-research_example-system-prompt/example-system-prompt.txt)
+
+
 ---
 
 *(Original HKUDS/nanobot project)*
