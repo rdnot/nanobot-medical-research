@@ -29,7 +29,7 @@
 
 ## Example System Prompt
 A real-world example system prompt for a medical research use case is available here:  
-📄 [`medical-research_example-system-prompt/example-system-prompt.txt`](medical-research_example-system-prompt/example-system-prompt.txt)
+📄 [`medical-research_example-system-prompt/example-system-prompt.md`](medical-research_example-system-prompt/example-system-prompt.md)
 
 
 ---
