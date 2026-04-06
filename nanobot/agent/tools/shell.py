@@ -3,6 +3,7 @@
 import asyncio
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,7 @@ class ExecTool(Tool):
 
     def __init__(
         self,
-        timeout: int = 90,
+        timeout: int = 90,  # FORK: increased from 60
         working_dir: str | None = None,
         deny_patterns: list[str] | None = None,
         allow_patterns: list[str] | None = None,
@@ -93,18 +94,36 @@ class ExecTool(Tool):
 
         effective_timeout = min(timeout or self.timeout, self._MAX_TIMEOUT)
 
-        env = os.environ.copy()
-        if self.path_append:
-            env["PATH"] = env.get("PATH", "") + os.pathsep + self.path_append
-
         try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-            )
+            if sys.platform == "win32":
+                # FORK: Windows keeps create_subprocess_shell + full os.environ.
+                # Upstream's bash -l -c / _build_env() approach is Linux-only.
+                # Full env is required: .bat launchers and Windows tools
+                # (taskkill, wsl, copy, etc.) need the real Windows environment.
+                env = os.environ.copy()
+                if self.path_append:
+                    env["PATH"] = env.get("PATH", "") + os.pathsep + self.path_append
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                    env=env,
+                )
+            else:
+                # UPSTREAM: Linux/macOS — bash login shell with minimal env so
+                # secrets are not leaked to LLM-generated commands.
+                env = self._build_env()
+                if self.path_append:
+                    command = f'export PATH="$PATH:{self.path_append}"; {command}'
+                bash = shutil.which("bash") or "/bin/bash"
+                process = await asyncio.create_subprocess_exec(
+                    bash, "-l", "-c", command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                    env=env,
+                )
 
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -112,18 +131,11 @@ class ExecTool(Tool):
                     timeout=effective_timeout,
                 )
             except asyncio.TimeoutError:
-                process.kill()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
-                    pass
-                finally:
-                    if sys.platform != "win32":
-                        try:
-                            os.waitpid(process.pid, os.WNOHANG)
-                        except (ProcessLookupError, ChildProcessError) as e:
-                            logger.debug("Process already reaped or not found: {}", e)
+                await self._kill_process(process)
                 return f"Error: Command timed out after {effective_timeout} seconds"
+            except asyncio.CancelledError:
+                await self._kill_process(process)
+                raise
 
             output_parts = []
 
@@ -153,6 +165,38 @@ class ExecTool(Tool):
 
         except Exception as e:
             return f"Error executing command: {str(e)}"
+
+    @staticmethod
+    async def _kill_process(process: asyncio.subprocess.Process) -> None:
+        """Kill a subprocess and reap it to prevent zombies."""
+        process.kill()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            if sys.platform != "win32":
+                try:
+                    os.waitpid(process.pid, os.WNOHANG)
+                except (ProcessLookupError, ChildProcessError) as e:
+                    logger.debug("Process already reaped or not found: {}", e)
+
+    def _build_env(self) -> dict[str, str]:
+        """Build a minimal environment for subprocess execution.
+
+        Uses HOME so that ``bash -l`` sources the user's profile (which sets
+        PATH and other essentials).  Only PATH is extended with *path_append*;
+        the parent process's environment is **not** inherited, preventing
+        secrets in env vars from leaking to LLM-generated commands.
+
+        Not called on Windows — see execute() for rationale.
+        """
+        home = os.environ.get("HOME", "/tmp")
+        return {
+            "HOME": home,
+            "LANG": os.environ.get("LANG", "C.UTF-8"),
+            "TERM": os.environ.get("TERM", "dumb"),
+        }
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""

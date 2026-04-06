@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
 import os
 import secrets
 import string
@@ -12,7 +13,17 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import json_repair
-from openai import AsyncOpenAI
+
+if os.environ.get("LANGFUSE_SECRET_KEY") and importlib.util.find_spec("langfuse"):
+    from langfuse.openai import AsyncOpenAI
+else:
+    if os.environ.get("LANGFUSE_SECRET_KEY"):
+        import logging
+        logging.getLogger(__name__).warning(
+            "LANGFUSE_SECRET_KEY is set but langfuse is not installed; "
+            "install with `pip install langfuse` to enable tracing"
+        )
+    from openai import AsyncOpenAI
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 

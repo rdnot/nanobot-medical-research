@@ -53,7 +53,7 @@
   </p>
 </div>
 
-🐈 **nanobot** is an **ultra-lightweight** personal AI assistant inspired by [OpenClaw](https://github.com/openclaw/openclaw).
+🐈 **nanobot** is an **ultra-lightweight** personal AI agent inspired by [OpenClaw](https://github.com/openclaw/openclaw).
 
 ⚡️ Delivers core agent functionality with **99% fewer lines of code**.
 
@@ -293,7 +293,7 @@ Configure these **two parts** in your config (other options have defaults).
 nanobot agent
 ```
 
-That's it! You have a working AI assistant in 2 minutes.
+That's it! You have a working AI agent in 2 minutes.
 
 ## 💬 Chat Apps
 
@@ -474,9 +474,11 @@ pip install nanobot-ai[matrix]
 
 - You need:
   - `userId` (example: `@nanobot:matrix.org`)
-  - `accessToken`
-  - `deviceId` (recommended so sync tokens can be restored across restarts)
-- You can obtain these from your homeserver login API (`/_matrix/client/v3/login`) or from your client's advanced session settings.
+  - `password`
+
+(Note: `accessToken` and `deviceId` are still supported for legacy reasons, but
+for reliable encryption, password login is recommended instead. If the
+`password` is provided, `accessToken` and `deviceId` will be ignored.)
 
 **3. Configure**
 
@@ -487,8 +489,7 @@ pip install nanobot-ai[matrix]
       "enabled": true,
       "homeserver": "https://matrix.org",
       "userId": "@nanobot:matrix.org",
-      "accessToken": "syt_xxx",
-      "deviceId": "NANOBOT01",
+      "password": "mypasswordhere",
       "e2eeEnabled": true,
       "allowFrom": ["@your_user:matrix.org"],
       "groupPolicy": "open",
@@ -500,7 +501,7 @@ pip install nanobot-ai[matrix]
 }
 ```
 
-> Keep a persistent `matrix-store` and stable `deviceId` — encrypted session state is lost if these change across restarts.
+> Keep a persistent `matrix-store` — encrypted session state is lost if these change across restarts.
 
 | Option | Description |
 |--------|-------------|
@@ -761,6 +762,9 @@ Give nanobot its own email account. It polls **IMAP** for incoming mail and repl
 > - `allowFrom`: Add your email address. Use `["*"]` to accept emails from anyone.
 > - `smtpUseTls` and `smtpUseSsl` default to `true` / `false` respectively, which is correct for Gmail (port 587 + STARTTLS). No need to set them explicitly.
 > - Set `"autoReplyEnabled": false` if you only want to read/analyze emails without sending automatic replies.
+> - `allowedAttachmentTypes`: Save inbound attachments matching these MIME types — `["*"]` for all, e.g. `["application/pdf", "image/*"]` (default `[]` = disabled).
+> - `maxAttachmentSize`: Max size per attachment in bytes (default `2000000` / 2MB).
+> - `maxAttachmentsPerEmail`: Max attachments to save per email (default `5`).
 
 ```json
 {
@@ -777,7 +781,8 @@ Give nanobot its own email account. It polls **IMAP** for incoming mail and repl
       "smtpUsername": "my-nanobot@gmail.com",
       "smtpPassword": "your-app-password",
       "fromAddress": "my-nanobot@gmail.com",
-      "allowFrom": ["your-real-email@gmail.com"]
+      "allowFrom": ["your-real-email@gmail.com"],
+      "allowedAttachmentTypes": ["application/pdf", "image/*"]
     }
   }
 }
@@ -902,10 +907,45 @@ Config file: `~/.nanobot/config.json`
 > run `nanobot onboard`, then answer `N` when asked whether to overwrite the config.
 > nanobot will merge in missing default fields and keep your current settings.
 
+### Environment Variables for Secrets
+
+Instead of storing secrets directly in `config.json`, you can use `${VAR_NAME}` references that are resolved from environment variables at startup:
+
+```json
+{
+  "channels": {
+    "telegram": { "token": "${TELEGRAM_TOKEN}" },
+    "email": {
+      "imapPassword": "${IMAP_PASSWORD}",
+      "smtpPassword": "${SMTP_PASSWORD}"
+    }
+  },
+  "providers": {
+    "groq": { "apiKey": "${GROQ_API_KEY}" }
+  }
+}
+```
+
+For **systemd** deployments, use `EnvironmentFile=` in the service unit to load variables from a file that only the deploying user can read:
+
+```ini
+# /etc/systemd/system/nanobot.service (excerpt)
+[Service]
+EnvironmentFile=/home/youruser/nanobot_secrets.env
+User=nanobot
+ExecStart=...
+```
+
+```bash
+# /home/youruser/nanobot_secrets.env (mode 600, owned by youruser)
+TELEGRAM_TOKEN=your-token-here
+IMAP_PASSWORD=your-password-here
+```
+
 ### Providers
 
 > [!TIP]
-> - **Groq** provides free voice transcription via Whisper. If configured, Telegram voice messages will be automatically transcribed.
+> - **Voice transcription**: Voice messages (Telegram, WhatsApp) are automatically transcribed using Whisper. By default Groq is used (free tier). Set `"transcriptionProvider": "openai"` under `channels` to use OpenAI Whisper instead — the API key is picked from the matching provider config.
 > - **MiniMax Coding Plan**: Exclusive discount links for the nanobot community: [Overseas](https://platform.minimax.io/subscribe/coding-plan?code=9txpdXw04g&source=link) · [Mainland China](https://platform.minimaxi.com/subscribe/token-plan?code=GILTJpMTqZ&source=link)
 > - **MiniMax (Mainland China)**: If your API key is from MiniMax's mainland China platform (minimaxi.com), set `"apiBase": "https://api.minimaxi.com/v1"` in your minimax provider config.
 > - **VolcEngine / BytePlus Coding Plan**: Use dedicated providers `volcengineCodingPlan` or `byteplusCodingPlan` instead of the pay-per-use `volcengine` / `byteplus` providers.
@@ -921,9 +961,9 @@ Config file: `~/.nanobot/config.json`
 | `byteplus` | LLM (VolcEngine international, pay-per-use) | [Coding Plan](https://www.byteplus.com/en/activity/codingplan?utm_campaign=nanobot&utm_content=nanobot&utm_medium=devrel&utm_source=OWO&utm_term=nanobot) · [byteplus.com](https://www.byteplus.com) |
 | `anthropic` | LLM (Claude direct) | [console.anthropic.com](https://console.anthropic.com) |
 | `azure_openai` | LLM (Azure OpenAI) | [portal.azure.com](https://portal.azure.com) |
-| `openai` | LLM (GPT direct) | [platform.openai.com](https://platform.openai.com) |
+| `openai` | LLM + Voice transcription (Whisper) | [platform.openai.com](https://platform.openai.com) |
 | `deepseek` | LLM (DeepSeek direct) | [platform.deepseek.com](https://platform.deepseek.com) |
-| `groq` | LLM + **Voice transcription** (Whisper) | [console.groq.com](https://console.groq.com) |
+| `groq` | LLM + Voice transcription (Whisper, default) | [console.groq.com](https://console.groq.com) |
 | `minimax` | LLM (MiniMax direct) | [platform.minimaxi.com](https://platform.minimaxi.com) |
 | `gemini` | LLM (Gemini direct) | [aistudio.google.com](https://aistudio.google.com) |
 | `aihubmix` | LLM (API gateway, access to all models) | [aihubmix.com](https://aihubmix.com) |
@@ -1238,6 +1278,7 @@ Global settings that apply to all channels. Configure under the `channels` secti
     "sendProgress": true,
     "sendToolHints": false,
     "sendMaxRetries": 3,
+    "transcriptionProvider": "groq",
     "telegram": { ... }
   }
 }
@@ -1248,6 +1289,7 @@ Global settings that apply to all channels. Configure under the `channels` secti
 | `sendProgress` | `true` | Stream agent's text progress to the channel |
 | `sendToolHints` | `false` | Stream tool-call hints (e.g. `read_file("…")`) |
 | `sendMaxRetries` | `3` | Max delivery attempts per outbound message, including the initial send (0-10 configured, minimum 1 actual attempt) |
+| `transcriptionProvider` | `"groq"` | Voice transcription backend: `"groq"` (free tier, default) or `"openai"`. API key is auto-resolved from the matching provider config. |
 
 #### Retry Behavior
 
