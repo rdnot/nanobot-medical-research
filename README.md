@@ -26,6 +26,7 @@
   - ReadFileTool._DEFAULT_LIMIT = 8,000
   - max_tool_result_chars: 400_000 → Prevents large tool results from being offloaded to .nanobot/tool-results/
   - _CHAT_RETRY_DELAYS = (1, 2, 4, 8, 16) → Increased LLM API retries from 3 to 5 attempts
+  - Write_File & Edit_File Tools: add char limits based on model's output `max_tokens` config (default=4096), `max_tokens × 3 - 1500` for write, `(max_tokens × 3 - 1500)/2` for edit.
 
 ## Example System Prompt
 A real-world example system prompt for a medical research use case is available here:  
