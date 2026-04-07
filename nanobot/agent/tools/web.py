@@ -460,11 +460,7 @@ class WebFetchTool(Tool):
 
             # --- Image ---
             if ctype.startswith("image/") or re.search(r'\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|$)', url, re.I):
-                result = json.dumps({
-                    "url": url, "status": status_code, "fetcher": fetcher,
-                    "extractor": "image", "untrusted": True,
-                    "blocks": _build_image_blocks(content_bytes, ctype or "image/jpeg", url),
-                }, ensure_ascii=False)
+                return _build_image_blocks(content_bytes, ctype or "image/jpeg", url)
 
             # --- PDF ---
             elif "application/pdf" in ctype or url.lower().endswith(".pdf"):
