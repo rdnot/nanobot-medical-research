@@ -255,11 +255,7 @@ class WebSearchTool(Tool):
     """Search the web using configured provider."""
 
     name = "web_search"
-    description = (
-        "Search the web. Returns titles, URLs, and snippets. "
-        "count defaults to 5 (max 10). "
-        "Use web_fetch to read a specific page in full."
-    )
+    description = "Search the web. Returns titles, URLs, and snippets."
 
     def __init__(self, config: WebSearchConfig | None = None, proxy: str | None = None):
         from nanobot.config.schema import WebSearchConfig
@@ -428,11 +424,7 @@ class WebFetchTool(Tool):
     """
 
     name = "web_fetch"
-    description = (
-        "Fetch a URL and extract readable content (HTML → markdown/text). "
-        "Output is capped at maxChars (default 50 000). "
-        "Works for most web pages and docs; may fail on login-walled or JS-heavy sites."
-    )
+    description = "Fetch URL and extract readable content (HTML → markdown/text)."
 
     def __init__(self, max_chars: int = 500000, proxy: str | None = None):
         self.max_chars = max_chars
