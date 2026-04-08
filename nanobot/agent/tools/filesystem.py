@@ -324,6 +324,11 @@ class EditFileTool(_FsTool):
                 raise ValueError("Unknown old_text")
             if new_text is None:
                 raise ValueError("Unknown new_text")
+            if len(new_text) > self._max_content_chars // 2:
+                return (
+                    f"Error: new_text too large ({len(new_text):,} chars, limit {self._max_content_chars // 2:,}). "
+                    "Split into smaller edit_file calls, one section at a time."
+                )
 
             fp = self._resolve(path)
             if not fp.exists():
