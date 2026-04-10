@@ -33,17 +33,12 @@ from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import AgentDefaults
 from nanobot.providers.base import LLMProvider
 from nanobot.session.manager import Session, SessionManager
-from nanobot.utils.helpers import image_placeholder_text, truncate_text
+from nanobot.utils.helpers import image_placeholder_text, truncate_text as truncate_text_fn
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
-
-# UPSTREAM: import the new tool_hints utility
-from nanobot.utils.tool_hints import format_tool_hints
 
 if TYPE_CHECKING:
     from nanobot.config.schema import ChannelsConfig, ExecToolConfig, WebToolsConfig
     from nanobot.cron.service import CronService
-
-# NOTE: `re` import removed — upstream dropped it; _tool_hint now delegates to tool_hints module.
 
 
 UNIFIED_SESSION_KEY = "unified:default"
@@ -61,7 +56,7 @@ class _LoopHook(AgentHook):
         channel: str = "cli",
         chat_id: str = "direct",
         message_id: str | None = None,
-        force_final_threshold: int = 38,  # FORK: passed in from AgentLoop
+        force_final_threshold: int,  # FORK: passed in from AgentLoop
     ) -> None:
         super().__init__(reraise=True)
         self._loop = agent_loop
@@ -187,11 +182,10 @@ class AgentLoop:
         self.max_iterations = (
             max_iterations if max_iterations is not None else defaults.max_tool_iterations
         )
-        # FORK: default to 200_000 if not explicitly passed and schema default is lower
         self.context_window_tokens = (
             context_window_tokens
             if context_window_tokens is not None
-            else max(defaults.context_window_tokens, 200_000)
+            else defaults.context_window_tokens
         )
         self.context_block_limit = context_block_limit
         self.max_tool_result_chars = (
@@ -271,6 +265,7 @@ class AgentLoop:
                 restrict_to_workspace=self.restrict_to_workspace,
                 sandbox=self.exec_config.sandbox,
                 path_append=self.exec_config.path_append,
+                allowed_env_keys=self.exec_config.allowed_env_keys,
             ))
         if self.web_config.enable:
             self.tools.register(WebSearchTool(config=self.web_config.search, proxy=self.web_config.proxy))
@@ -327,6 +322,7 @@ class AgentLoop:
         All other tools are handled by upstream's format_tool_hints utility,
         which uses abbreviate_path and groups consecutive identical calls.
         """
+        from nanobot.utils.tool_hints import format_tool_hints
         # Patch web_search/web_fetch names for display before delegating
         class _PatchedTC:
             """Thin wrapper that overrides .name for display purposes only."""
@@ -432,13 +428,18 @@ class AgentLoop:
         channel: str = "cli",
         chat_id: str = "direct",
         message_id: str | None = None,
-    ) -> tuple[str | None, list[str], list[dict], list[dict]]:  # FORK: 4-tuple (adds tool_calls_log)
+    ) -> tuple[str | None, list[str], list[dict], str, list[dict]]:
         """Run the agent iteration loop.
 
         *on_stream*: called with each content delta during streaming.
         *on_stream_end(resuming)*: called when a streaming session finishes.
         ``resuming=True`` means tool calls follow (spinner should restart);
         ``resuming=False`` means this is the final response.
+
+        Returns a 5-tuple:
+            (final_content, tools_used, messages, stop_reason, tool_calls_log)
+        - stop_reason  : upstream addition — "end_turn" | "max_iterations" | "error" | ...
+        - tool_calls_log: fork addition — flat list of every tool call made this turn
         """
         # FORK: Compute force-final threshold here and pass it into the hook
         force_final_threshold = max(1, self.max_iterations - 2)
@@ -486,8 +487,14 @@ class AgentLoop:
             logger.warning("Max iterations ({}) reached", self.max_iterations)
         elif result.stop_reason == "error":
             logger.error("LLM returned error: {}", (result.final_content or "")[:200])
-        # FORK: Return tool calls log as 4th element
-        return result.final_content, result.tools_used, result.messages, loop_hook.all_tool_calls_log
+        # MERGE: return 5-tuple — stop_reason from upstream + tool_calls_log from fork
+        return (
+            result.final_content,
+            result.tools_used,
+            result.messages,
+            result.stop_reason,
+            loop_hook.all_tool_calls_log,
+        )
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
@@ -501,6 +508,8 @@ class AgentLoop:
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
+                # Preserve real task cancellation so shutdown can complete cleanly.
+                # Only ignore non-task CancelledError signals that may leak from integrations.
                 if not self._running or asyncio.current_task().cancelling():
                     raise
                 continue
@@ -532,6 +541,7 @@ class AgentLoop:
             try:
                 on_stream = on_stream_end = None
                 if msg.metadata.get("_wants_stream"):
+                    # Split one answer into distinct stream segments.
                     stream_base_id = f"{msg.session_key}:{time.time_ns()}"
                     stream_segment = 0
 
@@ -590,7 +600,7 @@ class AgentLoop:
             try:
                 await self._mcp_stack.aclose()
             except (RuntimeError, BaseExceptionGroup):
-                pass
+                pass  # MCP SDK cancel scope cleanup is noisy but harmless
             self._mcp_stack = None
 
     def _schedule_background(self, coro) -> None:
@@ -631,8 +641,8 @@ class AgentLoop:
                 current_message=msg.content, channel=channel, chat_id=chat_id,
                 current_role=current_role,
             )
-            # FORK: 4-tuple unpack (discard tool_calls_log for system messages)
-            final_content, _, all_msgs, _ = await self._run_agent_loop(
+            # MERGE: 5-tuple unpack — discard stop_reason and tool_calls_log for system messages
+            final_content, _, all_msgs, _, _ = await self._run_agent_loop(
                 messages, session=session, channel=channel, chat_id=chat_id,
                 message_id=msg.metadata.get("message_id"),
             )
@@ -680,8 +690,8 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
 
-        # FORK: Capture tool_calls_log (4th element of 4-tuple)
-        final_content, _, all_msgs, tool_calls_log = await self._run_agent_loop(
+        # MERGE: 5-tuple unpack — capture both stop_reason (upstream) and tool_calls_log (fork)
+        final_content, _, all_msgs, stop_reason, tool_calls_log = await self._run_agent_loop(
             initial_messages,
             on_progress=on_progress or _bus_progress,
             on_stream=on_stream,
@@ -714,7 +724,7 @@ class AgentLoop:
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
 
         meta = dict(msg.metadata or {})
-        if on_stream is not None:
+        if on_stream is not None and stop_reason != "error":
             meta["_streamed"] = True
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
@@ -725,7 +735,7 @@ class AgentLoop:
         self,
         content: list[dict[str, Any]],
         *,
-        truncate_text: bool = False,
+        should_truncate_text: bool = False,
         drop_runtime: bool = False,
     ) -> list[dict[str, Any]]:
         """Strip volatile multimodal payloads before writing session history."""
@@ -753,8 +763,8 @@ class AgentLoop:
 
             if block.get("type") == "text" and isinstance(block.get("text"), str):
                 text = block["text"]
-                if truncate_text and len(text) > self.max_tool_result_chars:
-                    text = truncate_text(text, self.max_tool_result_chars)
+                if should_truncate_text and len(text) > self.max_tool_result_chars:
+                    text = truncate_text_fn(text, self.max_tool_result_chars)
                 filtered.append({**block, "text": text})
                 continue
 
@@ -769,17 +779,18 @@ class AgentLoop:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
             if role == "assistant" and not content and not entry.get("tool_calls"):
-                continue
+                continue  # skip empty assistant messages — they poison session context
             if role == "tool":
                 if isinstance(content, str) and len(content) > self.max_tool_result_chars:
-                    entry["content"] = truncate_text(content, self.max_tool_result_chars)
+                    entry["content"] = truncate_text_fn(content, self.max_tool_result_chars)
                 elif isinstance(content, list):
-                    filtered = self._sanitize_persisted_blocks(content, truncate_text=True)
+                    filtered = self._sanitize_persisted_blocks(content, should_truncate_text=True)
                     if not filtered:
                         continue
                     entry["content"] = filtered
             elif role == "user":
                 if isinstance(content, str) and content.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
+                    # Strip the runtime-context prefix, keep only the user text.
                     parts = content.split("\n\n", 1)
                     if len(parts) > 1 and parts[1].strip():
                         entry["content"] = parts[1]
