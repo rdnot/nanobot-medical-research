@@ -474,13 +474,11 @@ class AgentLoop:
         ``resuming=True`` means tool calls follow (spinner should restart);
         ``resuming=False`` means this is the final response.
 
-        Returns a 5-tuple:
-            (final_content, tools_used, messages, stop_reason, tool_calls_log)
-        - stop_reason   : "end_turn" | "max_iterations" | "error" | ...
-        - tool_calls_log: FORK — flat list of every tool call made this turn
-        NOTE: upstream's had_injections is consumed internally via result.had_injections
-        but is NOT part of the returned tuple (tool_calls_log takes the 5th slot).
-        Callers that need had_injections should read it from the runner result directly.
+        Returns a 6-tuple:
+            (final_content, tools_used, messages, stop_reason, tool_calls_log, had_injections)
+        - stop_reason      : "end_turn" | "max_iterations" | "error" | ...
+        - tool_calls_log   : FORK — flat list of every tool call made this turn
+        - had_injections   : UPSTREAM — whether follow-up message injections occurred
         """
         # FORK: Compute force-final threshold and pass it into the hook
         force_final_threshold = max(1, self.max_iterations - 2)
@@ -555,15 +553,14 @@ class AgentLoop:
             logger.warning("Max iterations ({}) reached", self.max_iterations)
         elif result.stop_reason == "error":
             logger.error("LLM returned error: {}", (result.final_content or "")[:200])
-        # Return 5-tuple: tool_calls_log (FORK) is 5th element.
-        # result.had_injections (upstream) is available on the result object
-        # and is accessed by _process_message via the separate had_injections variable below.
+        # Return 6-tuple: tool_calls_log (FORK) is 5th, had_injections (UPSTREAM) is 6th
         return (
             result.final_content,
             result.tools_used,
             result.messages,
             result.stop_reason,
             loop_hook.all_tool_calls_log,  # FORK
+            result.had_injections,          # UPSTREAM
         )
 
     async def run(self) -> None:
@@ -780,8 +777,8 @@ class AgentLoop:
                 session_summary=pending,
                 current_role=current_role,
             )
-            # 5-tuple: discard stop_reason and tool_calls_log for system messages
-            final_content, _, all_msgs, _, _ = await self._run_agent_loop(
+            # 6-tuple: discard stop_reason, tool_calls_log, had_injections for system messages
+            final_content, _, all_msgs, _, _, _ = await self._run_agent_loop(
                 messages, session=session, channel=channel, chat_id=chat_id,
                 message_id=msg.metadata.get("message_id"),
             )
@@ -863,8 +860,8 @@ class AgentLoop:
             self.sessions.save(session)
             user_persisted_early = True
 
-        # 5-tuple: tool_calls_log is FORK's 5th element
-        final_content, _, all_msgs, stop_reason, tool_calls_log = await self._run_agent_loop(
+        # 6-tuple: tool_calls_log (FORK) is 5th, had_injections (UPSTREAM) is 6th
+        final_content, _, all_msgs, stop_reason, tool_calls_log, had_injections = await self._run_agent_loop(
             initial_messages,
             on_progress=on_progress or _bus_progress,
             on_stream=on_stream,
@@ -895,16 +892,11 @@ class AgentLoop:
                 metadata={**(msg.metadata or {}), "_tools_summary": True},
             ))
 
-        # NOTE: Upstream's MessageTool suppression disabled to avoid conflicts
-        # with FORK's tools_summary feature. Since we send tools_summary before
-        # the final answer, users always receive the complete research conclusion.
-        # Suppression optimization is designed for chatbot flows, not research workflows.
-        # TODO: Re-enable with proper had_injections tracking (6-tuple return) if needed
-        #
-        # Original upstream logic (disabled):
-        # if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
-        #     if not had_injections or stop_reason == "empty_final_response":
-        #         return None
+        # UPSTREAM: MessageTool suppression — skip empty final response when
+        # MessageTool already sent output AND no follow-up injections occurred
+        if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
+            if not had_injections or stop_reason == "empty_final_response":
+                return None
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
