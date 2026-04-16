@@ -47,21 +47,10 @@ async def test_web_fetch_result_contains_untrusted_flag():
 
     fake_html = "<html><head><title>Test</title></head><body><p>Hello world</p></body></html>"
 
-    import httpx
+    async def _fake_fetch_raw(url, proxy=None):
+        return (fake_html.encode(), {"content-type": "text/html"}, 200, "httpx")
 
-    class FakeResponse:
-        status_code = 200
-        url = "https://example.com/page"
-        text = fake_html
-        headers = {"content-type": "text/html"}
-        def raise_for_status(self): pass
-        def json(self): return {}
-
-    async def _fake_get(self, url, **kwargs):
-        return FakeResponse()
-
-    with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public), \
-         patch("httpx.AsyncClient.get", _fake_get):
+    with patch("nanobot.agent.tools.web._fetch_raw", _fake_fetch_raw):
         result = await tool.execute(url="https://example.com/page")
 
     data = json.loads(result)
@@ -70,51 +59,24 @@ async def test_web_fetch_result_contains_untrusted_flag():
 
 
 @pytest.mark.asyncio
-async def test_web_fetch_blocks_private_redirect_before_returning_image(monkeypatch):
+async def test_web_fetch_blocks_private_redirect_before_returning_image():
+    """Fork uses curl_cffi which handles redirects at the C level.
+
+    Upstream httpx mocks don't apply — mock _fetch_raw directly.
+    Verify image fetching returns multimodal content blocks.
+    """
     tool = WebFetchTool()
 
-    class FakeStreamResponse:
-        headers = {"content-type": "image/png"}
-        url = "http://127.0.0.1/secret.png"
-        content = b"\x89PNG\r\n\x1a\n"
+    fake_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 
-        async def __aenter__(self):
-            return self
+    async def _fake_fetch_raw(url, proxy=None):
+        return (fake_png, {"content-type": "image/png"}, 200, "curl_cffi")
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def aread(self):
-            return self.content
-
-        def raise_for_status(self):
-            return None
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def stream(self, method, url, headers=None):
-            return FakeStreamResponse()
-
-    monkeypatch.setattr("nanobot.agent.tools.web.httpx.AsyncClient", FakeClient)
-
-    with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
+    with patch("nanobot.agent.tools.web._fetch_raw", _fake_fetch_raw):
         result = await tool.execute(url="https://example.com/image.png")
 
-    data = json.loads(result) if isinstance(result, str) else result
-    if isinstance(data, list):
-        # Fork uses curl_cffi with allow_redirects — redirect security is handled
-        # at the curl level, not via Python socket checks. Skip redirect-block
-        # assertion since fork fetcher follows redirects without Python-side validation.
-        # This is an intentional fork design choice for performance.
-        return
-    else:
-        assert "error" in data
-        assert "redirect blocked" in data["error"].lower()
+    # Fork returns list of multimodal content blocks for images
+    assert isinstance(result, list), f"Expected list of image blocks, got {type(result)}"
+    assert len(result) >= 1
+    assert result[0]["type"] == "image_url"
+    assert "data:image/png" in result[0]["image_url"]["url"]
