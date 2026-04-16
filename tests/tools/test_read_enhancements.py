@@ -1,5 +1,7 @@
 """Tests for ReadFileTool enhancements: description fix, read dedup, PDF support, device blacklist."""
 
+import asyncio
+
 import pytest
 
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
@@ -59,6 +61,8 @@ class TestReadDedup:
         f = tmp_path / "data.txt"
         f.write_text("original", encoding="utf-8")
         await tool.execute(path=str(f))
+        # Ensure mtime changes for filesystems with coarse timestamp resolution
+        await asyncio.sleep(0.05)
         # Modify the file externally
         f.write_text("modified content", encoding="utf-8")
         second = await tool.execute(path=str(f))

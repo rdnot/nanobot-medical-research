@@ -71,6 +71,8 @@ async def test_chat_with_retry_returns_final_error_after_retries(monkeypatch) ->
         LLMResponse(content="429 rate limit a", finish_reason="error"),
         LLMResponse(content="429 rate limit b", finish_reason="error"),
         LLMResponse(content="429 rate limit c", finish_reason="error"),
+        LLMResponse(content="429 rate limit d", finish_reason="error"),
+        LLMResponse(content="429 rate limit e", finish_reason="error"),
         LLMResponse(content="503 final server error", finish_reason="error"),
     ])
     delays: list[int] = []
@@ -83,8 +85,8 @@ async def test_chat_with_retry_returns_final_error_after_retries(monkeypatch) ->
     response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hello"}])
 
     assert response.content == "503 final server error"
-    assert provider.calls == 4
-    assert delays == [1, 2, 4]
+    assert provider.calls == 6
+    assert delays == [1, 2, 4, 8, 16]
 
 
 @pytest.mark.asyncio
@@ -93,6 +95,8 @@ async def test_chat_with_retry_emits_terminal_progress_when_standard_retries_exh
         LLMResponse(content="429 rate limit a", finish_reason="error"),
         LLMResponse(content="429 rate limit b", finish_reason="error"),
         LLMResponse(content="429 rate limit c", finish_reason="error"),
+        LLMResponse(content="429 rate limit d", finish_reason="error"),
+        LLMResponse(content="429 rate limit e", finish_reason="error"),
         LLMResponse(content="503 final server error", finish_reason="error"),
     ])
     progress: list[str] = []
@@ -111,7 +115,7 @@ async def test_chat_with_retry_emits_terminal_progress_when_standard_retries_exh
     )
 
     assert response.content == "503 final server error"
-    assert progress[-1] == "Model request failed after 4 retries, giving up."
+    assert progress[-1] == "Model request failed after 6 retries, giving up."
 
 
 @pytest.mark.asyncio
@@ -495,7 +499,7 @@ async def test_persistent_retry_aborts_after_ten_identical_transient_errors(monk
     assert response.finish_reason == "error"
     assert response.content == "429 rate limit"
     assert provider.calls == 10
-    assert delays == [1, 2, 4, 4, 4, 4, 4, 4, 4]
+    assert delays == [1, 2, 4, 8, 16, 16, 16, 16, 16]
 
 
 @pytest.mark.asyncio

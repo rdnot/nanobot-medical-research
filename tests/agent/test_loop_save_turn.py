@@ -247,7 +247,8 @@ async def test_process_message_does_not_duplicate_early_persisted_user_message(t
             {"role": "assistant", "content": "done"},
         ],
         "stop",
-        False,
+        [],  # tool_calls_log (fork)
+        False,  # had_injections
     ))  # type: ignore[method-assign]
 
     result = await loop._process_message(
@@ -289,7 +290,8 @@ async def test_next_turn_after_crash_closes_pending_user_turn_before_new_input(t
             {"role": "assistant", "content": "new answer"},
         ],
         "stop",
-        False,
+        [],  # tool_calls_log (fork)
+        False,  # had_injections
     ))  # type: ignore[method-assign]
 
     result = await loop._process_message(
@@ -387,7 +389,8 @@ async def test_stop_preserves_runtime_checkpoint_for_next_turn(tmp_path: Path) -
             None,
             [*initial_messages, {"role": "assistant", "content": "next answer"}],
             "stop",
-            False,
+            [],  # tool_calls_log (fork)
+            False,  # had_injections
         )
 
     loop._run_agent_loop = resumed_run_agent_loop  # type: ignore[method-assign]

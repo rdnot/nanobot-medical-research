@@ -864,7 +864,7 @@ async def test_loop_max_iterations_message_stays_stable(tmp_path):
     loop.tools.execute = AsyncMock(return_value="ok")
     loop.max_iterations = 2
 
-    final_content, _, _, _, _ = await loop._run_agent_loop([])
+    final_content, _, _, _, _, _ = await loop._run_agent_loop([])
 
     assert final_content == (
         "I reached the maximum number of tool call iterations (2) "
@@ -891,7 +891,7 @@ async def test_loop_stream_filter_handles_think_only_prefix_without_crashing(tmp
     async def on_stream_end(*, resuming: bool = False) -> None:
         endings.append(resuming)
 
-    final_content, _, _, _, _ = await loop._run_agent_loop(
+    final_content, _, _, _, _, _ = await loop._run_agent_loop(
         [],
         on_stream=on_stream,
         on_stream_end=on_stream_end,
@@ -915,7 +915,7 @@ async def test_loop_retries_think_only_final_response(tmp_path):
 
     loop.provider.chat_with_retry = chat_with_retry
 
-    final_content, _, _, _, _ = await loop._run_agent_loop([])
+    final_content, _, _, _, _, _ = await loop._run_agent_loop([])
 
     assert final_content == "Recovered answer"
     assert call_count["n"] == 2
@@ -2131,7 +2131,7 @@ async def test_loop_injected_followup_preserves_image_media(tmp_path):
         media=[str(image_path)],
     ))
 
-    final_content, _, _, _, had_injections = await loop._run_agent_loop(
+    final_content, _, _, _, _, had_injections = await loop._run_agent_loop(
         [{"role": "user", "content": "hello"}],
         channel="cli",
         chat_id="c",
@@ -2369,7 +2369,7 @@ async def test_pending_queue_preserves_overflow_for_next_injection_cycle(tmp_pat
             content=f"follow-up-{idx}",
         ))
 
-    final_content, _, _, _, had_injections = await loop._run_agent_loop(
+    final_content, _, _, _, _, had_injections = await loop._run_agent_loop(
         [{"role": "user", "content": "hello"}],
         channel="cli",
         chat_id="c",

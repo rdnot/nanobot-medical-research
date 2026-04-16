@@ -1,6 +1,8 @@
 """Tests for EditFileTool enhancements: read-before-edit tracking, path suggestions,
 .ipynb detection, and create-file semantics."""
 
+import asyncio
+
 import pytest
 
 from nanobot.agent.tools.filesystem import EditFileTool, ReadFileTool, WriteFileTool
@@ -59,6 +61,8 @@ class TestEditReadTracking:
         f = tmp_path / "a.py"
         f.write_text("hello world", encoding="utf-8")
         await read_tool.execute(path=str(f))
+        # Ensure mtime changes for filesystems with coarse timestamp resolution
+        await asyncio.sleep(0.05)
         # External modification
         f.write_text("hello universe", encoding="utf-8")
         result = await edit_tool.execute(path=str(f), old_text="universe", new_text="earth")
