@@ -17,6 +17,8 @@
 
 - **Loop Control**: `FORCE_FINAL_THRESHOLD = max_iterations - 2` — Forces final answer after [max_iterations - 2] iterations (default max_iterations = 200, unless specify in config `maxToolIterations`) to prevent infinite tool loops
 
+- **SelfTool Opt-in**: The `my` skill (runtime self-inspection) is now **opt-in** (`always: false`) instead of always-on. The skill remains available — the agent will discover it in the skills summary and load it on-demand when needed (e.g., diagnosing issues, checking token usage). This reduces tool call overhead for users who don't need frequent self-inspection.
+
 - **WhatsApp Channel**: Enhanced message markdown rendering for WhatsApp integration
 
 - **New Commands**:
