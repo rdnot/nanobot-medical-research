@@ -470,6 +470,7 @@ class AgentLoop:
         on_progress: Callable[..., Awaitable[None]] | None = None,
         on_stream: Callable[[str], Awaitable[None]] | None = None,
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
+        on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
         *,
         session: Session | None = None,
         channel: str = "cli",
@@ -555,6 +556,7 @@ class AgentLoop:
             context_block_limit=self.context_block_limit,
             provider_retry_mode=self.provider_retry_mode,
             progress_callback=on_progress,
+            retry_wait_callback=on_retry_wait,
             checkpoint_callback=_checkpoint,
             injection_callback=_drain_pending,
         ))
@@ -782,13 +784,25 @@ class AgentLoop:
             session, pending = self.auto_compact.prepare_session(session, key)
 
             await self.consolidator.maybe_consolidate_by_tokens(session)
+            # Persist subagent follow-ups into durable history BEFORE prompt
+            # assembly. ContextBuilder merges adjacent same-role messages for
+            # provider compatibility, which previously caused the follow-up to
+            # disappear from session.messages while still being visible to the
+            # LLM via the merged prompt. See _persist_subagent_followup.
+            is_subagent = msg.sender_id == "subagent"
+            if is_subagent and self._persist_subagent_followup(session, msg):
+                self.sessions.save(session)
             self._set_tool_context(channel, chat_id, msg.metadata.get("message_id"))
             history = session.get_history(max_messages=0)
-            current_role = "assistant" if msg.sender_id == "subagent" else "user"
+            current_role = "assistant" if is_subagent else "user"
 
+            # Subagent content is already in `history` above; passing it again
+            # as current_message would double-project it into the prompt.
             messages = self.context.build_messages(
                 history=history,
-                current_message=msg.content, channel=channel, chat_id=chat_id,
+                current_message="" if is_subagent else msg.content,
+                channel=channel,
+                chat_id=chat_id,
                 session_summary=pending,
                 current_role=current_role,
             )
@@ -862,6 +876,18 @@ class AgentLoop:
                 )
             )
 
+        async def _on_retry_wait(content: str) -> None:
+            meta = dict(msg.metadata or {})
+            meta["_retry_wait"] = True
+            await self.bus.publish_outbound(
+                OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=content,
+                    metadata=meta,
+                )
+            )
+
         # Persist the triggering user message immediately, before running the
         # agent loop. If the process is killed mid-turn (OOM, SIGKILL, self-
         # restart, etc.), the existing runtime_checkpoint preserves the
@@ -881,6 +907,7 @@ class AgentLoop:
             on_progress=on_progress or _bus_progress,
             on_stream=on_stream,
             on_stream_end=on_stream_end,
+            on_retry_wait=_on_retry_wait,
             session=session,
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -1010,6 +1037,30 @@ class AgentLoop:
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
         session.updated_at = datetime.now()
+
+    def _persist_subagent_followup(self, session: Session, msg: InboundMessage) -> bool:
+        """Persist subagent follow-ups before prompt assembly so history stays durable.
+
+        Returns True if a new entry was appended; False if the follow-up was
+        deduped (same ``subagent_task_id`` already in session) or carries no
+        content worth persisting.
+        """
+        if not msg.content:
+            return False
+        task_id = msg.metadata.get("subagent_task_id") if isinstance(msg.metadata, dict) else None
+        if task_id and any(
+            m.get("injected_event") == "subagent_result" and m.get("subagent_task_id") == task_id
+            for m in session.messages
+        ):
+            return False
+        session.add_message(
+            "assistant",
+            msg.content,
+            sender_id=msg.sender_id,
+            injected_event="subagent_result",
+            subagent_task_id=task_id,
+        )
+        return True
 
     def _set_runtime_checkpoint(self, session: Session, payload: dict[str, Any]) -> None:
         """Persist the latest in-flight turn state into session metadata."""
