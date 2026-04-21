@@ -136,10 +136,11 @@ class ReadFileTool(_FsTool):
     @property
     def description(self) -> str:
         return (
-            "Read a file (text or image). Text output format: LINE_NUM|CONTENT. "
+            "Read a file (text, image, or document). "
+            "Text output format: LINE_NUM|CONTENT. "
             "Images return visual content for analysis. "
-            "Use offset and limit for large files. "
-            "Cannot read non-image binary files. "
+            "Supports PDF, DOCX, XLSX, PPTX documents. "
+            "Use offset and limit for large text files. "
             "Reads exceeding ~768K chars are truncated."  # FORK: updated limit
         )
 
