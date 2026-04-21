@@ -141,7 +141,6 @@ class ReadFileTool(_FsTool):
             "Images return visual content for analysis. "
             "Supports PDF, DOCX, XLSX, PPTX documents. "
             "Use offset and limit for large text files. "
-            "Cannot read non-image binary files. "
             "Reads exceeding ~768K chars are truncated."  # FORK: updated limit
         )
 
@@ -324,7 +323,7 @@ class ReadFileTool(_FsTool):
             return f"({fp.suffix.upper().lstrip('.')} has no extractable text: {fp})"
 
         if len(result) > self._MAX_CHARS:
-            result = result[:self._MAX_CHARS] + "\n\n(Document text truncated at ~128K chars)"
+            result = result[:self._MAX_CHARS] + "\n\n(Document text truncated at ~768K chars)"  # FORK: updated limit
 
         return result
 
