@@ -145,7 +145,7 @@ def _make_console() -> Console:
 def _render_interactive_ansi(render_fn) -> str:
     """Render Rich output to ANSI so prompt_toolkit can print it safely."""
     ansi_console = Console(
-        force_terminal=True,
+        force_terminal=sys.stdout.isatty(),
         color_system=console.color_system or "standard",
         width=console.width,
     )
@@ -946,6 +946,12 @@ def _run_gateway(
             cron.stop()
             agent.stop()
             await channels.stop_all()
+            # Flush all cached sessions to durable storage before exit.
+            # This prevents data loss on filesystems with write-back
+            # caching (rclone VFS, NFS, FUSE mounts, etc.).
+            flushed = agent.sessions.flush_all()
+            if flushed:
+                logger.info("Shutdown: flushed {} session(s) to disk", flushed)
 
     asyncio.run(run())
 
