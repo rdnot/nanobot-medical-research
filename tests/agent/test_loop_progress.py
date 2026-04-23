@@ -44,7 +44,7 @@ class TestToolEventProgress:
         ) -> None:
             progress.append((content, tool_hint, tool_events))
 
-        final_content, _, _, _, _ = await loop._run_agent_loop([], on_progress=on_progress)
+        final_content, _, _, _, _, _ = await loop._run_agent_loop([], on_progress=on_progress)
 
         assert final_content == "Done"
         assert progress == [
