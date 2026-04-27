@@ -368,7 +368,8 @@ async def test_process_message_uses_context_chat_id_for_runtime_prompt(tmp_path:
             {"role": "assistant", "content": "done"},
         ],
         "stop",
-        False,
+        [],     # tool_calls_log (fork)
+        False,  # had_injections
     ))
 
     result = await loop._process_message(
