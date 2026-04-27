@@ -704,7 +704,8 @@ async def test_system_subagent_followup_uses_thread_session_and_slack_metadata(t
             [],
             [*initial_messages, {"role": "assistant", "content": "done"}],
             "stop",
-            False,
+            [],  # tool_calls_log (fork)
+            False,  # had_injections (upstream)
         )
 
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
