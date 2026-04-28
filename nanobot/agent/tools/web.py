@@ -1215,7 +1215,7 @@ class WebFetchTool(Tool):
                     is_reddit = "reddit.com" in url.lower()
                     if is_reddit:
                         logger.debug("Reddit .json HTML wrapper cleaned, but still failed parse → fallback")
-                        text, extractor = _html_to_text(content_bytes.decode("utf-8", errors="replace"), extractMode, url)
+                        text, extractor = _html_to_text(content_bytes.decode("utf-8", errors="replace"), extract_mode, url)
                         text = f"{_UNTRUSTED_BANNER}\n\n{text}"
                     else:
                         logger.warning("JSON parse failed for {} ({}): falling back to raw text", url, e)
