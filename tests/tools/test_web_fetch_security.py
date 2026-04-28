@@ -87,7 +87,7 @@ async def test_web_fetch_can_skip_jina_and_use_custom_user_agent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_web_fetch_blocks_private_redirect_before_returning_image():
-    tool = WebFetchTool()
+    tool = WebFetchTool(config=WebFetchConfig(use_jina_reader=False))
 
     fake_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 
