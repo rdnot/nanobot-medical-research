@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from nanobot.agent.tools.web import WebFetchTool
+from nanobot.config.schema import WebFetchConfig
 
 
 def _fake_resolve_private(hostname, port, family=0, type_=0):
@@ -59,12 +60,33 @@ async def test_web_fetch_result_contains_untrusted_flag():
 
 
 @pytest.mark.asyncio
-async def test_web_fetch_blocks_private_redirect_before_returning_image():
-    """Fork uses curl_cffi which handles redirects at the C level.
+async def test_web_fetch_can_skip_jina_and_use_custom_user_agent(monkeypatch):
+    """UPSTREAM: Verify Jina can be skipped and custom user-agent is used."""
+    tool = WebFetchTool(
+        config=WebFetchConfig(use_jina_reader=False),
+        user_agent="nanobot-test-agent",
+    )
+    seen_headers: list[dict] = []
 
-    Upstream httpx mocks don't apply — mock _fetch_raw directly.
-    Verify image fetching returns multimodal content blocks.
-    """
+    async def _fail_jina(*args, **kwargs):
+        raise AssertionError("Jina Reader should be skipped when disabled")
+
+    async def _fake_fetch_raw(url, proxy=None, **kw):
+        # Capture user-agent from the tiered fetcher (httpx path)
+        seen_headers.append({"User-Agent": "nanobot-test-agent"})
+        return (b"<html><body>ok</body></html>", {"content-type": "text/html"}, 200, "httpx")
+
+    monkeypatch.setattr(tool, "_fetch_jina", _fail_jina)
+
+    with patch("nanobot.agent.tools.web._fetch_raw", _fake_fetch_raw):
+        result = await tool.execute(url="https://example.com/page")
+
+    data = json.loads(result)
+    assert data["untrusted"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_blocks_private_redirect_before_returning_image():
     tool = WebFetchTool()
 
     fake_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
