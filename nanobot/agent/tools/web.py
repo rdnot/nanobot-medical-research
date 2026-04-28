@@ -825,7 +825,6 @@ class WebSearchTool(Tool):
     name = "web_search"
     description = (
         "Search the web. Returns titles, URLs, and snippets. "
-        "count defaults to 5 (max 10). "
         "Use web_fetch to read a specific page in full."
     )
 
@@ -1129,7 +1128,6 @@ class WebFetchTool(Tool):
     name = "web_fetch"
     description = (
         "Fetch a URL and extract readable content (HTML → markdown/text). "
-        "Works for most web pages and docs; may fail on login-walled or JS-heavy sites."
     )
 
     def __init__(self, config: WebFetchConfig | None = None, proxy: str | None = None, user_agent: str | None = None, max_chars: int = 500000):
