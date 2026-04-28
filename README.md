@@ -12,6 +12,7 @@
 - **PDF Support**: `web_fetch` now properly reads direct PDF files (no more "binary data" error)
 
 -  **Web_fetch improvements** : `curl_cffi + trafilatura` upgrade (better anti-bot evasion and text extraction)
+  > This fork bypasses Jina `web_fetch` and uses the fork's local web_fetch by default (`curl_cffi` on main branch, `curl_cffi`/`scrapling` on scrapling branch). To use Jina web_fetch, set `"useJinaReader": true` in your config.
 
 - **Privacy-Focused Search**: Hardcoded SearXNG override: `DEFAULT_SEARXNG_URL` forces SearXNG provider when set in web.py, falls back to config provider
 
