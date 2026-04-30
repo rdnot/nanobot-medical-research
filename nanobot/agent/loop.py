@@ -281,6 +281,7 @@ class AgentLoop:
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
             disabled_skills=disabled_skills,
+            max_iterations=self.max_iterations,
         )
         self._unified_session = unified_session
         self._max_messages = max_messages if max_messages > 0 else 120
@@ -329,6 +330,10 @@ class AgentLoop:
         self._current_iteration: int = 0
         self.commands = CommandRouter()
         register_builtin_commands(self.commands)
+
+    def _sync_subagent_runtime_limits(self) -> None:
+        """Keep subagent runtime limits aligned with mutable loop settings."""
+        self.subagents.max_iterations = self.max_iterations
 
     def _apply_provider_snapshot(self, snapshot: ProviderSnapshot) -> None:
         """Swap model/provider for future turns without disturbing an active one."""
@@ -654,6 +659,8 @@ class AgentLoop:
         - tool_calls_log   : FORK — flat list of every tool call made this turn
         - had_injections   : UPSTREAM — whether follow-up message injections occurred
         """
+        # UPSTREAM: Sync subagent runtime limits
+        self._sync_subagent_runtime_limits()
         # FORK: Compute force-final threshold and pass it into the hook
         force_final_threshold = max(1, self.max_iterations - 2)
 
