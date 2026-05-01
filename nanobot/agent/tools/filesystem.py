@@ -380,8 +380,9 @@ class WriteFileTool(_FsTool):
         allowed_dir: Path | None = None,
         extra_allowed_dirs: list[Path] | None = None,
         max_tokens: int | None = None,
+        file_states: FileStates | None = None,
     ):
-        super().__init__(workspace, allowed_dir, extra_allowed_dirs)
+        super().__init__(workspace, allowed_dir, extra_allowed_dirs, file_states=file_states)
 
         if max_tokens is None:
             max_tokens = _load_max_tokens_from_config() or self._DEFAULT_MAX_TOKENS
@@ -718,8 +719,9 @@ class EditFileTool(_FsTool):
         allowed_dir: Path | None = None,
         extra_allowed_dirs: list[Path] | None = None,
         max_tokens: int | None = None,
+        file_states: FileStates | None = None,
     ):
-        super().__init__(workspace, allowed_dir, extra_allowed_dirs)
+        super().__init__(workspace, allowed_dir, extra_allowed_dirs, file_states=file_states)
 
         if max_tokens is None:
             max_tokens = _load_max_tokens_from_config() or self._DEFAULT_MAX_TOKENS

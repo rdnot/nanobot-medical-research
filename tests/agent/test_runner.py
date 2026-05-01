@@ -987,7 +987,7 @@ async def test_loop_stream_filter_hides_partial_trailing_think_prefix(tmp_path):
     async def on_stream(delta: str) -> None:
         deltas.append(delta)
 
-    final_content, _, _, _, _ = await loop._run_agent_loop([], on_stream=on_stream)
+    final_content, _, _, _, _, _ = await loop._run_agent_loop([], on_stream=on_stream)
 
     assert final_content == "Hello World"
     assert deltas == ["Hello", " World"]
@@ -1008,7 +1008,7 @@ async def test_loop_stream_filter_hides_complete_trailing_think_tag(tmp_path):
     async def on_stream(delta: str) -> None:
         deltas.append(delta)
 
-    final_content, _, _, _, _ = await loop._run_agent_loop([], on_stream=on_stream)
+    final_content, _, _, _, _, _ = await loop._run_agent_loop([], on_stream=on_stream)
 
     assert final_content == "Hello World"
     assert deltas == ["Hello", " World"]
