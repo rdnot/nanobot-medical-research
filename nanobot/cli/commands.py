@@ -5,6 +5,7 @@ import os
 import select
 import signal
 import sys
+from collections.abc import Callable
 from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import Any
@@ -214,6 +215,29 @@ async def _print_interactive_progress_line(text: str, thinking: ThinkingSpinner 
         return
     with thinking.pause() if thinking else nullcontext():
         await _print_interactive_line(text)
+
+
+async def _maybe_print_interactive_progress(
+    msg: Any,
+    thinking: ThinkingSpinner | None,
+    channels_config: Any,
+) -> bool:
+    metadata = msg.metadata or {}
+    if metadata.get("_retry_wait"):
+        await _print_interactive_progress_line(msg.content, thinking)
+        return True
+
+    if not metadata.get("_progress"):
+        return False
+
+    is_tool_hint = metadata.get("_tool_hint", False)
+    if channels_config and is_tool_hint and not channels_config.send_tool_hints:
+        return True
+    if channels_config and not is_tool_hint and not channels_config.send_progress:
+        return True
+
+    await _print_interactive_progress_line(msg.content, thinking)
+    return True
 
 
 def _is_exit_command(command: str) -> bool:
@@ -1127,15 +1151,11 @@ def agent(
                             turn_done.set()
                             continue
 
-                        if msg.metadata.get("_progress"):
-                            is_tool_hint = msg.metadata.get("_tool_hint", False)
-                            ch = agent_loop.channels_config
-                            if ch and is_tool_hint and not ch.send_tool_hints:
-                                pass
-                            elif ch and not is_tool_hint and not ch.send_progress:
-                                pass
-                            else:
-                                await _print_interactive_progress_line(msg.content, _thinking)
+                        if await _maybe_print_interactive_progress(
+                            msg,
+                            _thinking,
+                            agent_loop.channels_config,
+                        ):
                             continue
 
                         if not turn_done.is_set():
@@ -1468,10 +1488,17 @@ provider_app = typer.Typer(help="Manage providers")
 app.add_typer(provider_app, name="provider")
 
 
-_LOGIN_HANDLERS: dict[str, callable] = {}
+_LOGIN_HANDLERS: dict[str, Callable[[], None]] = {}
+_LOGOUT_HANDLERS: dict[str, Callable[[], None]] = {}
+
+_PROVIDER_DISPLAY: dict[str, str] = {
+    "openai_codex": "OpenAI Codex",
+    "github_copilot": "GitHub Copilot",
+}
 
 
 def _register_login(name: str):
+    """Register an OAuth login handler."""
     def decorator(fn):
         _LOGIN_HANDLERS[name] = fn
         return fn
@@ -1479,11 +1506,16 @@ def _register_login(name: str):
     return decorator
 
 
-@provider_app.command("login")
-def provider_login(
-    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
-):
-    """Authenticate with an OAuth provider."""
+def _register_logout(name: str):
+    """Register an OAuth logout handler."""
+    def decorator(fn):
+        _LOGOUT_HANDLERS[name] = fn
+        return fn
+    return decorator
+
+
+def _resolve_oauth_provider(provider: str):
+    """Resolve and validate an OAuth provider configuration."""
     from nanobot.providers.registry import PROVIDERS
 
     key = provider.replace("-", "_")
@@ -1492,6 +1524,15 @@ def provider_login(
         names = ", ".join(s.name.replace("_", "-") for s in PROVIDERS if s.is_oauth)
         console.print(f"[red]Unknown OAuth provider: {provider}[/red]  Supported: {names}")
         raise typer.Exit(1)
+    return spec
+
+
+@provider_app.command("login")
+def provider_login(
+    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
+):
+    """Authenticate with an OAuth provider."""
+    spec = _resolve_oauth_provider(provider)
 
     handler = _LOGIN_HANDLERS.get(spec.name)
     if not handler:
@@ -1499,6 +1540,22 @@ def provider_login(
         raise typer.Exit(1)
 
     console.print(f"{__logo__} OAuth Login - {spec.label}\n")
+    handler()
+
+
+@provider_app.command("logout")
+def provider_logout(
+    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
+):
+    """Log out from an OAuth provider."""
+    spec = _resolve_oauth_provider(provider)
+
+    handler = _LOGOUT_HANDLERS.get(spec.name)
+    if not handler:
+        console.print(f"[red]Logout not implemented for {spec.label}[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"{__logo__} OAuth Logout - {spec.label}\n")
     handler()
 
 
@@ -1523,6 +1580,59 @@ def _login_openai_codex() -> None:
     except ImportError:
         console.print("[red]oauth_cli_kit not installed. Run: pip install oauth-cli-kit[/red]")
         raise typer.Exit(1)
+
+
+@_register_logout("openai_codex")
+def _logout_openai_codex() -> None:
+    """Clear local OAuth credentials for OpenAI Codex."""
+    try:
+        from oauth_cli_kit.providers import OPENAI_CODEX_PROVIDER
+        from oauth_cli_kit.storage import FileTokenStorage
+    except ImportError:
+        console.print("[red]oauth_cli_kit not installed. Run: pip install oauth-cli-kit[/red]")
+        raise typer.Exit(1)
+
+    storage = FileTokenStorage(token_filename=OPENAI_CODEX_PROVIDER.token_filename)
+    _delete_oauth_files(storage.get_token_path(), _PROVIDER_DISPLAY["openai_codex"])
+
+
+@_register_logout("github_copilot")
+def _logout_github_copilot() -> None:
+    """Clear local OAuth credentials for GitHub Copilot."""
+    try:
+        from nanobot.providers.github_copilot_provider import get_storage
+    except ImportError:
+        console.print("[red]GitHub Copilot provider unavailable. Ensure oauth-cli-kit is installed.[/red]")
+        raise typer.Exit(1)
+
+    storage = get_storage()
+    _delete_oauth_files(storage.get_token_path(), _PROVIDER_DISPLAY["github_copilot"])
+
+
+def _delete_oauth_files(token_path: Path, provider_label: str) -> None:
+    """Delete OAuth token and lock files, reporting the result."""
+    removed_paths: list[Path] = []
+    skipped: list[tuple[Path, OSError]] = []
+    for path in (token_path, token_path.with_suffix(".lock")):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            skipped.append((path, exc))
+            continue
+        removed_paths.append(path)
+
+    if not removed_paths and not skipped:
+        console.print(f"[yellow]! No local OAuth credentials found for {provider_label}[/yellow]")
+        return
+
+    if removed_paths:
+        console.print(f"[green]✓ Logged out from {provider_label}[/green]")
+        for path in removed_paths:
+            console.print(f"[dim]Removed: {path}[/dim]")
+    for path, exc in skipped:
+        console.print(f"[yellow]! Could not remove {path}: {exc}[/yellow]")
 
 
 @_register_login("github_copilot")

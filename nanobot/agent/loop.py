@@ -931,6 +931,14 @@ class AgentLoop:
                             channel=msg.channel, chat_id=msg.chat_id,
                             content="", metadata=msg.metadata or {},
                         ))
+                    if msg.channel == "websocket":
+                        # Signal that the turn is fully complete (all tools executed,
+                        # final text streamed).  This lets WS clients know when to
+                        # definitively stop the loading indicator.
+                        await self.bus.publish_outbound(OutboundMessage(
+                            channel=msg.channel, chat_id=msg.chat_id,
+                            content="", metadata={**msg.metadata, "_turn_end": True},
+                        ))
                 except asyncio.CancelledError:
                     logger.info("Task cancelled for session {}", session_key)
                     # Preserve partial context from the interrupted turn so
@@ -1268,7 +1276,7 @@ class AgentLoop:
             ask_user_options_from_messages(all_msgs) if stop_reason == "ask_user" else [],
             msg.channel,
         )
-        if on_stream is not None and stop_reason not in {"ask_user", "error"}:
+        if on_stream is not None and stop_reason not in {"ask_user", "error", "tool_error"}:
             meta["_streamed"] = True
         return OutboundMessage(
             channel=msg.channel,
