@@ -78,7 +78,8 @@ class AgentDefaults(Base):
     context_block_limit: int | None = None
     temperature: float = 0.1
     max_tool_iterations: int = 200
-    max_tool_result_chars: int = 400_000
+    max_concurrent_subagents: int = Field(default=1, ge=1)
+    max_tool_result_chars: int = 400_000  # FORK: 400K vs upstream 16K
     provider_retry_mode: Literal["standard", "persistent"] = "standard"
     reasoning_effort: str | None = None  # low / medium / high / adaptive - enables LLM thinking mode
     timezone: str = "UTC"  # IANA timezone, e.g. "Asia/Shanghai", "America/New_York"
