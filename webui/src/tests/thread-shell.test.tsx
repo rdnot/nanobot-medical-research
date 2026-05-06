@@ -86,6 +86,26 @@ describe("ThreadShell", () => {
     );
   });
 
+  it("does not navigate away when clicking the chat title", async () => {
+    const client = makeClient();
+    const onGoHome = vi.fn();
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("chat-title")}
+        title="Important conversation"
+        onToggleSidebar={() => {}}
+        onGoHome={onGoHome}
+        onNewChat={() => {}}
+      />,
+    ));
+
+    await waitFor(() => expect(screen.getByText("Important conversation")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Important conversation"));
+
+    expect(onGoHome).not.toHaveBeenCalled();
+  });
+
   it("restores in-memory messages when switching away and back to a session", async () => {
     const client = makeClient();
     const onNewChat = vi.fn().mockResolvedValue("chat-a");
@@ -199,7 +219,67 @@ describe("ThreadShell", () => {
     await waitFor(() => {
       expect(screen.queryByText("delete me cleanly")).not.toBeInTheDocument();
     });
-    expect(screen.getByPlaceholderText("What's on your mind?")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Ask anything...")).toBeInTheDocument();
+  });
+
+  it("creates a chat only when the blank landing sends a first message", async () => {
+    const client = makeClient();
+    const onNewChat = vi.fn();
+    const onCreateChat = vi.fn().mockResolvedValue("chat-new");
+
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={null}
+          title="nanobot"
+          onToggleSidebar={() => {}}
+          onGoHome={() => {}}
+          onNewChat={onNewChat}
+          onCreateChat={onCreateChat}
+        />,
+      ),
+    );
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "start for real" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(onCreateChat).toHaveBeenCalledTimes(1));
+    expect(onNewChat).not.toHaveBeenCalled();
+  });
+
+  it("sends quick action prompts from the empty thread landing", async () => {
+    const client = makeClient();
+    const onNewChat = vi.fn().mockResolvedValue("chat-a");
+
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("chat-a")}
+          title="Chat chat-a"
+          onToggleSidebar={() => {}}
+          onGoHome={() => {}}
+          onNewChat={onNewChat}
+        />,
+      ),
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Write code" })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Write code" }));
+
+    await waitFor(() =>
+      expect(client.sendMessage).toHaveBeenCalledWith(
+        "chat-a",
+        "Help me write the code for this task, starting with the smallest useful change.",
+        undefined,
+      ),
+    );
   });
 
   it("does not leak the previous thread when opening a brand-new chat", async () => {
@@ -260,10 +340,10 @@ describe("ThreadShell", () => {
 
     expect(screen.queryByText("old answer")).not.toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByPlaceholderText("What's on your mind?")).toBeInTheDocument(),
+      expect(screen.getByPlaceholderText("Ask anything...")).toBeInTheDocument(),
     );
-    const input = screen.getByPlaceholderText("What's on your mind?");
-    expect(input.className).toContain("min-h-[96px]");
+    const input = screen.getByPlaceholderText("Ask anything...");
+    expect(input.className).toContain("min-h-[78px]");
     expect(screen.queryByText("old answer")).not.toBeInTheDocument();
   });
 
@@ -354,6 +434,138 @@ describe("ThreadShell", () => {
     });
   });
 
+  it("keeps live assistant replies after visiting the blank new-chat page", async () => {
+    const client = makeClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("websocket%3Achat-a/messages")) {
+          return httpJson({
+            key: "websocket:chat-a",
+            created_at: null,
+            updated_at: null,
+            // Simulate a stale history response that has not persisted the
+            // just-received assistant reply yet.
+            messages: [{ role: "user", content: "hello" }],
+          });
+        }
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+        };
+      }),
+    );
+
+    const { rerender } = render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("chat-a")}
+          title="Chat chat-a"
+          onToggleSidebar={() => {}}
+          onNewChat={() => {}}
+        />,
+      ),
+    );
+
+    await waitFor(() => expect(screen.getByText("hello")).toBeInTheDocument());
+    await act(async () => {
+      client._emitChat("chat-a", {
+        event: "message",
+        chat_id: "chat-a",
+        text: "live assistant reply",
+      });
+    });
+    expect(screen.getByText("live assistant reply")).toBeInTheDocument();
+
+    await act(async () => {
+      rerender(
+        wrap(
+          client,
+          <ThreadShell
+            session={null}
+            title="nanobot"
+            onToggleSidebar={() => {}}
+            onNewChat={() => {}}
+          />,
+        ),
+      );
+    });
+
+    expect(screen.queryByText("live assistant reply")).not.toBeInTheDocument();
+    expect(screen.getByText("What can I do for you?")).toBeInTheDocument();
+
+    await act(async () => {
+      rerender(
+        wrap(
+          client,
+          <ThreadShell
+            session={session("chat-a")}
+            title="Chat chat-a"
+            onToggleSidebar={() => {}}
+            onNewChat={() => {}}
+          />,
+        ),
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText("live assistant reply")).toBeInTheDocument());
+  });
+
+  it("does not open slash commands on the blank welcome page", async () => {
+    const client = makeClient();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/api/commands")) {
+          return httpJson({
+            commands: [
+              {
+                command: "/stop",
+                title: "Stop current task",
+                description: "Cancel the active agent turn.",
+                icon: "square",
+              },
+            ],
+          });
+        }
+        return {
+          ok: false,
+          status: 404,
+          json: async () => ({}),
+        };
+      }),
+    );
+
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={null}
+          title="nanobot"
+          onToggleSidebar={() => {}}
+          onNewChat={() => {}}
+        />,
+      ),
+    );
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith(
+      "/api/commands",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+      }),
+    ));
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "/" },
+    });
+
+    expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
+  });
+
   it("surfaces a dismissible banner when the stream reports message_too_big", async () => {
     const client = makeClient();
     const onNewChat = vi.fn().mockResolvedValue("chat-a");
@@ -374,6 +586,7 @@ describe("ThreadShell", () => {
     // No banner yet: only appears once the client emits a matching error.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
+    await act(async () => {});
     await act(async () => {
       client._emitError({ kind: "message_too_big" });
     });
@@ -405,6 +618,7 @@ describe("ThreadShell", () => {
       ),
     );
 
+    await act(async () => {});
     await act(async () => {
       client._emitError({ kind: "message_too_big" });
     });
