@@ -1089,8 +1089,8 @@ class WebSocketChannel(BaseChannel):
         finally:
             self._cleanup_connection(connection)
 
-    @staticmethod
     def _save_envelope_media(
+        self,
         media: list[Any],
     ) -> tuple[list[str], str | None]:
         """Decode and persist ``media`` items from a ``message`` envelope.
