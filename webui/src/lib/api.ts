@@ -1,4 +1,11 @@
-import type { ChatSummary, SettingsPayload, SettingsUpdate, SlashCommand } from "./types";
+import type {
+  ChatSummary,
+  ProviderSettingsUpdate,
+  SettingsPayload,
+  SettingsUpdate,
+  SlashCommand,
+  WebSearchSettingsUpdate,
+} from "./types";
 
 export class ApiError extends Error {
   status: number;
@@ -126,13 +133,15 @@ export async function listSlashCommands(
     arg_hint?: string;
   };
   const body = await request<{ commands: Row[] }>(`${base}/api/commands`, token);
-  return body.commands.map((command) => ({
-    command: command.command,
-    title: command.title,
-    description: command.description,
-    icon: command.icon,
-    argHint: command.arg_hint ?? "",
-  }));
+  return body.commands
+    .filter((command) => !["/stop", "/restart"].includes(command.command))
+    .map((command) => ({
+      command: command.command,
+      title: command.title,
+      description: command.description,
+      icon: command.icon,
+      argHint: command.arg_hint ?? "",
+    }));
 }
 
 export async function updateSettings(
@@ -144,4 +153,34 @@ export async function updateSettings(
   if (update.model !== undefined) query.set("model", update.model);
   if (update.provider !== undefined) query.set("provider", update.provider);
   return request<SettingsPayload>(`${base}/api/settings/update?${query}`, token);
+}
+
+export async function updateProviderSettings(
+  token: string,
+  update: ProviderSettingsUpdate,
+  base: string = "",
+): Promise<SettingsPayload> {
+  const query = new URLSearchParams();
+  query.set("provider", update.provider);
+  if (update.apiKey !== undefined) query.set("api_key", update.apiKey);
+  if (update.apiBase !== undefined) query.set("api_base", update.apiBase);
+  return request<SettingsPayload>(
+    `${base}/api/settings/provider/update?${query}`,
+    token,
+  );
+}
+
+export async function updateWebSearchSettings(
+  token: string,
+  update: WebSearchSettingsUpdate,
+  base: string = "",
+): Promise<SettingsPayload> {
+  const query = new URLSearchParams();
+  query.set("provider", update.provider);
+  if (update.apiKey !== undefined) query.set("api_key", update.apiKey);
+  if (update.baseUrl !== undefined) query.set("base_url", update.baseUrl);
+  return request<SettingsPayload>(
+    `${base}/api/settings/web-search/update?${query}`,
+    token,
+  );
 }

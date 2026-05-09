@@ -102,4 +102,27 @@ describe("MessageBubble", () => {
     expect(video).toHaveAttribute("src", "/api/media/sig/payload");
     expect(container.querySelector("video[controls]")).toBeInTheDocument();
   });
+
+  it("renders assistant image media as a larger generated result", () => {
+    const message: UIMessage = {
+      id: "a-image",
+      role: "assistant",
+      content: "done",
+      createdAt: Date.now(),
+      media: [
+        {
+          kind: "image",
+          url: "/api/media/sig/image",
+          name: "generated.png",
+        },
+      ],
+    };
+
+    const { container } = render(<MessageBubble message={message} />);
+
+    const imageButton = screen.getByRole("button", { name: /view image/i });
+    expect(imageButton).toHaveClass("w-[min(100%,34rem)]", "rounded-[20px]");
+    expect(imageButton).not.toHaveAttribute("title");
+    expect(container.querySelector("img")).toHaveClass("h-auto", "w-full", "object-contain");
+  });
 });

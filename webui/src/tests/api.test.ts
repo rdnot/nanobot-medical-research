@@ -5,7 +5,9 @@ import {
   fetchSessionMessages,
   listSessions,
   listSlashCommands,
+  updateProviderSettings,
   updateSettings,
+  updateWebSearchSettings,
 } from "@/lib/api";
 
 describe("webui API helpers", () => {
@@ -55,6 +57,35 @@ describe("webui API helpers", () => {
     );
   });
 
+  it("serializes provider settings updates without returning secrets", async () => {
+    await updateProviderSettings("tok", {
+      provider: "openrouter",
+      apiKey: "sk-or-test",
+      apiBase: "https://openrouter.ai/api/v1",
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/provider/update?provider=openrouter&api_key=sk-or-test&api_base=https%3A%2F%2Fopenrouter.ai%2Fapi%2Fv1",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
+  it("serializes web search settings updates", async () => {
+    await updateWebSearchSettings("tok", {
+      provider: "searxng",
+      baseUrl: "https://search.example.com",
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/settings/web-search/update?provider=searxng&base_url=https%3A%2F%2Fsearch.example.com",
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+      }),
+    );
+  });
+
   it("maps generated session titles from the sessions list", async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
@@ -84,6 +115,18 @@ describe("webui API helpers", () => {
       ok: true,
       json: async () => ({
         commands: [
+          {
+            command: "/stop",
+            title: "Stop current task",
+            description: "Cancel the active task.",
+            icon: "square",
+          },
+          {
+            command: "/restart",
+            title: "Restart nanobot",
+            description: "Restart the bot process.",
+            icon: "rotate-cw",
+          },
           {
             command: "/history",
             title: "Show conversation history",

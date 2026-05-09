@@ -9,6 +9,15 @@
       "title": "无法连接到 nanobot",
       "gatewayHint": "请确认 gateway 已启动（`nanobot gateway`），并且当前页面与 gateway 运行在同一台机器上。"
     },
+    "system": {
+      "section": "系统",
+      "restartHint": "重启 nanobot 以应用运行时更改。",
+      "restart": "重启 nanobot",
+      "restarting": "正在重启..."
+    },
+    "restart": {
+      "completed": "重启已完成，用时 {{seconds}} 秒。"
+    },
     "documentTitle": {
       "base": "nanobot",
       "chat": "{{title}} · nanobot"
@@ -36,6 +45,96 @@
       "ariaLabel": "切换语言"
     }
   },
+  "settings": {
+    "backToChat": "返回对话",
+    "sidebar": {
+      "title": "设置",
+      "ariaLabel": "设置分区"
+    },
+    "nav": {
+      "general": "通用",
+      "byok": "BYOK"
+    },
+    "sections": {
+      "interface": "界面",
+      "ai": "AI",
+      "system": "系统"
+    },
+    "rows": {
+      "theme": "主题",
+      "language": "语言",
+      "provider": "提供商",
+      "model": "模型",
+      "restart": "重启 nanobot",
+      "configPath": "配置路径"
+    },
+    "help": {
+      "theme": "在浅色和深色外观之间切换。",
+      "language": "选择 WebUI 使用的语言。",
+      "provider": "选择新模型请求使用的服务提供商。",
+      "model": "设置 nanobot 默认使用的模型名称。",
+      "configPath": "当前网关正在使用的配置文件。"
+    },
+    "values": {
+      "light": "浅色",
+      "dark": "深色",
+      "notAvailable": "不可用"
+    },
+    "status": {
+      "loading": "正在加载设置...",
+      "loadError": "无法加载设置",
+      "unsaved": "有未保存的更改。",
+      "savedRestart": "已保存。重启 nanobot 后生效。"
+    },
+    "actions": {
+      "save": "保存",
+      "saving": "保存中",
+      "edit": "编辑",
+      "cancel": "取消"
+    },
+    "byok": {
+      "description": "自带 provider key。Nanobot 会从当前 config 读取这些值，只有已配置的 provider 才能在通用设置里选择。",
+      "configured": "已配置",
+      "notConfigured": "未配置",
+      "configuredSection": "已配置",
+      "notConfiguredSection": "未配置",
+      "showMore": "再显示 {{count}} 个",
+      "showLess": "收起",
+      "apiKey": "API key",
+      "apiBase": "API base",
+      "apiKeyPlaceholder": "输入 API key",
+      "apiKeyConfiguredPlaceholder": "留空则保留当前 key",
+      "configuredKeyHint": "已配置的 key",
+      "apiBasePlaceholder": "使用 provider 默认地址",
+      "apiKeyRequired": "需要 API key 才能配置此 provider。",
+      "showApiKey": "显示 API key",
+      "hideApiKey": "隐藏 API key",
+      "noConfiguredProviders": "没有已配置的 provider",
+      "configureFirst": "请先在 BYOK 里配置 provider。",
+      "openByok": "打开 BYOK",
+      "tabs": {
+        "ariaLabel": "BYOK 凭证类型",
+        "llm": "LLM",
+        "webSearch": "Web Search"
+      },
+      "webSearch": {
+        "provider": "搜索 provider",
+        "providerHelp": "选择 web search 工具使用的后端。",
+        "selectProvider": "选择 provider",
+        "credentials": "凭证",
+        "noCredentialRequired": "无需 key",
+        "noCredentialHelp": "DuckDuckGo 不需要保存 API key。",
+        "apiKeyHelp": "保存到 config 后只显示掩码提示。",
+        "baseUrl": "Base URL",
+        "baseUrlHelp": "SearXNG 需要你自己的实例地址。",
+        "baseUrlPlaceholder": "https://search.example.com",
+        "apiKeyRequired": "这个搜索 provider 需要 API key。",
+        "baseUrlRequired": "SearXNG 需要 Base URL。",
+        "missingCredential": "填写所需凭证后才能保存。",
+        "saveHint": "改动会应用到新的 web search 请求。"
+      }
+    }
+  },
   "chat": {
     "fallbackTitle": "对话 {{id}}",
     "loading": "加载中…",
@@ -50,8 +149,8 @@
     }
   },
   "deleteConfirm": {
-    "title": "删除“{{title}}”？",
-    "description": "这个会话文件会从磁盘中删除，且无法撤销。",
+    "title": "删除这个对话？",
+    "description": "此操作无法撤销。",
     "cancel": "取消",
     "confirm": "删除"
   },
@@ -92,6 +191,32 @@
           "title": "更多",
           "prompt": "展示几个你在这个工作区里可以帮我的实用方式。"
         }
+      },
+      "imageQuickActions": {
+        "icon": {
+          "title": "设计应用图标",
+          "prompt": "生成一个干净的 1:1 nanobot 应用图标：友好的机器人，简洁矢量风格，蓝白柔和配色，不要文字。"
+        },
+        "sticker": {
+          "title": "制作贴纸",
+          "prompt": "生成一张可爱的贴纸风小机器人助手图片，背景像透明贴纸，表情活泼有趣。"
+        },
+        "poster": {
+          "title": "创建海报",
+          "prompt": "生成一张个人 AI 助手的精致海报概念图，现代构图，视觉层级清晰，适合落地页展示。"
+        },
+        "product": {
+          "title": "产品样机",
+          "prompt": "生成一张对话式 AI Web 应用的干净产品样机图，极简界面，高级光影，真实设备边框。"
+        },
+        "portrait": {
+          "title": "风格化头像",
+          "prompt": "生成一个友好的 AI 伙伴风格化头像，柔和光线，细节丰富但亲切，现代插画风格。"
+        },
+        "edit": {
+          "title": "编辑图片",
+          "prompt": "帮我编辑一张图片。先让我上传或指定要编辑的图片，然后生成编辑后的结果。"
+        }
       }
     },
     "header": {
@@ -108,7 +233,23 @@
       "inputAria": "消息输入框",
       "sendHint": "Enter 发送 · Shift+Enter 换行",
       "send": "发送消息",
+      "stop": "停止响应",
       "attachImage": "添加图片",
+      "imageMode": {
+        "label": "图片生成",
+        "toggle": "切换图片生成模式",
+        "placeholder": "描述或编辑图片…",
+        "aspectAria": "图片画幅",
+        "aspectLabel": "图片画幅",
+        "aspect": {
+          "auto": "自动",
+          "1_1": "方形 1:1",
+          "3_4": "竖版 3:4",
+          "9_16": "故事版 9:16",
+          "4_3": "横版 4:3",
+          "16_9": "宽屏 16:9"
+        }
+      },
       "tools": {
         "search": "搜索",
         "reason": "推理",

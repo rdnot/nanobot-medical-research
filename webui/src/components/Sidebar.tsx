@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import {
-  PanelLeftClose,
+  Menu,
   Search,
+  Settings,
   SquarePen,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -20,6 +21,7 @@ interface SidebarProps {
   onNewChat: () => void;
   onSelect: (key: string) => void;
   onRequestDelete: (key: string, label: string) => void;
+  onOpenSettings: () => void;
   onCollapse: () => void;
 }
 
@@ -65,7 +67,7 @@ export function Sidebar(props: SidebarProps) {
           onClick={props.onCollapse}
           className="h-7 w-7 rounded-lg text-muted-foreground/85 hover:bg-sidebar-accent/75 hover:text-sidebar-foreground"
         >
-          <PanelLeftClose className="h-3.5 w-3.5" />
+          <Menu className="h-3.5 w-3.5" />
         </Button>
       </div>
 
@@ -113,7 +115,16 @@ export function Sidebar(props: SidebarProps) {
         />
       </div>
       <Separator className="bg-sidebar-border/50" />
-      <div className="flex items-center px-2.5 py-2.5 text-xs">
+      <div className="space-y-1 px-2.5 py-2.5 text-xs">
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={props.onOpenSettings}
+          className="h-8 w-full justify-start gap-2 rounded-full px-2.5 text-[12.5px] font-medium text-sidebar-foreground/85 hover:bg-sidebar-accent/75 hover:text-sidebar-foreground"
+        >
+          <Settings className="h-3.5 w-3.5" aria-hidden />
+          {t("sidebar.settings")}
+        </Button>
         <ConnectionBadge />
       </div>
     </nav>
