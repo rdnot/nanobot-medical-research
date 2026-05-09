@@ -17,7 +17,7 @@ import {
   saveSecret,
 } from "@/lib/bootstrap";
 import { NanobotClient } from "@/lib/nanobot-client";
-import { ClientProvider } from "@/providers/ClientProvider";
+import { ClientProvider, useClient } from "@/providers/ClientProvider";
 import type { ChatSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +34,7 @@ type BootState =
     };
 
 const SIDEBAR_STORAGE_KEY = "nanobot-webui.sidebar";
+const RESTART_STARTED_KEY = "nanobot-webui.restartStartedAt";
 const SIDEBAR_WIDTH = 272;
 type ShellView = "chat" | "settings";
 
@@ -237,6 +238,7 @@ export default function App() {
 
 function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName: string | null) => void; onLogout: () => void }) {
   const { t, i18n } = useTranslation();
+  const { client } = useClient();
   const { theme, toggle } = useTheme();
   const { sessions, loading, refresh, createChat, deleteChat } = useSessions();
   const [activeKey, setActiveKey] = useState<string | null>(null);
@@ -249,6 +251,9 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
     label: string;
   } | null>(null);
   const lastSessionsLen = useRef(0);
+  const restartSawDisconnectRef = useRef(false);
+  const [restartToast, setRestartToast] = useState<string | null>(null);
+  const [isRestarting, setIsRestarting] = useState(false);
 
   useEffect(() => {
     try {
@@ -326,6 +331,56 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
     setMobileSidebarOpen(false);
   }, []);
 
+  const onBackToChat = useCallback(() => {
+    setView("chat");
+    setMobileSidebarOpen(false);
+    setActiveKey((current) => {
+      if (current && sessions.some((session) => session.key === current)) {
+        return current;
+      }
+      return sessions[0]?.key ?? null;
+    });
+  }, [sessions]);
+
+  const onRestart = useCallback(() => {
+    const chatId = activeSession?.chatId ?? client.defaultChatId;
+    if (!chatId) return;
+    restartSawDisconnectRef.current = false;
+    setIsRestarting(true);
+    try {
+      window.localStorage.setItem(RESTART_STARTED_KEY, String(Date.now()));
+    } catch {
+      // ignore storage errors
+    }
+    client.sendMessage(chatId, "/restart");
+  }, [activeSession?.chatId, client]);
+
+  useEffect(() => {
+    return client.onStatus((status) => {
+      let startedAt = 0;
+      try {
+        startedAt = Number(window.localStorage.getItem(RESTART_STARTED_KEY) ?? "0");
+      } catch {
+        startedAt = 0;
+      }
+      if (!startedAt) return;
+      if (status !== "open") {
+        restartSawDisconnectRef.current = true;
+        return;
+      }
+      const elapsedMs = Date.now() - startedAt;
+      if (!restartSawDisconnectRef.current && elapsedMs < 1500) return;
+      try {
+        window.localStorage.removeItem(RESTART_STARTED_KEY);
+      } catch {
+        // ignore storage errors
+      }
+      setIsRestarting(false);
+      setRestartToast(t("app.restart.completed", { seconds: (elapsedMs / 1000).toFixed(1) }));
+      window.setTimeout(() => setRestartToast(null), 3_500);
+    });
+  }, [client, t]);
+
   const onTurnEnd = useCallback(() => {
     void refresh();
   }, [refresh]);
@@ -355,10 +410,16 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
     : t("app.brand");
 
   useEffect(() => {
+    if (view === "settings") {
+      document.title = t("app.documentTitle.chat", {
+        title: t("settings.sidebar.title"),
+      });
+      return;
+    }
     document.title = activeSession
       ? t("app.documentTitle.chat", { title: headerTitle })
       : t("app.documentTitle.base");
-  }, [activeSession, headerTitle, i18n.resolvedLanguage, t]);
+  }, [activeSession, headerTitle, i18n.resolvedLanguage, t, view]);
 
   const sidebarProps = {
     sessions,
@@ -368,52 +429,60 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
     onSelect: onSelectChat,
     onRequestDelete: (key: string, label: string) =>
       setPendingDelete({ key, label }),
+    onOpenSettings,
   };
+  const showMainSidebar = view !== "settings";
 
   return (
     <div className="relative flex h-full w-full overflow-hidden">
       {/* Desktop sidebar: in normal flow, so the thread area width stays honest. */}
-      <aside
-        className={cn(
-          "relative z-20 hidden shrink-0 overflow-hidden lg:block",
-          "transition-[width] duration-300 ease-out",
-        )}
-        style={{ width: desktopSidebarOpen ? SIDEBAR_WIDTH : 0 }}
-      >
-        <div
+      {showMainSidebar ? (
+        <aside
           className={cn(
-            "absolute inset-y-0 left-0 h-full overflow-hidden bg-sidebar shadow-inner-right",
-            "transition-transform duration-300 ease-out",
-            desktopSidebarOpen ? "translate-x-0" : "-translate-x-full",
+            "relative z-20 hidden shrink-0 overflow-hidden lg:block",
+            "transition-[width] duration-300 ease-out",
           )}
-          style={{ width: SIDEBAR_WIDTH }}
+          style={{ width: desktopSidebarOpen ? SIDEBAR_WIDTH : 0 }}
         >
-          <Sidebar {...sidebarProps} onCollapse={closeDesktopSidebar} />
-        </div>
-      </aside>
+          <div
+            className={cn(
+              "absolute inset-y-0 left-0 h-full overflow-hidden bg-sidebar shadow-inner-right",
+              "transition-transform duration-300 ease-out",
+              desktopSidebarOpen ? "translate-x-0" : "-translate-x-full",
+            )}
+            style={{ width: SIDEBAR_WIDTH }}
+          >
+            <Sidebar {...sidebarProps} onCollapse={closeDesktopSidebar} />
+          </div>
+        </aside>
+      ) : null}
 
-      <Sheet
-        open={mobileSidebarOpen}
-        onOpenChange={(open) => setMobileSidebarOpen(open)}
-      >
-        <SheetContent
-          side="left"
-          showCloseButton={false}
-          className="p-0 lg:hidden"
-          style={{ width: SIDEBAR_WIDTH, maxWidth: SIDEBAR_WIDTH }}
+      {showMainSidebar ? (
+        <Sheet
+          open={mobileSidebarOpen}
+          onOpenChange={(open) => setMobileSidebarOpen(open)}
         >
-          <Sidebar {...sidebarProps} onCollapse={closeMobileSidebar} />
-        </SheetContent>
-      </Sheet>
+          <SheetContent
+            side="left"
+            showCloseButton={false}
+            className="p-0 lg:hidden"
+            style={{ width: SIDEBAR_WIDTH, maxWidth: SIDEBAR_WIDTH }}
+          >
+            <Sidebar {...sidebarProps} onCollapse={closeMobileSidebar} />
+          </SheetContent>
+        </Sheet>
+      ) : null}
 
       <main className="flex h-full min-w-0 flex-1 flex-col">
         {view === "settings" ? (
           <SettingsView
             theme={theme}
             onToggleTheme={toggle}
-            onBackToChat={() => setView("chat")}
+            onBackToChat={onBackToChat}
             onModelNameChange={onModelNameChange}
             onLogout={onLogout}
+            onRestart={onRestart}
+            isRestarting={isRestarting}
           />
         ) : (
           <ThreadShell
@@ -425,7 +494,6 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
             onTurnEnd={onTurnEnd}
             theme={theme}
             onToggleTheme={toggle}
-            onOpenSettings={onOpenSettings}
             hideSidebarToggleOnDesktop={desktopSidebarOpen}
           />
         )}
@@ -437,6 +505,14 @@ function Shell({ onModelNameChange, onLogout }: { onModelNameChange: (modelName:
         onCancel={() => setPendingDelete(null)}
         onConfirm={onConfirmDelete}
       />
+      {restartToast ? (
+        <div
+          role="status"
+          className="fixed left-1/2 top-4 z-50 -translate-x-1/2 rounded-full border border-border/70 bg-popover px-4 py-2 text-sm font-medium text-popover-foreground shadow-lg"
+        >
+          {restartToast}
+        </div>
+      ) : null}
     </div>
   );
 }

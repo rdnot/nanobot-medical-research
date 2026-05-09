@@ -21,6 +21,15 @@
       "logoutHint": "Disconnect this browser from the gateway.",
       "logout": "Sign out"
     },
+    "system": {
+      "section": "System",
+      "restartHint": "Restart nanobot to apply runtime changes.",
+      "restart": "Restart nanobot",
+      "restarting": "Restarting..."
+    },
+    "restart": {
+      "completed": "Restart completed in {{seconds}}s."
+    },
     "documentTitle": {
       "base": "nanobot",
       "chat": "{{title}} · nanobot"
@@ -48,6 +57,96 @@
       "ariaLabel": "Change language"
     }
   },
+  "settings": {
+    "backToChat": "Back to chat",
+    "sidebar": {
+      "title": "Settings",
+      "ariaLabel": "Settings sections"
+    },
+    "nav": {
+      "general": "General",
+      "byok": "BYOK"
+    },
+    "sections": {
+      "interface": "Interface",
+      "ai": "AI",
+      "system": "System"
+    },
+    "rows": {
+      "theme": "Theme",
+      "language": "Language",
+      "provider": "Provider",
+      "model": "Model",
+      "restart": "Restart nanobot",
+      "configPath": "Config path"
+    },
+    "help": {
+      "theme": "Switch between light and dark appearance.",
+      "language": "Choose the language used by the WebUI.",
+      "provider": "Select the provider that should serve new model requests.",
+      "model": "Set the default model name used by nanobot.",
+      "configPath": "The gateway configuration file currently in use."
+    },
+    "values": {
+      "light": "Light",
+      "dark": "Dark",
+      "notAvailable": "Not available"
+    },
+    "status": {
+      "loading": "Loading settings...",
+      "loadError": "Could not load settings",
+      "unsaved": "Unsaved changes.",
+      "savedRestart": "Saved. Restart nanobot to apply."
+    },
+    "actions": {
+      "save": "Save",
+      "saving": "Saving",
+      "edit": "Edit",
+      "cancel": "Cancel"
+    },
+    "byok": {
+      "description": "Bring your own provider keys. Nanobot reads these values from the current config and only configured providers can be selected in General.",
+      "configured": "Configured",
+      "notConfigured": "Not configured",
+      "configuredSection": "Configured",
+      "notConfiguredSection": "Not configured",
+      "showMore": "Show {{count}} more",
+      "showLess": "Show fewer",
+      "apiKey": "API key",
+      "apiBase": "API base",
+      "apiKeyPlaceholder": "Enter API key",
+      "apiKeyConfiguredPlaceholder": "Leave blank to keep the current key",
+      "configuredKeyHint": "Configured key",
+      "apiBasePlaceholder": "Use provider default",
+      "apiKeyRequired": "API key is required to configure this provider.",
+      "showApiKey": "Show API key",
+      "hideApiKey": "Hide API key",
+      "noConfiguredProviders": "No configured providers",
+      "configureFirst": "Configure a provider in BYOK first.",
+      "openByok": "Open BYOK",
+      "tabs": {
+        "ariaLabel": "BYOK credential type",
+        "llm": "LLM",
+        "webSearch": "Web Search"
+      },
+      "webSearch": {
+        "provider": "Search provider",
+        "providerHelp": "Choose the backend used by the web search tool.",
+        "selectProvider": "Select provider",
+        "credentials": "Credentials",
+        "noCredentialRequired": "No key required",
+        "noCredentialHelp": "DuckDuckGo works without a saved API key.",
+        "apiKeyHelp": "Stored in config and masked after saving.",
+        "baseUrl": "Base URL",
+        "baseUrlHelp": "SearXNG needs the URL of your own instance.",
+        "baseUrlPlaceholder": "https://search.example.com",
+        "apiKeyRequired": "API key is required for this search provider.",
+        "baseUrlRequired": "Base URL is required for SearXNG.",
+        "missingCredential": "Add the required credential before saving.",
+        "saveHint": "Changes apply to new web search requests."
+      }
+    }
+  },
   "chat": {
     "fallbackTitle": "Chat {{id}}",
     "loading": "Loading…",
@@ -62,8 +161,8 @@
     }
   },
   "deleteConfirm": {
-    "title": "Delete “{{title}}”?",
-    "description": "The session file will be removed from disk. This cannot be undone.",
+    "title": "Delete this chat?",
+    "description": "This action cannot be undone.",
     "cancel": "Cancel",
     "confirm": "Delete"
   },
@@ -104,6 +203,32 @@
           "title": "More",
           "prompt": "Show me a few useful ways you can help in this workspace."
         }
+      },
+      "imageQuickActions": {
+        "icon": {
+          "title": "Design an app icon",
+          "prompt": "Generate a clean 1:1 app icon for nanobot: friendly robot, simple vector style, soft blue and white palette, no text."
+        },
+        "sticker": {
+          "title": "Make a sticker",
+          "prompt": "Generate a cute sticker-style image of a tiny robot assistant, transparent-looking background, expressive and playful."
+        },
+        "poster": {
+          "title": "Create a poster",
+          "prompt": "Generate a polished poster concept for a personal AI assistant, modern composition, strong visual hierarchy, suitable for a landing page."
+        },
+        "product": {
+          "title": "Product mockup",
+          "prompt": "Generate a clean product mockup image for a conversational AI web app, minimal interface, premium lighting, realistic device frame."
+        },
+        "portrait": {
+          "title": "Stylized portrait",
+          "prompt": "Generate a stylized portrait of a friendly AI companion, soft lighting, detailed but approachable, modern illustration style."
+        },
+        "edit": {
+          "title": "Edit an image",
+          "prompt": "Help me edit an image. Ask me to upload or reference the image first, then generate the edited result."
+        }
       }
     },
     "header": {
@@ -120,7 +245,23 @@
       "inputAria": "Message input",
       "sendHint": "Enter to send · Shift+Enter for newline",
       "send": "Send message",
+      "stop": "Stop response",
       "attachImage": "Attach image",
+      "imageMode": {
+        "label": "Image Generation",
+        "toggle": "Toggle image generation mode",
+        "placeholder": "Describe or edit an image…",
+        "aspectAria": "Image aspect ratio",
+        "aspectLabel": "Image aspect",
+        "aspect": {
+          "auto": "Auto",
+          "1_1": "Square 1:1",
+          "3_4": "Portrait 3:4",
+          "9_16": "Story 9:16",
+          "4_3": "Landscape 4:3",
+          "16_9": "Wide 16:9"
+        }
+      },
       "tools": {
         "search": "Search",
         "reason": "Reason",

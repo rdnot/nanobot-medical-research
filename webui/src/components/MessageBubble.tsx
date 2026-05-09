@@ -73,7 +73,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           <p
             className={cn(
               "ml-auto w-fit rounded-[18px] bg-secondary/70 px-4 py-2",
-              "text-left text-[18px]/[1.8] whitespace-pre-wrap break-words",
+              "text-left text-[16px]/[1.75] whitespace-pre-wrap break-words",
             )}
           >
             {message.content}
@@ -87,7 +87,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   const media = message.media ?? [];
   const showAssistantActions = message.role === "assistant" && !message.isStreaming && !empty;
   return (
-    <div className={cn("w-full text-sm", baseAnim)} style={{ lineHeight: "var(--cjk-line-height)" }}>
+    <div className={cn("w-full text-[15px]", baseAnim)} style={{ lineHeight: "var(--cjk-line-height)" }}>
       {empty && message.isStreaming ? (
         <TypingDots />
       ) : (
@@ -142,7 +142,9 @@ function MessageMedia({
         align === "right" ? "justify-end" : "justify-start",
       )}
     >
-      {images.length > 0 ? <UserImages images={images} align={align} /> : null}
+      {images.length > 0 ? (
+        <UserImages images={images} align={align} size={align === "left" ? "large" : "compact"} />
+      ) : null}
       {nonImages.map((item, i) => (
         <MediaCell key={`${item.url ?? item.name ?? item.kind}-${i}`} media={item} />
       ))}
@@ -208,9 +210,11 @@ function MediaCell({ media }: { media: UIMediaAttachment }) {
 function UserImages({
   images,
   align = "right",
+  size = "compact",
 }: {
   images: UIImage[];
   align?: "left" | "right";
+  size?: "compact" | "large";
 }) {
   const { t } = useTranslation();
   // Only real-URL images can open in the lightbox; historical-replay
@@ -230,6 +234,7 @@ function UserImages({
       <div
         className={cn(
           "flex flex-wrap items-end gap-2",
+          size === "large" && "gap-3",
           align === "right" ? "ml-auto justify-end" : "mr-auto justify-start",
         )}
       >
@@ -237,6 +242,7 @@ function UserImages({
           <UserImageCell
             key={`${img.url ?? "placeholder"}-${i}`}
             image={img}
+            size={size}
             placeholderLabel={t("message.imageAttachment")}
             openLabel={t("lightbox.open")}
             onOpen={
@@ -261,18 +267,23 @@ function UserImages({
 
 function UserImageCell({
   image,
+  size,
   placeholderLabel,
   openLabel,
   onOpen,
 }: {
   image: UIImage;
+  size: "compact" | "large";
   placeholderLabel: string;
   openLabel: string;
   onOpen?: () => void;
 }) {
   const hasUrl = typeof image.url === "string" && image.url.length > 0;
   const tileClasses = cn(
-    "relative h-24 w-24 overflow-hidden rounded-[14px] border border-border/60 bg-muted/40",
+    "relative overflow-hidden border border-border/60 bg-muted/40",
+    size === "large"
+      ? "w-[min(100%,34rem)] rounded-[20px] bg-transparent"
+      : "h-24 w-24 rounded-[14px]",
     "shadow-[0_6px_18px_-14px_rgba(0,0,0,0.45)]",
   );
 
@@ -282,11 +293,10 @@ function UserImageCell({
         type="button"
         onClick={onOpen}
         aria-label={image.name ? `${openLabel}: ${image.name}` : openLabel}
-        title={image.name ?? undefined}
         className={cn(
           tileClasses,
-          "cursor-zoom-in transition-transform duration-150 motion-reduce:transition-none",
-          "hover:scale-[1.02] hover:ring-2 hover:ring-primary/30",
+          "block cursor-zoom-in p-0 transition-transform duration-150 motion-reduce:transition-none",
+          "hover:scale-[1.01] hover:ring-2 hover:ring-primary/25",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
         )}
       >
@@ -296,7 +306,12 @@ function UserImageCell({
           loading="lazy"
           decoding="async"
           draggable={false}
-          className="h-full w-full object-cover"
+          className={cn(
+            "block",
+            size === "large"
+              ? "h-auto max-h-[36rem] w-full rounded-[inherit] object-contain"
+              : "h-full w-full object-cover",
+          )}
         />
       </button>
     );

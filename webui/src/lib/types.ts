@@ -77,7 +77,21 @@ export interface SettingsPayload {
   providers: Array<{
     name: string;
     label: string;
+    configured: boolean;
+    api_key_hint?: string | null;
+    api_base?: string | null;
+    default_api_base?: string | null;
   }>;
+  web_search: {
+    provider: string;
+    api_key_hint?: string | null;
+    base_url?: string | null;
+    providers: Array<{
+      name: string;
+      label: string;
+      credential: "none" | "api_key" | "base_url";
+    }>;
+  };
   runtime: {
     config_path: string;
   };
@@ -87,6 +101,18 @@ export interface SettingsPayload {
 export interface SettingsUpdate {
   model?: string;
   provider?: string;
+}
+
+export interface ProviderSettingsUpdate {
+  provider: string;
+  apiKey?: string;
+  apiBase?: string;
+}
+
+export interface WebSearchSettingsUpdate {
+  provider: string;
+  apiKey?: string;
+  baseUrl?: string;
 }
 
 export interface SlashCommand {
@@ -150,6 +176,11 @@ export interface OutboundMedia {
   name?: string;
 }
 
+export interface OutboundImageGeneration {
+  enabled: true;
+  aspect_ratio?: string | null;
+}
+
 export type Outbound =
   | { type: "new_chat" }
   | { type: "attach"; chat_id: string }
@@ -158,6 +189,7 @@ export type Outbound =
       chat_id: string;
       content: string;
       media?: OutboundMedia[];
+      image_generation?: OutboundImageGeneration;
       /** Marks messages sent by the embedded WebUI, without changing the
        * generic websocket protocol for other clients. */
       webui?: true;

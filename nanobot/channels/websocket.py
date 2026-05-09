@@ -171,7 +171,7 @@ def _parse_request_path(path_with_query: str) -> tuple[str, dict[str, list[str]]
     """Parse normalized path and query parameters in one pass."""
     parsed = urlparse("ws://x" + path_with_query)
     path = _strip_trailing_slash(parsed.path or "/")
-    return path, parse_qs(parsed.query)
+    return path, parse_qs(parsed.query, keep_blank_values=True)
 
 
 def _normalize_http_path(path_with_query: str) -> str:
@@ -187,6 +187,28 @@ def _query_first(query: dict[str, list[str]], key: str) -> str | None:
     """Return the first value for *key*, or None."""
     values = query.get(key)
     return values[0] if values else None
+
+
+def _mask_secret_hint(secret: str | None) -> str | None:
+    if not secret:
+        return None
+    if len(secret) <= 8:
+        return "••••"
+    return f"{secret[:4]}••••{secret[-4:]}"
+
+
+_WEB_SEARCH_PROVIDER_OPTIONS: tuple[dict[str, str], ...] = (
+    {"name": "duckduckgo", "label": "DuckDuckGo", "credential": "none"},
+    {"name": "brave", "label": "Brave Search", "credential": "api_key"},
+    {"name": "tavily", "label": "Tavily", "credential": "api_key"},
+    {"name": "searxng", "label": "SearXNG", "credential": "base_url"},
+    {"name": "jina", "label": "Jina", "credential": "api_key"},
+    {"name": "kagi", "label": "Kagi", "credential": "api_key"},
+    {"name": "olostep", "label": "Olostep", "credential": "api_key"},
+)
+_WEB_SEARCH_PROVIDER_BY_NAME = {
+    provider["name"]: provider for provider in _WEB_SEARCH_PROVIDER_OPTIONS
+}
 
 
 def _parse_inbound_payload(raw: str) -> str | None:
@@ -560,6 +582,12 @@ class WebSocketChannel(BaseChannel):
         if got == "/api/settings/update":
             return self._handle_settings_update(request)
 
+        if got == "/api/settings/provider/update":
+            return self._handle_settings_provider_update(request)
+
+        if got == "/api/settings/web-search/update":
+            return self._handle_settings_web_search_update(request)
+
         m = re.match(r"^/api/sessions/([^/]+)/messages$", got)
         if m:
             return self._handle_session_messages(request, m.group(1))
@@ -688,6 +716,27 @@ class WebSocketChannel(BaseChannel):
         if defaults.provider != "auto":
             spec = find_by_name(defaults.provider)
             selected_provider = spec.name if spec else provider_name
+        providers = []
+        for spec in PROVIDERS:
+            provider_config = getattr(config.providers, spec.name, None)
+            if provider_config is None or spec.is_oauth or spec.is_local:
+                continue
+            providers.append(
+                {
+                    "name": spec.name,
+                    "label": spec.label,
+                    "configured": bool(provider_config.api_key),
+                    "api_key_hint": _mask_secret_hint(provider_config.api_key),
+                    "api_base": provider_config.api_base,
+                    "default_api_base": spec.default_api_base or None,
+                }
+            )
+        search_config = config.tools.web.search
+        search_provider = (
+            search_config.provider
+            if search_config.provider in _WEB_SEARCH_PROVIDER_BY_NAME
+            else "duckduckgo"
+        )
         return {
             "agent": {
                 "model": defaults.model,
@@ -695,12 +744,13 @@ class WebSocketChannel(BaseChannel):
                 "resolved_provider": provider_name,
                 "has_api_key": bool(provider and provider.api_key),
             },
-            "providers": [
-                {"name": "auto", "label": "Auto"}
-            ] + [
-                {"name": spec.name, "label": spec.label}
-                for spec in PROVIDERS
-            ],
+            "providers": providers,
+            "web_search": {
+                "provider": search_provider,
+                "api_key_hint": _mask_secret_hint(search_config.api_key),
+                "base_url": search_config.base_url or None,
+                "providers": list(_WEB_SEARCH_PROVIDER_OPTIONS),
+            },
             "runtime": {
                 "config_path": str(get_config_path().expanduser()),
             },
@@ -739,16 +789,123 @@ class WebSocketChannel(BaseChannel):
 
         provider = _query_first(query, "provider")
         if provider is not None:
-            provider = provider.strip() or "auto"
-            if provider != "auto" and find_by_name(provider) is None:
+            provider = provider.strip()
+            if not provider:
+                return _http_error(400, "provider is required")
+            if find_by_name(provider) is None:
                 return _http_error(400, "unknown provider")
+            provider_config = getattr(config.providers, provider, None)
+            if provider_config is None or not provider_config.api_key:
+                return _http_error(400, "provider is not configured")
             if defaults.provider != provider:
                 defaults.provider = provider
                 changed = True
 
         if changed:
             save_config(config)
-        return _http_json_response(self._settings_payload(requires_restart=changed))
+        # LLM provider/model changes are hot-reloaded by AgentLoop before each
+        # new turn via the provider snapshot loader, so a restart is unnecessary.
+        return _http_json_response(self._settings_payload(requires_restart=False))
+
+    def _handle_settings_provider_update(self, request: WsRequest) -> Response:
+        if not self._check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        from nanobot.config.loader import load_config, save_config
+        from nanobot.providers.registry import find_by_name
+
+        query = _parse_query(request.path)
+        provider_name = (_query_first(query, "provider") or "").strip()
+        if not provider_name:
+            return _http_error(400, "provider is required")
+        spec = find_by_name(provider_name)
+        if spec is None or spec.is_oauth or spec.is_local:
+            return _http_error(400, "unknown provider")
+
+        config = load_config()
+        provider_config = getattr(config.providers, spec.name, None)
+        if provider_config is None:
+            return _http_error(400, "unknown provider")
+
+        changed = False
+        if "api_key" in query or "apiKey" in query:
+            api_key = _query_first(query, "api_key")
+            if api_key is None:
+                api_key = _query_first(query, "apiKey")
+            api_key = (api_key or "").strip() or None
+            if provider_config.api_key != api_key:
+                provider_config.api_key = api_key
+                changed = True
+
+        if "api_base" in query or "apiBase" in query:
+            api_base = _query_first(query, "api_base")
+            if api_base is None:
+                api_base = _query_first(query, "apiBase")
+            api_base = (api_base or "").strip() or None
+            if provider_config.api_base != api_base:
+                provider_config.api_base = api_base
+                changed = True
+
+        if changed:
+            save_config(config)
+        # API key/base changes are picked up by the next provider snapshot refresh.
+        return _http_json_response(self._settings_payload(requires_restart=False))
+
+    def _handle_settings_web_search_update(self, request: WsRequest) -> Response:
+        if not self._check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        from nanobot.config.loader import load_config, save_config
+
+        query = _parse_query(request.path)
+        provider_name = (_query_first(query, "provider") or "").strip().lower()
+        provider_option = _WEB_SEARCH_PROVIDER_BY_NAME.get(provider_name)
+        if provider_option is None:
+            return _http_error(400, "unknown web search provider")
+
+        config = load_config()
+        search_config = config.tools.web.search
+        previous_provider = search_config.provider
+        changed = False
+
+        def set_value(attr: str, value: str | None) -> None:
+            nonlocal changed
+            if getattr(search_config, attr) != value:
+                setattr(search_config, attr, value)
+                changed = True
+
+        if search_config.provider != provider_name:
+            search_config.provider = provider_name
+            changed = True
+
+        credential = provider_option["credential"]
+        if credential == "none":
+            set_value("api_key", "")
+            set_value("base_url", "")
+        elif credential == "base_url":
+            base_url = _query_first(query, "base_url")
+            if base_url is None:
+                base_url = _query_first(query, "baseUrl")
+            base_url = base_url.strip() if base_url is not None else None
+            if not base_url and previous_provider == provider_name and search_config.base_url:
+                base_url = search_config.base_url
+            if not base_url:
+                return _http_error(400, "base_url is required")
+            set_value("base_url", base_url)
+            set_value("api_key", "")
+        else:
+            api_key = _query_first(query, "api_key")
+            if api_key is None:
+                api_key = _query_first(query, "apiKey")
+            api_key = api_key.strip() if api_key is not None else None
+            if not api_key and previous_provider == provider_name and search_config.api_key:
+                api_key = search_config.api_key
+            if not api_key:
+                return _http_error(400, "api_key is required")
+            set_value("api_key", api_key)
+            set_value("base_url", "")
+
+        if changed:
+            save_config(config)
+        return _http_json_response(self._settings_payload(requires_restart=False))
 
     @staticmethod
     def _is_webui_session_key(key: str) -> bool:
@@ -1215,6 +1372,13 @@ class WebSocketChannel(BaseChannel):
             metadata: dict[str, Any] = {"remote": getattr(connection, "remote_address", None)}
             if envelope.get("webui") is True:
                 metadata["webui"] = True
+            image_generation = envelope.get("image_generation")
+            if isinstance(image_generation, dict) and image_generation.get("enabled") is True:
+                aspect_ratio = image_generation.get("aspect_ratio")
+                metadata["image_generation"] = {
+                    "enabled": True,
+                    "aspect_ratio": aspect_ratio if isinstance(aspect_ratio, str) else None,
+                }
             await self._handle_message(
                 sender_id=client_id,
                 chat_id=cid,
@@ -1258,7 +1422,14 @@ class WebSocketChannel(BaseChannel):
         # Snapshot the subscriber set so ConnectionClosed cleanups mid-iteration are safe.
         conns = list(self._subs.get(msg.chat_id, ()))
         if not conns:
-            self.logger.warning("no active subscribers for chat_id={}", msg.chat_id)
+            if (
+                msg.metadata.get("_progress")
+                or msg.metadata.get("_turn_end")
+                or msg.metadata.get("_session_updated")
+            ):
+                self.logger.debug("no active subscribers for chat_id={}", msg.chat_id)
+            else:
+                self.logger.warning("no active subscribers for chat_id={}", msg.chat_id)
             return
         # Signal that the agent has fully finished processing the current turn.
         if msg.metadata.get("_turn_end"):
