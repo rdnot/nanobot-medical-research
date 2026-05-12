@@ -18,7 +18,6 @@ from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.schema import IntegerSchema, StringSchema, tool_parameters_schema
 
 from nanobot.config.schema import Base
-from nanobot.utils.helpers import build_image_content_blocks
 
 if TYPE_CHECKING:
     from nanobot.config.schema import WebFetchConfig, WebSearchConfig
@@ -1197,9 +1196,6 @@ class WebFetchTool(Tool):
 
     config_key = "web"
 
-    def __init__(self, config: WebFetchConfig | None = None, proxy: str | None = None, user_agent: str | None = None, max_chars: int = 500000):
-        from nanobot.config.schema import WebFetchConfig
-
     @classmethod
     def config_cls(cls):
         return WebToolsConfig
@@ -1216,7 +1212,7 @@ class WebFetchTool(Tool):
             user_agent=ctx.config.web.user_agent,
         )
 
-    def __init__(self, config: WebFetchConfig | None = None, proxy: str | None = None, user_agent: str | None = None, max_chars: int = 50000):
+    def __init__(self, config: WebFetchConfig | None = None, proxy: str | None = None, user_agent: str | None = None, max_chars: int = 500000):
         self.config = config if config is not None else WebFetchConfig()
         self.proxy = proxy
         self.user_agent = user_agent or _DEFAULT_USER_AGENT
