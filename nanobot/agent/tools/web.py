@@ -48,7 +48,7 @@ class WebSearchConfig(Base):
 
 class WebFetchConfig(Base):
     """Web fetch tool configuration."""
-    use_jina_reader: bool = True
+    use_jina_reader: bool = False  # FORK: default off — prefer curl_cffi/scrapling tiered fetcher
 
 
 class WebToolsConfig(Base):
