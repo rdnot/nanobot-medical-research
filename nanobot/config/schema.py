@@ -227,44 +227,13 @@ class GatewayConfig(Base):
 
 
 
-class WebSearchConfig(Base):
-    """Web search tool configuration."""
-
-    provider: str = "duckduckgo"  # brave, tavily, duckduckgo, searxng, jina, kagi, olostep
-    api_key: str = ""
-    base_url: str = ""  # SearXNG base URL
-    max_results: int = 5
-    timeout: int = 30  # Wall-clock timeout (seconds) for search operations
-
-
-class WebFetchConfig(Base):
-    """Web fetch tool configuration."""
-
-    use_jina_reader: bool = False  # FORK: default off — prefer curl_cffi tiered fetcher
-
-
-class WebToolsConfig(Base):
-    """Web tools configuration."""
-
-    enable: bool = True
-    proxy: str | None = (
-        None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
-    )
-    user_agent: str | None = None
-    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
-    fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
-
-
-class ExecToolConfig(Base):
-    """Shell exec tool configuration."""
-
-    enable: bool = True
-    timeout: int = 60
-    path_append: str = ""
-    sandbox: str = ""  # sandbox backend: "" (none) or "bwrap"
-    allowed_env_keys: list[str] = Field(default_factory=list)  # Env var names to pass through to subprocess (e.g. ["GOPATH", "JAVA_HOME"])
-    allow_patterns: list[str] = Field(default_factory=list)  # Regex patterns that bypass deny_patterns (e.g. [r"rm\s+-rf\s+/tmp/"])
-    deny_patterns: list[str] = Field(default_factory=list)  # Extra regex patterns to block (appended to built-in list)
+# FORK: These classes are defined in their respective tool modules and
+# re-exported by _resolve_tool_config_refs() at the bottom of this file.
+# TYPE_CHECKING imports allow type annotations in ToolsConfig to work.
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from nanobot.agent.tools.shell import ExecToolConfig  # noqa: F401
+    from nanobot.agent.tools.web import WebFetchConfig, WebSearchConfig, WebToolsConfig  # noqa: F401
 
 
 class MCPServerConfig(Base):
@@ -478,14 +447,13 @@ def _resolve_tool_config_refs() -> None:
     Re-exports the classes into this module's namespace so existing imports
     like ``from nanobot.config.schema import ExecToolConfig`` continue to work.
     """
-    import sys
-
     from nanobot.agent.tools.image_generation import ImageGenerationToolConfig
     from nanobot.agent.tools.self import MyToolConfig
     from nanobot.agent.tools.shell import ExecToolConfig
     from nanobot.agent.tools.web import WebFetchConfig, WebSearchConfig, WebToolsConfig
 
     # Re-export into this module's namespace
+    import sys
     mod = sys.modules[__name__]
     mod.ExecToolConfig = ExecToolConfig  # type: ignore[attr-defined]
     mod.WebToolsConfig = WebToolsConfig  # type: ignore[attr-defined]
