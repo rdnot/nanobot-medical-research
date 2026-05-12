@@ -155,12 +155,30 @@ def _http_json_response(data: dict[str, Any], *, status: int = 200) -> Response:
     return Response(status, reason, headers, body)
 
 
+def publish_runtime_model_update(
+    bus: MessageBus,
+    model: str,
+    model_preset: str | None,
+) -> None:
+    """Publish a WebUI runtime-model update onto the outbound bus."""
+    bus.outbound.put_nowait(OutboundMessage(
+        channel="websocket",
+        chat_id="*",
+        content="",
+        metadata={
+            "_runtime_model_updated": True,
+            "model": model,
+            "model_preset": model_preset,
+        },
+    ))
+
+
 def _read_webui_model_name() -> str | None:
-    """Return the configured default model for readonly webui display."""
+    """Return the resolved startup model for readonly WebUI display."""
     try:
         from nanobot.config.loader import load_config
 
-        model = load_config().agents.defaults.model.strip()
+        model = load_config().resolve_preset().model.strip()
         return model or None
     except Exception as e:
         logger.debug("webui bootstrap could not load model name: {}", e)
@@ -1142,6 +1160,10 @@ class WebSocketChannel(BaseChannel):
         return None
 
     async def start(self) -> None:
+        from nanobot.utils.logging_bridge import redirect_lib_logging
+
+        redirect_lib_logging("websockets", level="WARNING")
+
         self._running = True
         self._stop_event = asyncio.Event()
 
@@ -1419,6 +1441,13 @@ class WebSocketChannel(BaseChannel):
             raise
 
     async def send(self, msg: OutboundMessage) -> None:
+        if msg.metadata.get("_runtime_model_updated"):
+            await self.send_runtime_model_updated(
+                model_name=msg.metadata.get("model"),
+                model_preset=msg.metadata.get("model_preset"),
+            )
+            return
+
         # Snapshot the subscriber set so ConnectionClosed cleanups mid-iteration are safe.
         conns = list(self._subs.get(msg.chat_id, ()))
         if not conns:
@@ -1514,3 +1543,23 @@ class WebSocketChannel(BaseChannel):
         raw = json.dumps(body, ensure_ascii=False)
         for connection in conns:
             await self._safe_send_to(connection, raw, label=" session_updated ")
+
+    async def send_runtime_model_updated(
+        self,
+        *,
+        model_name: Any,
+        model_preset: Any = None,
+    ) -> None:
+        """Broadcast runtime model changes to all active WebUI clients."""
+        conns = list(self._conn_chats)
+        if not conns or not isinstance(model_name, str) or not model_name.strip():
+            return
+        body: dict[str, Any] = {
+            "event": "runtime_model_updated",
+            "model_name": model_name.strip(),
+        }
+        if isinstance(model_preset, str) and model_preset.strip():
+            body["model_preset"] = model_preset.strip()
+        raw = json.dumps(body, ensure_ascii=False)
+        for connection in conns:
+            await self._safe_send_to(connection, raw, label=" runtime_model_updated ")
