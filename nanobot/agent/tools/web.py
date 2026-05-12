@@ -7,7 +7,7 @@ import html
 import json
 import os
 import re
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import quote, urlparse
 
 import httpx
