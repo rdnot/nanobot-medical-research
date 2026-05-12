@@ -494,6 +494,18 @@ def _resolve_tool_config_refs() -> None:
     mod.MyToolConfig = MyToolConfig  # type: ignore[attr-defined]
     mod.ImageGenerationToolConfig = ImageGenerationToolConfig  # type: ignore[attr-defined]
 
+    # FORK: Clear Pydantic cached validators before rebuild.
+    # When schema.py has duplicate class definitions (overwritten by re-exports
+    # above), model_rebuild() alone doesn't clear all cached state, causing
+    # "Input should be a valid dictionary or instance of X" validation errors.
+    for cls in (ToolsConfig, Config):
+        for attr in ('__pydantic_complete__', '__pydantic_validator__',
+                     '__pydantic_fields__', '__pydantic_core_schema__',
+                     '__pydantic_decorators__', '__pydantic_parent_namespace__',
+                     '__pydantic_complete_model_class__', '__pydantic_serializer__'):
+            if hasattr(cls, attr):
+                delattr(cls, attr)
+
     ToolsConfig.model_rebuild()
     Config.model_rebuild()
 
