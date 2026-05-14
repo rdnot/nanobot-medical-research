@@ -17,12 +17,20 @@ vi.mock("@/lib/api", async (importOriginal) => {
 });
 
 function fakeClient() {
+  const sessionUpdateHandlers = new Set<(chatId: string) => void>();
   return {
     status: "open" as const,
     defaultChatId: null as string | null,
     onStatus: () => () => {},
     onError: () => () => {},
     onChat: () => () => {},
+    onSessionUpdate: (handler: (chatId: string) => void) => {
+      sessionUpdateHandlers.add(handler);
+      return () => sessionUpdateHandlers.delete(handler);
+    },
+    emitSessionUpdate: (chatId: string) => {
+      for (const handler of sessionUpdateHandlers) handler(chatId);
+    },
     sendMessage: vi.fn(),
     newChat: vi.fn(),
     attach: vi.fn(),
@@ -85,6 +93,45 @@ describe("useSessions", () => {
 
     expect(api.deleteSession).toHaveBeenCalledWith("tok", "websocket:chat-a");
     expect(result.current.sessions.map((s) => s.key)).toEqual(["websocket:chat-b"]);
+  });
+
+  it("refreshes sessions when the websocket reports a session update", async () => {
+    vi.mocked(api.listSessions)
+      .mockResolvedValueOnce([
+        {
+          key: "websocket:chat-a",
+          channel: "websocket",
+          chatId: "chat-a",
+          createdAt: "2026-04-16T10:00:00Z",
+          updatedAt: "2026-04-16T10:00:00Z",
+          preview: "",
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          key: "websocket:chat-a",
+          channel: "websocket",
+          chatId: "chat-a",
+          createdAt: "2026-04-16T10:00:00Z",
+          updatedAt: "2026-04-16T10:01:00Z",
+          title: "生成的小标题",
+          preview: "用户第一句话",
+        },
+      ]);
+    const client = fakeClient();
+
+    const { result } = renderHook(() => useSessions(), {
+      wrapper: wrap(client),
+    });
+
+    await waitFor(() => expect(result.current.sessions[0]?.title).toBeUndefined());
+
+    act(() => {
+      client.emitSessionUpdate("chat-a");
+    });
+
+    await waitFor(() => expect(result.current.sessions[0]?.title).toBe("生成的小标题"));
+    expect(api.listSessions).toHaveBeenCalledTimes(2);
   });
 
   it("hydrates media_urls from historical user turns into UIMessage.images", async () => {
@@ -196,6 +243,30 @@ describe("useSessions", () => {
     expect(result.current.messages[0].content).toBe("final answer");
     expect(result.current.messages[0].reasoning).toBe("hidden but persisted reasoning");
     expect(result.current.messages[0].reasoningStreaming).toBe(false);
+  });
+
+  it("drops replayed assistant turns that only contain reasoning", async () => {
+    vi.mocked(api.fetchSessionMessages).mockResolvedValue({
+      key: "websocket:chat-empty-reasoning",
+      created_at: "2026-04-20T10:00:00Z",
+      updated_at: "2026-04-20T10:05:00Z",
+      messages: [
+        {
+          role: "assistant",
+          content: "",
+          timestamp: "2026-04-20T10:00:01Z",
+          reasoning_content: "orphan reasoning",
+        },
+      ],
+    });
+
+    const { result } = renderHook(() => useSessionHistory("websocket:chat-empty-reasoning"), {
+      wrapper: wrap(fakeClient()),
+    });
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.messages).toHaveLength(0);
   });
 
   it("hydrates historical assistant tool calls into a replay trace row", async () => {
