@@ -97,6 +97,13 @@ BUILTIN_COMMAND_SPECS: tuple[BuiltinCommandSpec, ...] = (
         "List available slash commands.",
         "circle-help",
     ),
+    BuiltinCommandSpec(
+        "/pairing",
+        "Manage pairing",
+        "List, approve, deny or revoke pairing requests.",
+        "shield",
+        "[list|approve <code>|deny <code>|revoke <user_id>]",
+    ),
 )
 
 
@@ -569,6 +576,19 @@ async def cmd_history(ctx: CommandContext) -> OutboundMessage:
     )
 
 
+async def cmd_pairing(ctx: CommandContext) -> OutboundMessage:
+    """List, approve, deny or revoke pairing requests."""
+    from nanobot.pairing import PAIRING_COMMAND_META_KEY, handle_pairing_command
+
+    reply = handle_pairing_command(ctx.msg.channel, ctx.args)
+    return OutboundMessage(
+        channel=ctx.msg.channel,
+        chat_id=ctx.msg.chat_id,
+        content=reply,
+        metadata={PAIRING_COMMAND_META_KEY: True},
+    )
+
+
 async def cmd_help(ctx: CommandContext) -> OutboundMessage:
     """Return available slash commands."""
     return OutboundMessage(
@@ -615,3 +635,5 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.exact("/c", cmd_clear)
     router.exact("/rerun", cmd_rerun)
     router.exact("/help", cmd_help)
+    router.exact("/pairing", cmd_pairing)
+    router.prefix("/pairing ", cmd_pairing)
