@@ -8,15 +8,25 @@ import type {
   InboundEvent,
   OutboundImageGeneration,
   OutboundMedia,
+  GoalStateWsPayload,
   UIImage,
   UIMessage,
 } from "@/lib/types";
 
 interface StreamBuffer {
-  /** ID of the assistant message currently receiving deltas. */
+  /** ID of the assistant message currently receiving deltas (cleared on ``stream_end``). */
   messageId: string;
-  /** Sequence of deltas accumulated in order. */
-  parts: string[];
+}
+
+/** Scan upward from the bottom skipping trace rows so tool breadcrumbs don't steal the stream target. */
+function findStreamingAssistantId(prev: UIMessage[]): string | null {
+  for (let i = prev.length - 1; i >= 0; i -= 1) {
+    const m = prev[i];
+    if (m.kind === "trace") continue;
+    if (m.role === "assistant" && m.isStreaming) return m.id;
+    if (m.role === "user") break;
+  }
+  return null;
 }
 
 /**
@@ -134,6 +144,17 @@ function pruneReasoningOnlyPlaceholders(prev: UIMessage[]): UIMessage[] {
   });
 }
 
+function stampLastAssistantLatency(prev: UIMessage[], latencyMs: number): UIMessage[] {
+  for (let i = prev.length - 1; i >= 0; i -= 1) {
+    const m = prev[i];
+    if (m.role === "assistant" && m.kind !== "trace") {
+      const merged: UIMessage = { ...m, latencyMs, isStreaming: false };
+      return [...prev.slice(0, i), merged, ...prev.slice(i + 1)];
+    }
+  }
+  return prev;
+}
+
 function absorbCompleteAssistantMessage(
   prev: UIMessage[],
   message: Omit<UIMessage, "id" | "role" | "createdAt">,
@@ -164,7 +185,7 @@ function absorbCompleteAssistantMessage(
 /**
  * Subscribe to a chat by ID. Returns the in-memory message list for the chat,
  * a streaming flag, and a ``send`` function. Initial history must be seeded
- * separately (e.g. via ``fetchSessionMessages``) since the server only replays
+ * separately (e.g. via ``fetchWebuiThread``) since the server only replays
  * live events.
  */
 /** Payload passed to ``send`` when the user attaches one or more images.
@@ -190,6 +211,10 @@ export function useNanobotStream(
 ): {
   messages: UIMessage[];
   isStreaming: boolean;
+  /** Unix epoch seconds when the current user turn started (WebSocket ``goal_status``). */
+  runStartedAt: number | null;
+  /** Latest sustained goal for this ``chatId`` (``goal_state`` WS events). */
+  goalState: GoalStateWsPayload | undefined;
   send: (content: string, images?: SendImage[], options?: SendOptions) => void;
   stop: () => void;
   setMessages: React.Dispatch<React.SetStateAction<UIMessage[]>>;
@@ -209,6 +234,9 @@ export function useNanobotStream(
     ? initialMessages[initialMessages.length - 1].kind === "trace"
     : false;
   const [isStreaming, setIsStreaming] = useState(initialStreaming || hasPendingToolCalls);
+  /** Unix epoch seconds when the current user turn started; cleared on ``idle``. */
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [goalState, setGoalState] = useState<GoalStateWsPayload | undefined>(undefined);
   const [streamError, setStreamError] = useState<StreamError | null>(null);
   const buffer = useRef<StreamBuffer | null>(null);
   const suppressStreamUntilTurnEndRef = useRef(false);
@@ -238,6 +266,8 @@ export function useNanobotStream(
         : false) || hasPendingToolCalls,
     );
     setStreamError(null);
+    setRunStartedAt(chatId ? client.getRunStartedAt(chatId) : null);
+    setGoalState(chatId ? client.getGoalState(chatId) : undefined);
     buffer.current = null;
     suppressStreamUntilTurnEndRef.current = false;
     if (streamEndTimerRef.current !== null) {
@@ -245,7 +275,7 @@ export function useNanobotStream(
       streamEndTimerRef.current = null;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatId]);
+  }, [chatId, client]);
 
   useEffect(() => {
     if (hasPendingToolCalls) setIsStreaming(true);
@@ -265,25 +295,22 @@ export function useNanobotStream(
 
       if (ev.event === "delta") {
         if (suppressStreamUntilTurnEndRef.current) return;
-        const chunk = ev.text;
+        const chunk = typeof ev.text === "string" ? ev.text : "";
         setIsStreaming(true);
         setMessages((prev) => {
-          // Reuse an in-flight assistant placeholder (typically created by
-          // ``reasoning_delta``) so the answer renders below its own
-          // thinking trace instead of in a parallel row.
-          const adopted = !buffer.current ? findActiveAssistantPlaceholder(prev) : null;
+          const adopted = findActiveAssistantPlaceholder(prev);
+          const streamingAssistId = findStreamingAssistantId(prev);
           let targetId: string;
           let next: UIMessage[];
-          if (buffer.current) {
-            targetId = buffer.current.messageId;
-            next = prev;
-          } else if (adopted) {
+
+          if (adopted) {
             targetId = adopted;
-            buffer.current = { messageId: targetId, parts: [] };
+            next = prev;
+          } else if (streamingAssistId) {
+            targetId = streamingAssistId;
             next = prev;
           } else {
             targetId = crypto.randomUUID();
-            buffer.current = { messageId: targetId, parts: [] };
             next = [
               ...prev,
               {
@@ -295,8 +322,11 @@ export function useNanobotStream(
               },
             ];
           }
-          buffer.current.parts.push(chunk);
-          const combined = buffer.current.parts.join("");
+
+          buffer.current = { messageId: targetId };
+
+          const priorContent = next.find((m) => m.id === targetId)?.content ?? "";
+          const combined = priorContent + chunk;
           return next.map((m) =>
             m.id === targetId ? { ...m, content: combined, isStreaming: true } : m,
           );
@@ -332,7 +362,24 @@ export function useNanobotStream(
         return;
       }
 
+      if (ev.event === "goal_state") {
+        setGoalState(ev.goal_state);
+        return;
+      }
+
+      if (ev.event === "goal_status") {
+        if (ev.status === "running" && typeof ev.started_at === "number") {
+          setRunStartedAt(ev.started_at);
+        } else {
+          setRunStartedAt(null);
+        }
+        return;
+      }
+
       if (ev.event === "turn_end") {
+        if ("goal_state" in ev && ev.goal_state != null && typeof ev.goal_state === "object") {
+          setGoalState(ev.goal_state);
+        }
         // Definitive signal that the turn is fully complete.  Cancel any
         // pending debounce timer and stop the loading indicator immediately.
         if (streamEndTimerRef.current !== null) {
@@ -341,8 +388,12 @@ export function useNanobotStream(
         }
         setIsStreaming(false);
         setMessages((prev) => {
-          const finalized = prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m));
-          return pruneReasoningOnlyPlaceholders(finalized);
+          let finalized = prev.map((m) => (m.isStreaming ? { ...m, isStreaming: false } : m));
+          finalized = pruneReasoningOnlyPlaceholders(finalized);
+          if (typeof ev.latency_ms === "number" && ev.latency_ms >= 0) {
+            finalized = stampLastAssistantLatency(finalized, Math.round(ev.latency_ms));
+          }
+          return finalized;
         });
         suppressStreamUntilTurnEndRef.current = false;
         onTurnEnd?.();
@@ -415,9 +466,14 @@ export function useNanobotStream(
         setMessages((prev) => {
           const filtered = activeId ? prev.filter((m) => m.id !== activeId) : prev;
           const content = ev.text;
+          const lat =
+            typeof ev.latency_ms === "number" && ev.latency_ms >= 0
+              ? Math.round(ev.latency_ms)
+              : undefined;
           return absorbCompleteAssistantMessage(filtered, {
             content,
             ...(hasMedia ? { media } : {}),
+            ...(lat !== undefined ? { latencyMs: lat } : {}),
           });
         });
         if (hasMedia) {
@@ -485,6 +541,8 @@ export function useNanobotStream(
   return {
     messages,
     isStreaming,
+    runStartedAt,
+    goalState,
     send,
     stop,
     setMessages,
