@@ -527,6 +527,7 @@ async def test_process_message_uses_explicit_session_metadata_for_goal_context(
             {"role": "assistant", "content": "ok"},
         ],
         "stop",
+        [],  # FORK: tool_calls_log (6-tuple)
         False,
     ))
 
