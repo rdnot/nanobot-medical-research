@@ -173,6 +173,14 @@ def _is_content_sufficient(content_bytes: bytes, url: str) -> bool:
     if len(raw) < 8000:
         return False
 
+    # Cloudflare challenge page — not real content, escalate to browser tier
+    # (checked here so curl_cffi returns False → falls through to Scrapling)
+    if any(sig in raw for sig in [
+        "just a moment", "checking your browser",
+        "cf-browser-verification", "cf_chl_opt", "challenge-platform",
+    ]):
+        return False
+
     # Generic JS-shell signals (framework-agnostic)
     if '<div id="root"></div>' in raw or '<div id="app"></div>' in raw:
         return False
