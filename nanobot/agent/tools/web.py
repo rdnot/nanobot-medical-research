@@ -250,24 +250,41 @@ def _is_cloudflare_protected(status: int | None, content: bytes | None) -> bool:
         return False
 
 
+def _is_recaptcha_challenge(content_bytes: bytes) -> bool:
+    """
+    Detect Google reCAPTCHA Enterprise challenge pages (HTTP 200).
+    PMC/PubMed serves these as an interstitial before the real article.
+    The page contains 'Checking your browser' and loads grecaptcha.enterprise.js.
+    """
+    try:
+        raw = content_bytes.decode("utf-8", errors="replace").lower()
+    except Exception:
+        return False
+    return "checking your browser" in raw and "recaptcha" in raw
+
+
 async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, int, str]:
     """
     Fetch URL bytes with tiered fallback strategy:
       1. curl_cffi           — Chrome TLS impersonation, fast, no browser
                                (skipped for Reddit — always needs real browser)
+                               (skipped for PubMed/PMC — reCAPTCHA Enterprise challenge)
       2. AsyncStealthySession — stealth Playwright (Patchright), handles JS-rendered
-                                pages: Reddit comments, Cloudflare, heavy SPAs.
+                                pages: Reddit comments, Cloudflare, heavy SPAs,
+                                PubMed/PMC reCAPTCHA Enterprise.
                                 solve_cloudflare auto-enabled when CF detected.
       3. httpx               — last resort, no stealth
     Returns (content_bytes, headers_dict, status_code, fetcher_name)
     """
     is_reddit = "reddit.com" in url.lower()
+    is_pubmed = "pubmed.ncbi.nlm.nih.gov" in url.lower() or "pmc.ncbi.nlm.nih.gov" in url.lower()
     curl_cffi_status: int | None = None
     curl_cffi_content: bytes | None = None
 
     # --- Tier 1: curl_cffi (Chrome TLS fingerprint, fast, no browser) ---
     # Skipped for Reddit: always returns a JS shell or triggers "prove you are human"
-    if not is_reddit:
+    # Skipped for PubMed/PMC: reCAPTCHA Enterprise challenge page (HTTP 200)
+    if not is_reddit and not is_pubmed:
         try:
             from curl_cffi.requests import AsyncSession
             logger.debug("curl_cffi fetch: {}", "proxy enabled" if proxy else "direct connection")
@@ -310,18 +327,68 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, i
             solve_cf = _is_cloudflare_protected(curl_cffi_status, curl_cffi_content)
             if solve_cf:
                 logger.debug("Cloudflare detected → enabling solve_cloudflare")
+
+            # ── PubMed/PMC reCAPTCHA Enterprise page_action callback ──
+            # PMC serves a Google reCAPTCHA Enterprise challenge (HTTP 200) that
+            # sets a cookie (recaptcha-ca-e / recaptcha-fastly-e / recaptcha-cf-e)
+            # after invisible reCAPTCHA solves, then calls location.reload(true).
+            # Scrapling's fetch() would return the initial challenge HTML before the
+            # redirect fires. This page_action runs after navigation + CF solving,
+            # detects the reCAPTCHA challenge page, waits for the cookie, and lets
+            # the page reload before Scrapling captures the response.
+            _pubmed_recaptcha_action = None
+            if is_pubmed:
+
+                async def _pubmed_recaptcha_action(page):
+                    """Wait for PubMed/PMC reCAPTCHA cookie + redirect inside Scrapling."""
+                    try:
+                        page_html = await page.content()
+                        if not _is_recaptcha_challenge(page_html.encode("utf-8", errors="replace")):
+                            return  # Not a reCAPTCHA page — nothing to do
+                        logger.info("PubMed reCAPTCHA challenge detected — waiting for cookie + redirect")
+                        # Poll for the reCAPTCHA success cookie (up to 15s)
+                        _recaptcha_cookies = {
+                            "recaptcha-ca-e", "recaptcha-fastly-e",
+                            "recaptcha-cf-e", "recaptcha-akam-e",
+                        }
+                        for _ in range(150):
+                            cookies = await page.context.cookies()
+                            cookie_names = {c["name"] for c in cookies}
+                            if cookie_names & _recaptcha_cookies:
+                                logger.debug("reCAPTCHA cookie detected, waiting for page reload")
+                                # Wait for location.reload(true) to fire and new page to load
+                                try:
+                                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                                except Exception:
+                                    pass
+                                # Extra settle for dynamic content rendering
+                                await page.wait_for_timeout(1500)
+                                logger.info("PubMed: reCAPTCHA bypassed, page reloaded")
+                                return
+                            await page.wait_for_timeout(100)
+                        # Cookie not seen in 15s — try a manual reload as last resort
+                        logger.debug("PubMed: reCAPTCHA cookie not detected, attempting page.reload()")
+                        await page.reload(wait_until="domcontentloaded")
+                        await page.wait_for_timeout(2000)
+                    except Exception as rc_err:
+                        logger.debug("PubMed reCAPTCHA page_action failed: {}", rc_err)
+
             logger.debug("AsyncStealthySession fetch: {}", "proxy enabled" if proxy else "direct connection")
             async with AsyncStealthySession(
                 headless=True,
                 solve_cloudflare=solve_cf,
                 proxy=proxy,
             ) as session:
-                page = await session.fetch(
+                fetch_kwargs = dict(
                     url,
                     network_idle=False,          # disabled — Reddit/CF never fully idle
                     adaptive=True,
                     timeout=30000 if solve_cf else 45000,  # CF=30s, Reddit/SPA=45s
                 )
+                # Attach the reCAPTCHA wait callback for PubMed/PMC URLs
+                if _pubmed_recaptcha_action is not None:
+                    fetch_kwargs["page_action"] = _pubmed_recaptcha_action
+                page = await session.fetch(**fetch_kwargs)
                 if page:
                     status = getattr(page, "status", getattr(page, "status_code", 200))
                     if status < 400:
@@ -1207,6 +1274,7 @@ class WebFetchTool(Tool):
     Fetch and extract content from a URL.
 
     Fetcher priority:  curl_cffi → StealthyFetcher (scrapling) → httpx
+    PubMed/PMC: skip curl_cffi (reCAPTCHA Enterprise), route directly to Scrapling
     Extractor priority: trafilatura → readability → strip_tags
     """
     _scopes = {"core", "subagent"}
