@@ -1041,7 +1041,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert body["web_search"]["provider"] == "brave"
         assert body["web_search"]["api_key_hint"] == "brav••••cret"
         assert body["web_search"]["max_results"] == 5
-        assert body["web"]["fetch"]["use_jina_reader"] is True
+        assert body["web"]["fetch"]["use_jina_reader"] is False  # FORK: default off — prefer tiered fetcher
         search_providers = {provider["name"]: provider for provider in body["web_search"]["providers"]}
         assert search_providers["duckduckgo"]["credential"] == "none"
         assert search_providers["searxng"]["credential"] == "base_url"
@@ -1131,7 +1131,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert search_updated.status_code == 200
         search_body = search_updated.json()
         assert search_body["requires_restart"] is True
-        assert search_body["restart_required_sections"] == ["runtime", "web"]
+        assert search_body["restart_required_sections"] == ["runtime"]  # FORK: use_jina_reader already False, no web restart
         assert search_body["web_search"]["provider"] == "searxng"
         assert search_body["web_search"]["api_key_hint"] is None
         assert search_body["web_search"]["base_url"] == "https://search.example.com"
@@ -1149,7 +1149,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert image_updated.status_code == 200
         image_body = image_updated.json()
         assert image_body["requires_restart"] is True
-        assert image_body["restart_required_sections"] == ["image", "runtime", "web"]
+        assert image_body["restart_required_sections"] == ["image", "runtime"]  # FORK: use_jina_reader already False, no web restart
         assert image_body["image_generation"]["enabled"] is True
         assert image_body["image_generation"]["model"] == "openai/gpt-image-1"
         assert image_body["image_generation"]["default_aspect_ratio"] == "16:9"
@@ -1167,8 +1167,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert image_provider_updated.json()["restart_required_sections"] == [
             "image",
             "runtime",
-            "web",
-        ]
+        ]  # FORK: use_jina_reader already False, no web restart
         assert "sk-or-next" not in image_provider_updated.text
 
         bad_web = await _http_get(
