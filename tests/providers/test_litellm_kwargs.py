@@ -458,6 +458,12 @@ def test_gemma_routes_to_gemini_provider() -> None:
     assert "gemma" in spec.keywords
 
 
+def test_gemini_spec_keeps_openai_compat_base() -> None:
+    spec = find_by_name("gemini")
+    assert spec is not None
+    assert spec.default_api_base == "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+
 async def test_openrouter_sets_default_attribution_headers() -> None:
     spec = find_by_name("openrouter")
     with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI") as mock_client_cls:
@@ -1420,12 +1426,15 @@ def test_kimi_k25_thinking_enabled() -> None:
     """kimi-k2.5 with reasoning_effort set should opt in to thinking."""
     kw = _build_kwargs_for("moonshot", "kimi-k2.5", reasoning_effort="medium")
     assert kw.get("extra_body") == {"thinking": {"type": "enabled"}}
+    # Moonshot rejects both 'reasoning_effort' and 'thinking' (#3939)
+    assert "reasoning_effort" not in kw
 
 
 def test_kimi_k25_thinking_disabled_for_minimal() -> None:
     """reasoning_effort='minimal' maps to thinking disabled for kimi-k2.5."""
     kw = _build_kwargs_for("moonshot", "kimi-k2.5", reasoning_effort="minimal")
     assert kw.get("extra_body") == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in kw
 
 
 def test_kimi_k25_no_extra_body_when_reasoning_effort_none() -> None:
@@ -1445,12 +1454,15 @@ def test_kimi_k25_thinking_enabled_with_openrouter_prefix() -> None:
         "thinking": {"type": "enabled"},
         "reasoning": {"effort": "medium"},
     }
+    # Even via OR, reasoning_effort wire kwarg is dropped for kimi models
+    assert "reasoning_effort" not in kw
 
 
 def test_kimi_k26_thinking_enabled() -> None:
     """kimi-k2.6 with reasoning_effort set should opt in to thinking."""
     kw = _build_kwargs_for("moonshot", "kimi-k2.6", reasoning_effort="medium")
     assert kw.get("extra_body") == {"thinking": {"type": "enabled"}}
+    assert "reasoning_effort" not in kw
 
 
 def test_kimi_k26_thinking_enabled_with_openrouter_prefix() -> None:
@@ -1461,6 +1473,7 @@ def test_kimi_k26_thinking_enabled_with_openrouter_prefix() -> None:
         "thinking": {"type": "enabled"},
         "reasoning": {"effort": "medium"},
     }
+    assert "reasoning_effort" not in kw
 
 
 def test_moonshot_kimi_k26_temperature_override() -> None:
@@ -1479,6 +1492,7 @@ def test_kimi_k26_code_preview_thinking_enabled() -> None:
     """k2.6-code-preview also supports thinking; should behave like k2.5."""
     kw = _build_kwargs_for("moonshot", "k2.6-code-preview", reasoning_effort="high")
     assert kw.get("extra_body") == {"thinking": {"type": "enabled"}}
+    assert "reasoning_effort" not in kw
 
 
 def test_kimi_k2_series_no_thinking_injection() -> None:
@@ -1508,6 +1522,7 @@ def test_kimi_k25_thinking_disabled_for_none_string() -> None:
     """reasoning_effort='none' maps to thinking disabled for kimi-k2.5."""
     kw = _build_kwargs_for("moonshot", "kimi-k2.5", reasoning_effort="none")
     assert kw.get("extra_body") == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in kw
 
 
 def test_dashscope_thinking_disabled_for_none_string() -> None:
