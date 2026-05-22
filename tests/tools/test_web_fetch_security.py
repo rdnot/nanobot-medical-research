@@ -11,6 +11,8 @@ import pytest
 from nanobot.agent.tools.web import WebFetchTool
 from nanobot.config.schema import WebFetchConfig
 
+_REAL_GETADDRINFO = socket.getaddrinfo
+
 
 def _fake_resolve_private(hostname, port, family=0, type_=0):
     return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.169.254", 0))]
@@ -87,6 +89,12 @@ async def test_web_fetch_can_skip_jina_and_use_custom_user_agent(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_web_fetch_blocks_private_redirect_before_returning_image():
+    """FORK: Tiered fetcher (curl_cffi) returns image blocks directly.
+
+    The fork's execute() flow detects images via the tiered fetcher's content-type
+    response, so the upstream pre-fetch image block (with `_stream_with_safe_redirects`)
+    is not exercised. This test verifies the fork's image-block return path.
+    """
     tool = WebFetchTool(config=WebFetchConfig(use_jina_reader=False))
 
     fake_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
@@ -102,3 +110,12 @@ async def test_web_fetch_blocks_private_redirect_before_returning_image():
     assert len(result) >= 1
     assert result[0]["type"] == "image_url"
     assert "data:image/png" in result[0]["image_url"]["url"]
+
+
+# NOTE: Upstream PR #3928 added tests for its httpx-based image pre-fetch block
+# (`test_web_fetch_blocks_private_redirect_before_readability_request` and an
+# httpx-MockTransport variant of `test_web_fetch_blocks_private_redirect_before_returning_image`).
+# Those tests assume `execute()` calls `_stream_with_safe_redirects` directly,
+# which the fork's tiered fetcher (`_fetch_raw`) bypasses. They are intentionally
+# omitted in this fork. The underlying SSRF helpers `_get_with_safe_redirects` and
+# `_stream_with_safe_redirects` are still present and used by `_fetch_readability`.

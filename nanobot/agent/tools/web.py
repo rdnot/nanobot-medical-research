@@ -8,7 +8,7 @@ import json
 import os
 import re
 from typing import Any, Callable
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 from loguru import logger
@@ -79,6 +79,7 @@ def _validate_url(url: str) -> tuple[bool, str]:
 def _validate_url_safe(url: str) -> tuple[bool, str]:
     """Validate URL with SSRF protection: scheme, domain, and resolved IP check."""
     from nanobot.security.network import validate_url_target
+
     return validate_url_target(url)
 
 
@@ -147,6 +148,80 @@ def _build_image_blocks(data: bytes, content_type: str, url: str) -> list[dict[s
         },
         {"type": "text", "text": f"(Image fetched from: {url})"},
     ]
+
+
+# UPSTREAM (SSRF hardening, PR #3928): validate every redirect hop before fetching.
+# Used by _fetch_readability and any GET path that needs safe redirect handling.
+async def _get_with_safe_redirects(
+    client: httpx.AsyncClient,
+    url: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[httpx.Response | None, str | None]:
+    """GET a URL while validating every redirect target before requesting it."""
+    current_url = url
+    for _ in range(MAX_REDIRECTS + 1):
+        is_valid, error_msg = _validate_url_safe(current_url)
+        if not is_valid:
+            return None, f"Redirect blocked: {error_msg}"
+
+        response = await client.get(current_url, headers=headers, follow_redirects=False)
+        is_redirect = 300 <= response.status_code < 400
+        if not is_redirect:
+            return response, None
+
+        location = response.headers.get("location")
+        if not location:
+            return response, None
+
+        next_url = urljoin(str(response.url), location)
+        is_valid, error_msg = _validate_url_safe(next_url)
+        if not is_valid:
+            await response.aclose()
+            return None, f"Redirect blocked: {error_msg}"
+
+        await response.aclose()
+        current_url = next_url
+
+    return None, f"Too many redirects: exceeded limit of {MAX_REDIRECTS}"
+
+
+async def _stream_with_safe_redirects(
+    client: httpx.AsyncClient,
+    url: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[httpx.Response | None, Any | None, str | None]:
+    """Open a streamed response while validating every redirect target first."""
+    current_url = url
+    for _ in range(MAX_REDIRECTS + 1):
+        is_valid, error_msg = _validate_url_safe(current_url)
+        if not is_valid:
+            return None, None, f"Redirect blocked: {error_msg}"
+
+        stream = client.stream(
+            "GET",
+            current_url,
+            headers=headers,
+            follow_redirects=False,
+        )
+        response = await stream.__aenter__()
+        is_redirect = 300 <= response.status_code < 400
+        if not is_redirect:
+            return response, stream, None
+
+        location = response.headers.get("location")
+        if not location:
+            return response, stream, None
+
+        next_url = urljoin(str(response.url), location)
+        is_valid, error_msg = _validate_url_safe(next_url)
+        if not is_valid:
+            await stream.__aexit__(None, None, None)
+            return None, None, f"Redirect blocked: {error_msg}"
+
+        await stream.__aexit__(None, None, None)
+        current_url = next_url
+
+    return None, None, f"Too many redirects: exceeded limit of {MAX_REDIRECTS}"
 
 
 def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
@@ -675,6 +750,15 @@ class WebFetchTool(Tool):
             return self._cache[cache_key]
 
         # UPSTREAM: Optional Jina Reader (when enabled via config)
+        # Note: upstream PR #3928 added an httpx-based image pre-fetch detection
+        # block here using `_stream_with_safe_redirects`. The fork skips that block
+        # because its tiered fetcher (`_fetch_raw`: curl_cffi → httpx) below already
+        # detects images by content-type / URL extension and returns image blocks
+        # via `_build_image_blocks()`. Re-running the pre-fetch via httpx would
+        # double-request every URL (curl_cffi can fetch sites httpx cannot, so the
+        # pre-fetch would also leak fetch attempts past curl_cffi's stealth layer).
+        # The SSRF helpers (`_get_with_safe_redirects`, `_stream_with_safe_redirects`)
+        # are still defined at module scope and used by `_fetch_readability`.
         if self.config.use_jina_reader:
             result = await self._fetch_jina(url, max_chars)
             if result is not None:
@@ -871,23 +955,22 @@ class WebFetchTool(Tool):
             return None
 
     async def _fetch_readability(self, url: str, extract_mode: str, max_chars: int) -> Any:
-        """Local fallback using readability-lxml (when tiered fetcher not preferred)."""
-        from readability import Document
-
+        """Local fallback using readability-lxml."""
         try:
             async with httpx.AsyncClient(
-                follow_redirects=True,
-                max_redirects=MAX_REDIRECTS,
                 timeout=30.0,
                 proxy=self.proxy,
             ) as client:
-                r = await client.get(url, headers={"User-Agent": self.user_agent})
+                r, redirect_error = await _get_with_safe_redirects(
+                    client,
+                    url,
+                    headers={"User-Agent": self.user_agent},
+                )
+                if redirect_error:
+                    return json.dumps({"error": redirect_error, "url": url}, ensure_ascii=False)
+                if r is None:
+                    return json.dumps({"error": "Fetch failed", "url": url}, ensure_ascii=False)
                 r.raise_for_status()
-
-            from nanobot.security.network import validate_resolved_url
-            redir_ok, redir_err = validate_resolved_url(str(r.url))
-            if not redir_ok:
-                return json.dumps({"error": f"Redirect blocked: {redir_err}", "url": url}, ensure_ascii=False)
 
             ctype = r.headers.get("content-type", "")
             if ctype.startswith("image/"):
@@ -896,6 +979,8 @@ class WebFetchTool(Tool):
             if "application/json" in ctype:
                 text, extractor = json.dumps(r.json(), indent=2, ensure_ascii=False), "json"
             elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
+                from readability import Document
+
                 doc = Document(r.text)
                 content = self._to_markdown(doc.summary()) if extract_mode == "markdown" else _strip_tags(doc.summary())
                 text = f"# {doc.title()}\n\n{content}" if doc.title() else content
