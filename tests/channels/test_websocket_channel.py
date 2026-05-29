@@ -1623,10 +1623,9 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert image_provider_updated.status_code == 200
         assert image_provider_updated.json()["requires_restart"] is True
         assert image_provider_updated.json()["restart_required_sections"] == [
-            "browser",
             "image",
             "runtime",
-        ]  # FORK: use_jina_reader already False, no web restart
+        ]  # FORK: use_jina_reader already False, no browser restart
         assert "sk-or-next" not in image_provider_updated.text
 
         bad_web = await _http_get(
