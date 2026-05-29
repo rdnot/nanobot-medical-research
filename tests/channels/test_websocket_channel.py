@@ -1591,7 +1591,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert network_safety_updated.status_code == 200
         network_safety_body = network_safety_updated.json()
         assert network_safety_body["requires_restart"] is True
-        assert network_safety_body["restart_required_sections"] == ["browser", "runtime"]
+        assert network_safety_body["restart_required_sections"] == ["runtime"]  # FORK: use_jina_reader already False, no web restart
         assert network_safety_body["advanced"]["webui_allow_local_service_access"] is False
         assert network_safety_body["advanced"]["webui_default_access_mode"] == "full"
         assert network_safety_body["advanced"]["private_service_protection_enabled"] is True
