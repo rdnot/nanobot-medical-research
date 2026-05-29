@@ -131,7 +131,7 @@ async def test_pending_followup_references_documents_when_extraction_disabled(
         )
     )
 
-    final_content, _, _, _, had_injections = await loop._run_agent_loop(
+    final_content, _, _, _, _tool_calls_log, had_injections = await loop._run_agent_loop(
         [{"role": "user", "content": "hello"}],
         channel="cli",
         chat_id="c",

@@ -426,8 +426,15 @@ class WriteFileTool(_FsTool):
         extra_allowed_dirs: list[Path] | None = None,
         max_tokens: int | None = None,
         file_states: FileStates | None = None,
+        restrict_to_workspace: bool | None = None,
+        sandbox_restricts_workspace: bool = False,
     ):
-        super().__init__(workspace, allowed_dir, extra_allowed_dirs, file_states=file_states)
+        super().__init__(
+            workspace, allowed_dir, extra_allowed_dirs,
+            file_states=file_states,
+            restrict_to_workspace=restrict_to_workspace,
+            sandbox_restricts_workspace=sandbox_restricts_workspace,
+        )
 
         if max_tokens is None:
             max_tokens = _load_max_tokens_from_config() or self._DEFAULT_MAX_TOKENS
@@ -780,8 +787,15 @@ class EditFileTool(_FsTool):
         extra_allowed_dirs: list[Path] | None = None,
         max_tokens: int | None = None,
         file_states: FileStates | None = None,
+        restrict_to_workspace: bool | None = None,
+        sandbox_restricts_workspace: bool = False,
     ):
-        super().__init__(workspace, allowed_dir, extra_allowed_dirs, file_states=file_states)
+        super().__init__(
+            workspace, allowed_dir, extra_allowed_dirs,
+            file_states=file_states,
+            restrict_to_workspace=restrict_to_workspace,
+            sandbox_restricts_workspace=sandbox_restricts_workspace,
+        )
 
         if max_tokens is None:
             max_tokens = _load_max_tokens_from_config() or self._DEFAULT_MAX_TOKENS
