@@ -19,7 +19,7 @@ from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.session.goal_state import goal_state_ws_blob
 from nanobot.session.manager import Session, SessionManager
-from nanobot.utils.helpers import truncate_text
+from nanobot.utils.helpers import strip_think, truncate_text
 from nanobot.utils.llm_runtime import LLMRuntime
 
 WEBUI_SESSION_METADATA_KEY = "webui"
@@ -48,6 +48,7 @@ def clean_generated_title(raw: str | None) -> str:
         return ""
     text = re.sub(r"^\s*(title|标题)\s*[:：]\s*", "", text, flags=re.IGNORECASE)
     text = text.strip().strip("\"'`“”‘’")
+    text = strip_think(text)
     text = re.sub(r"\s+", " ", text).strip()
     text = text.rstrip("。.!！?？,，;；:")
     if len(text) > TITLE_MAX_CHARS:
@@ -64,6 +65,9 @@ def _title_inputs(session: Session) -> tuple[str, str]:
         role = message.get("role")
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
+            continue
+        content = strip_think(content)
+        if not content:
             continue
         if role == "user" and not user_text:
             user_text = content.strip()
@@ -89,7 +93,13 @@ async def maybe_generate_webui_title(
         return False
     current_title = session.metadata.get(WEBUI_TITLE_METADATA_KEY)
     if isinstance(current_title, str) and current_title.strip():
-        return False
+        cleaned_current_title = clean_generated_title(current_title)
+        if cleaned_current_title:
+            if cleaned_current_title != current_title:
+                session.metadata[WEBUI_TITLE_METADATA_KEY] = cleaned_current_title
+                sessions.save(session)
+            return False
+        session.metadata.pop(WEBUI_TITLE_METADATA_KEY, None)
 
     user_text, assistant_text = _title_inputs(session)
     if not user_text:
@@ -168,7 +178,13 @@ def websocket_turn_wall_started_at(chat_id: str) -> float | None:
     return _WEBSOCKET_TURN_WALL_STARTED_AT.get(chat_id)
 
 
-async def publish_turn_run_status(bus: MessageBus, msg: InboundMessage, status: str) -> None:
+async def publish_turn_run_status(
+    bus: MessageBus,
+    msg: InboundMessage,
+    status: str,
+    *,
+    started_at: float | None = None,
+) -> None:
     """Notify WebSocket clients while a user turn is executing (timing strip)."""
     if msg.channel != "websocket":
         return
@@ -179,7 +195,10 @@ async def publish_turn_run_status(bus: MessageBus, msg: InboundMessage, status: 
         "goal_status": status,
     }
     if status == "running":
-        t0 = time.time()
+        if isinstance(started_at, int | float) and started_at > 0:
+            t0 = float(started_at)
+        else:
+            t0 = time.time()
         meta["started_at"] = t0
         _WEBSOCKET_TURN_WALL_STARTED_AT[cid] = t0
     else:
@@ -290,8 +309,14 @@ class WebuiTurnCoordinator:
     def discard(self, session_key: str) -> None:
         self._title_contexts.pop(session_key, None)
 
-    async def publish_run_status(self, msg: InboundMessage, status: str) -> None:
-        await publish_turn_run_status(self.bus, msg, status)
+    async def publish_run_status(
+        self,
+        msg: InboundMessage,
+        status: str,
+        *,
+        started_at: float | None = None,
+    ) -> None:
+        await publish_turn_run_status(self.bus, msg, status, started_at=started_at)
 
     async def handle_turn_end(
         self,
