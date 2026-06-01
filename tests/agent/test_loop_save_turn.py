@@ -589,6 +589,7 @@ async def test_internal_continuation_queues_turn_without_fake_user_history(
                 [*initial_messages, {"role": "assistant", "content": "paused"}],
                 "max_iterations",
                 False,
+                False,  # had_injections
             )
         return (
             "done",
@@ -596,6 +597,7 @@ async def test_internal_continuation_queues_turn_without_fake_user_history(
             [*initial_messages, {"role": "assistant", "content": "done"}],
             "completed",
             False,
+            False,  # had_injections
         )
 
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
@@ -662,6 +664,7 @@ async def test_internal_continuation_preserves_streaming_route_metadata(
                 [*initial_messages, {"role": "assistant", "content": "paused"}],
                 "max_iterations",
                 False,
+                False,  # had_injections
             )
         assert on_stream is not None
         assert on_stream_end is not None
@@ -673,6 +676,7 @@ async def test_internal_continuation_preserves_streaming_route_metadata(
             [*initial_messages, {"role": "assistant", "content": "done"}],
             "completed",
             False,
+            False,  # had_injections
         )
 
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
@@ -741,6 +745,7 @@ async def test_websocket_internal_continuation_keeps_single_visible_run(
                 [*initial_messages, {"role": "assistant", "content": "paused"}],
                 "max_iterations",
                 False,
+                False,  # had_injections
             )
         return (
             "done",
@@ -748,6 +753,7 @@ async def test_websocket_internal_continuation_keeps_single_visible_run(
             [*initial_messages, {"role": "assistant", "content": "done"}],
             "completed",
             False,
+            False,  # had_injections
         )
 
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
