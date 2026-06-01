@@ -261,16 +261,6 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
-
-# FORK: These classes are defined in their respective tool modules and
-# re-exported by _resolve_tool_config_refs() at the bottom of this file.
-# TYPE_CHECKING imports allow type annotations in ToolsConfig to work.
-from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from nanobot.agent.tools.shell import ExecToolConfig  # noqa: F401
-    from nanobot.agent.tools.web import WebFetchConfig, WebSearchConfig, WebToolsConfig  # noqa: F401
-
-
 class MCPServerConfig(Base):
     """MCP server connection configuration (stdio or HTTP)."""
 
