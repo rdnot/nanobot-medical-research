@@ -58,7 +58,7 @@ async def test_loop_goal_turn_uses_standard_iteration_budget(tmp_path):
     loop.tools.execute = AsyncMock(return_value="ok")
     loop.max_iterations = 2
 
-    final_content, _, _, stop_reason, _ = await loop._run_agent_loop(
+    final_content, _, _, stop_reason, _, _ = await loop._run_agent_loop(
         [],
         metadata={"original_command": "/goal"},
     )
