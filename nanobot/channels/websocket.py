@@ -1687,15 +1687,12 @@ class WebSocketChannel(BaseChannel):
             )
             return
         if msg.metadata.get("_file_edit_events"):
-            payload: dict[str, Any] = {
-                "event": "file_edit",
-                "chat_id": msg.chat_id,
-                "edits": msg.metadata["_file_edit_events"],
-            }
-            self._try_append_webui_transcript(msg.chat_id, payload)
-            raw = json.dumps(payload, ensure_ascii=False)
-            for connection in conns:
-                await self._safe_send_to(connection, raw, label=" ")
+            edits = msg.metadata.get("_file_edit_events")
+            await self.send_file_edit_events(
+                msg.chat_id,
+                edits if isinstance(edits, list) else [],
+                msg.metadata,
+            )
             return
         text = msg.content
         wire_text = self._rewrite_local_markdown_images(text)
@@ -1786,6 +1783,25 @@ class WebSocketChannel(BaseChannel):
         raw = json.dumps(body, ensure_ascii=False)
         for connection in conns:
             await self._safe_send_to(connection, raw, label=" reasoning_end ")
+
+    async def send_file_edit_events(
+        self,
+        chat_id: str,
+        edits: list[dict[str, Any]],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        conns = list(self._subs.get(chat_id, ()))
+        if not conns:
+            return
+        payload: dict[str, Any] = {
+            "event": "file_edit",
+            "chat_id": chat_id,
+            "edits": edits,
+        }
+        self._try_append_webui_transcript(chat_id, payload)
+        raw = json.dumps(payload, ensure_ascii=False)
+        for connection in conns:
+            await self._safe_send_to(connection, raw, label=" file_edit ")
 
     async def send_delta(
         self,
