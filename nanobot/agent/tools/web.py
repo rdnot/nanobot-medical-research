@@ -373,8 +373,6 @@ async def _stream_with_safe_redirects(
     return None, None, f"Too many redirects: exceeded limit of {MAX_REDIRECTS}"
 
 
-<<<<<<< HEAD
-=======
 def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
     """Format provider results into shared plaintext output."""
     if not items:
@@ -415,7 +413,6 @@ def _normalize_volcengine_auth_level(value: Any) -> int | None:
     return auth_level
 
 
->>>>>>> main
 async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, int, str]:
     """
     Fetch URL bytes with tiered fallback strategy:
@@ -636,7 +633,6 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, i
 
     # --- Tier 3: httpx (last resort, no stealth) ---
     try:
-<<<<<<< HEAD
         logger.debug("httpx fetch (fallback): {}", "proxy enabled" if proxy else "direct connection")
         async with httpx.AsyncClient(
             follow_redirects=True,
@@ -652,22 +648,6 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, i
     except httpx.ProxyError as e:
         logger.error("httpx proxy error: {}", e)
         raise Exception(f"All fetchers failed for {url}: {e}") from e
-=======
-        from curl_cffi.requests import AsyncSession
-        logger.debug("curl_cffi fetch: {}", "proxy enabled" if proxy else "direct connection")
-        async with AsyncSession() as session:
-            r = await session.get(
-                url,
-                impersonate="chrome",
-                allow_redirects=True,
-                max_redirects=MAX_REDIRECTS,
-                timeout=30,
-                proxy=proxy,
-            )
-            return r.content, dict(r.headers), r.status_code, "curl_cffi"
-    except ImportError:
-        logger.debug("curl_cffi not installed \u2013 install with: pip install curl_cffi")
->>>>>>> main
     except Exception as e:
         logger.error("httpx error: {}", e)
         raise Exception(f"All fetchers failed for {url}: {e}") from e
