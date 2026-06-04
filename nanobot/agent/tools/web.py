@@ -373,20 +373,6 @@ async def _stream_with_safe_redirects(
     return None, None, f"Too many redirects: exceeded limit of {MAX_REDIRECTS}"
 
 
-def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
-    """Format provider results into shared plaintext output."""
-    if not items:
-        return f"No results for: {query}"
-    lines = [f"Results for: {query}\n"]
-    for i, item in enumerate(items[:n], 1):
-        title = _normalize(_strip_tags(item.get("title", "")))
-        snippet = _normalize(_strip_tags(item.get("content", "")))
-        lines.append(f"{i}. {title}\n   {item.get('url', '')}")
-        if snippet:
-            lines.append(f"   {snippet}")
-    return "\n".join(lines)
-
-
 def _normalize_volcengine_time_range(value: Any) -> str | None:
     if value is None:
         return None
