@@ -37,7 +37,9 @@ interface ThreadViewportProps {
   showScrollToBottomButton?: boolean;
   cliApps?: CliAppInfo[];
   mcpPresets?: McpPresetInfo[];
+  forkBoundaryMessageCount?: number | null;
   onOpenFilePreview?: (path: string) => void;
+  onForkFromMessage?: (beforeUserIndex: number) => void;
 }
 
 const NEAR_BOTTOM_PX = 48;
@@ -69,7 +71,9 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
   showScrollToBottomButton = true,
   cliApps = [],
   mcpPresets = [],
+  forkBoundaryMessageCount = null,
   onOpenFilePreview,
+  onForkFromMessage,
 }, ref) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -94,6 +98,14 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
     [messages, visibleMessageCount],
   );
   const hiddenMessageCount = messages.length - visibleMessages.length;
+  const hiddenUserMessageCount =
+    hiddenMessageCount > 0
+      ? messages.slice(0, hiddenMessageCount).filter((message) => message.role === "user").length
+      : 0;
+  const visibleForkBoundaryMessageCount =
+    forkBoundaryMessageCount !== null && forkBoundaryMessageCount > hiddenMessageCount
+      ? forkBoundaryMessageCount - hiddenMessageCount
+      : null;
   const scrollButtonBottom = composerDockHeight > 0
     ? composerDockHeight + SCROLL_BUTTON_COMPOSER_GAP_PX
     : DEFAULT_SCROLL_BUTTON_BOTTOM_PX;
@@ -291,10 +303,13 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
                   messages={visibleMessages}
                   isStreaming={isStreaming}
                   hiddenMessageCount={hiddenMessageCount}
+                  hiddenUserMessageCount={hiddenUserMessageCount}
                   onLoadEarlier={loadEarlierMessages}
                   cliApps={cliApps}
                   mcpPresets={mcpPresets}
+                  forkBoundaryMessageCount={visibleForkBoundaryMessageCount}
                   onOpenFilePreview={onOpenFilePreview}
+                  onForkFromMessage={onForkFromMessage}
                 />
               </div>
             </div>

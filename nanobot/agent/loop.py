@@ -9,6 +9,7 @@ import time
 from contextlib import AsyncExitStack, nullcontext, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -402,6 +403,7 @@ class AgentLoop:
             get_tool_definitions=self.tools.get_definitions,
             max_completion_tokens=provider.generation.max_tokens,
             consolidation_ratio=consolidation_ratio,
+            unified_session=unified_session,
         )
         self.auto_compact = AutoCompact(
             sessions=self.sessions,
@@ -801,6 +803,8 @@ class AgentLoop:
             runtime_state=self,
             inbound_message=msg,
             include_memory_recent_history=include_memory_recent_history,
+            session_key=session.key,
+            unified_session=self._unified_session,
         )
 
     async def _dispatch_command_inline(
@@ -1016,6 +1020,11 @@ class AgentLoop:
                 ),
                 goal_active_predicate=lambda: sustained_goal_active(session.metadata) if session is not None else False,
                 goal_continue_message=_goal_continue,
+                finalize_on_max_iterations=turn_continuation.should_finalize_on_max_iterations(
+                    pending_queue_available=pending_queue is not None and session is not None,
+                    session_metadata=session_metadata,
+                    message_metadata=metadata,
+                ),
             ))
         finally:
             reset_workspace_scope(workspace_token)
@@ -1353,6 +1362,8 @@ class AgentLoop:
             runtime_state=self,
             inbound_message=msg,
             skip_runtime_lines=is_subagent,
+            session_key=key,
+            unified_session=self._unified_session,
         )
         t_wall = time.time()
         # FORK: 6-tuple — tool_calls_log (5th, FORK), had_injections (6th, UPSTREAM)
@@ -1367,7 +1378,9 @@ class AgentLoop:
         latency_ms = max(0, int((wall_done - t_wall) * 1000))
         self._save_turn(session, all_msgs, 1 + len(history), turn_latency_ms=latency_ms)
         self._runtime_events().record_turn_latency(key, latency_ms)
-        session.enforce_file_cap(on_archive=self.context.memory.raw_archive)
+        session.enforce_file_cap(
+            on_archive=partial(self.context.memory.raw_archive, session_key=key)
+        )
         self._clear_runtime_checkpoint(session)
         self.sessions.save(session)
         self._schedule_background(
@@ -1693,7 +1706,9 @@ class AgentLoop:
             ctx.turn_latency_ms,
         )
         if not ctx.ephemeral:
-            ctx.session.enforce_file_cap(on_archive=self.context.memory.raw_archive)
+            ctx.session.enforce_file_cap(
+                on_archive=partial(self.context.memory.raw_archive, session_key=ctx.session_key)
+            )
             self._schedule_background(
                 self.consolidator.maybe_consolidate_by_tokens(
                     ctx.session,

@@ -77,6 +77,7 @@ interface ThreadShellProps {
   onGoHome?: () => void;
   onNewChat?: () => void;
   onCreateChat?: (workspaceScope?: WorkspaceScopePayload | null) => Promise<string | null>;
+  onForkChat?: (sourceChatId: string, beforeUserIndex: number) => Promise<string | null>;
   onTurnEnd?: () => void;
   theme?: "light" | "dark";
   onToggleTheme?: () => void;
@@ -226,6 +227,7 @@ export function ThreadShell({
   title,
   onToggleSidebar,
   onCreateChat,
+  onForkChat,
   onTurnEnd,
   theme = "light",
   onToggleTheme = () => {},
@@ -251,6 +253,7 @@ export function ThreadShell({
     hasPendingToolCalls,
     refresh: refreshHistory,
     version: historyVersion,
+    forkBoundaryMessageCount,
   } = useSessionHistory(historyKey);
   const { client, modelName, token } = useClient();
   const [booting, setBooting] = useState(false);
@@ -615,6 +618,18 @@ export function ThreadShell({
     };
   }, [filePreviewPath]);
 
+  const handleForkFromMessage = useCallback(
+    async (beforeUserIndex: number) => {
+      if (!chatId || !onForkChat) return;
+      const forkedChatId = await onForkChat(chatId, beforeUserIndex);
+      if (!forkedChatId) return;
+      messageCacheRef.current.delete(forkedChatId);
+      appliedHistoryVersionRef.current.delete(forkedChatId);
+      pendingCanonicalHydrateRef.current.add(forkedChatId);
+    },
+    [chatId, onForkChat],
+  );
+
   const composer = (
     <>
       {streamError ? (
@@ -736,7 +751,9 @@ export function ThreadShell({
           showScrollToBottomButton={!!session}
           cliApps={cliApps}
           mcpPresets={mcpPresets}
+          forkBoundaryMessageCount={forkBoundaryMessageCount}
           onOpenFilePreview={historyKey ? handleOpenFilePreview : undefined}
+          onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
         />
       </div>
       {filePreviewPath && historyKey ? (

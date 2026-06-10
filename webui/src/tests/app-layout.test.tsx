@@ -125,6 +125,7 @@ function baseSettingsPayload() {
       mcp_server_count: 0,
       exec_enabled: true,
       exec_sandbox: null,
+      exec_path_prepend_set: false,
       exec_path_append_set: false,
     },
     requires_restart: false,
@@ -144,6 +145,7 @@ vi.mock("@/hooks/useSessions", async (importOriginal) => {
         error: null,
         refresh: refreshSpy,
         createChat: createChatSpy,
+        forkChat: async () => "fork-chat",
         deleteChat: async (key: string) => {
           await deleteChatSpy(key);
           setSessions((prev: ChatSummary[]) => prev.filter((s) => s.key !== key));
@@ -1022,6 +1024,7 @@ describe("App layout", () => {
                 mcp_server_count: 0,
                 exec_enabled: true,
                 exec_sandbox: null,
+                exec_path_prepend_set: false,
                 exec_path_append_set: false,
               },
               requires_restart: false,
@@ -1348,6 +1351,7 @@ describe("App layout", () => {
                 mcp_server_count: 0,
                 exec_enabled: true,
                 exec_sandbox: null,
+                exec_path_prepend_set: false,
                 exec_path_append_set: false,
               },
               requires_restart: false,
