@@ -509,6 +509,7 @@
   },
   "chat": {
     "fallbackTitle": "Chat {{id}}",
+    "forkTitle": "Fork: {{title}}",
     "loading": "Loading…",
     "noSessions": "No sessions yet.",
     "showMore": "Show {{count}} more",
@@ -810,6 +811,7 @@
     },
     "scrollToBottom": "Scroll to bottom",
     "loadEarlier": "Load earlier messages",
+    "forkedFromHistory": "Forked from history",
     "promptNavigator": {
       "open": "Open prompt navigator",
       "title": "Prompts",
@@ -849,8 +851,9 @@
     "imageAttachment": "Image attachment",
     "automationSourceFallback": "Automation",
     "automationTriggered": "Triggered automatically",
-    "copyReply": "Copy reply",
-    "copiedReply": "Copied reply",
+    "forkFromHere": "Fork",
+    "copyReply": "Copy",
+    "copiedReply": "Copied",
     "turnLatencyTitle": "Response time (end-to-end)"
   },
   "lightbox": {

@@ -348,6 +348,31 @@ export class NanobotClient {
     });
   }
 
+  /** Ask the server to create a non-destructive fork before a user-message index. */
+  forkChat(
+    sourceChatId: string,
+    beforeUserIndex: number,
+    title?: string,
+    timeoutMs: number = 5_000,
+  ): Promise<string> {
+    if (this.pendingNewChat) {
+      return Promise.reject(new Error("newChat already in flight"));
+    }
+    return new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingNewChat = null;
+        reject(new Error("forkChat timed out"));
+      }, timeoutMs);
+      this.pendingNewChat = { resolve, reject, timer };
+      this.queueSend({
+        type: "fork_chat",
+        source_chat_id: sourceChatId,
+        before_user_index: beforeUserIndex,
+        ...(title?.trim() ? { title: title.trim() } : {}),
+      });
+    });
+  }
+
   attach(chatId: string): void {
     this.knownChats.add(chatId);
     if (this.socket?.readyState === WS_OPEN) {
@@ -479,6 +504,14 @@ export class NanobotClient {
         this.pendingNewChat.reject(new Error(`workspace_scope_rejected:${parsed.reason || ""}`));
         this.pendingNewChat = null;
       }
+    }
+
+    if (parsed.event === "error" && this.pendingNewChat) {
+      clearTimeout(this.pendingNewChat.timer);
+      const detail = typeof parsed.detail === "string" ? parsed.detail : "server error";
+      const reason = typeof parsed.reason === "string" && parsed.reason ? `:${parsed.reason}` : "";
+      this.pendingNewChat.reject(new Error(`${detail}${reason}`));
+      this.pendingNewChat = null;
     }
 
     const chatId = (parsed as { chat_id?: string }).chat_id;

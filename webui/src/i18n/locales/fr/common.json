@@ -509,6 +509,7 @@
   },
   "chat": {
     "fallbackTitle": "Discussion {{id}}",
+    "forkTitle": "Branche : {{title}}",
     "loading": "Chargement…",
     "noSessions": "Aucune session pour le moment.",
     "showMore": "Afficher {{count}} de plus",
@@ -810,6 +811,7 @@
     },
     "scrollToBottom": "Faire défiler vers le bas",
     "loadEarlier": "Charger les messages précédents",
+    "forkedFromHistory": "Bifurqué depuis l'historique",
     "promptNavigator": {
       "open": "Ouvrir le navigateur de prompts",
       "title": "Prompts",
@@ -835,8 +837,9 @@
     "agentActivityLiveSummary": "En cours… · {{reasoning}} étapes · {{tools}} appels d’outils",
     "agentActivityLiveToolsOnly": "En cours… · {{tools}} appels d’outils",
     "imageAttachment": "Pièce jointe image",
-    "copyReply": "Copier la réponse",
-    "copiedReply": "Réponse copiée",
+    "forkFromHere": "Bifurquer",
+    "copyReply": "Copier",
+    "copiedReply": "Copié",
     "turnLatencyTitle": "Temps de réponse (de bout en bout)",
     "activityThinkingFor": "Réflexion pendant {{duration}}",
     "activityThought": "Réflexion terminée",
