@@ -194,7 +194,13 @@ class BedrockProviderConfig(ProviderConfig):
 
 
 class ProvidersConfig(Base):
-    """Configuration for LLM providers."""
+    """Configuration for LLM providers.
+
+    Supports custom providers via extra fields — any additional field
+    becomes an OpenAI-compatible custom provider.
+    """
+
+    model_config = ConfigDict(extra="allow")
 
     custom: ProviderConfig = Field(default_factory=ProviderConfig)  # Any OpenAI-compatible endpoint
     azure_openai: ProviderConfig = Field(default_factory=ProviderConfig)  # Azure OpenAI (model = deployment name)
@@ -236,11 +242,30 @@ class ProvidersConfig(Base):
     nvidia: ProviderConfig = Field(default_factory=ProviderConfig)  # NVIDIA NIM (nvapi- keys)
 
     @model_validator(mode="after")
+    def convert_extra_providers(self):
+        """Convert extra fields (custom providers) to ProviderConfig objects."""
+        if self.model_extra:
+            from nanobot.providers.registry import find_by_name
+
+            for key, value in self.model_extra.items():
+                if spec := find_by_name(key):
+                    raise ValueError(
+                        f"providers.{key} conflicts with built-in provider {spec.name!r}; "
+                        "use the built-in provider key or choose a different custom provider name"
+                    )
+                if isinstance(value, dict):
+                    self.model_extra[key] = ProviderConfig.model_validate(value)
+        return self
+
+    @model_validator(mode="after")
     def _validate_api_type_scope(self) -> "ProvidersConfig":
         for name in self.__class__.model_fields:
             if name == "openai":
                 continue
             provider = getattr(self, name, None)
+            if isinstance(provider, ProviderConfig) and provider.api_type != "auto":
+                raise ValueError("providers.<name>.api_type is only supported for providers.openai")
+        for provider in (self.model_extra or {}).values():
             if isinstance(provider, ProviderConfig) and provider.api_type != "auto":
                 raise ValueError("providers.<name>.api_type is only supported for providers.openai")
         return self
@@ -381,15 +406,31 @@ class Config(BaseSettings):
         preset: ModelPresetConfig | None = None,
     ) -> tuple["ProviderConfig | None", str | None]:
         """Match provider config and its registry name. Returns (config, spec_name)."""
-        from nanobot.providers.registry import PROVIDERS, find_by_name
+        from nanobot.providers.registry import (
+            PROVIDERS,
+            find_by_name,
+        )
 
         resolved = preset or self.resolve_preset()
         forced = resolved.provider
+
+        def _custom_provider_by_name(name: str) -> tuple[ProviderConfig, str] | None:
+            normalized = name.replace("-", "_").lower()
+            for attr_name, provider in (self.providers.model_extra or {}).items():
+                if not isinstance(provider, ProviderConfig):
+                    continue
+                if attr_name.replace("-", "_").lower() == normalized:
+                    return provider, attr_name
+            return None
+
         if forced != "auto":
             spec = find_by_name(forced)
             if spec:
                 p = getattr(self.providers, spec.name, None)
                 return (p, spec.name) if p else (None, None)
+            custom = _custom_provider_by_name(forced)
+            if custom is not None:
+                return custom
             return None, None
 
         model_lower = (model or resolved.model).lower()
@@ -409,6 +450,15 @@ class Config(BaseSettings):
             if p and model_prefix and normalized_prefix == spec.name:
                 if spec.is_oauth or spec.is_local or spec.is_direct or p.api_key:
                     return p, spec.name
+
+        # Check for custom provider by prefix (e.g., "companyProxy/gpt-4").
+        # Return the matching provider even when apiBase is missing, so a
+        # malformed explicit prefix fails instead of falling through to a
+        # different custom provider.
+        if model_prefix:
+            custom = _custom_provider_by_name(normalized_prefix)
+            if custom is not None:
+                return custom
 
         # Match by keyword (order follows PROVIDERS registry)
         for spec in PROVIDERS:
@@ -445,6 +495,12 @@ class Config(BaseSettings):
             p = getattr(self.providers, spec.name, None)
             if p and p.api_key:
                 return p, spec.name
+
+        # Final fallback: check for any configured custom provider
+        for attr_name, p in (self.providers.model_extra or {}).items():
+            if isinstance(p, ProviderConfig) and p.api_base:
+                return p, attr_name
+
         return None, None
 
     def get_provider(
