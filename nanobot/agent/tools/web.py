@@ -22,7 +22,6 @@ from nanobot.agent.tools.schema import (
     tool_parameters_schema,
 )
 from nanobot.config_base import Base
-from nanobot.utils.helpers import build_image_content_blocks
 
 if TYPE_CHECKING:
     from nanobot.config.schema import WebFetchConfig, WebSearchConfig
