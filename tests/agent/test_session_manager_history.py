@@ -641,6 +641,42 @@ def test_retain_recent_legal_suffix_can_extend_to_user_for_long_recent_turn():
     _assert_no_orphans(history)
 
 
+def test_get_history_can_extend_to_user_for_long_recent_turn():
+    session = Session(key="test:history-extend-to-user")
+    session.messages.append({"role": "user", "content": "old"})
+    session.messages.append({"role": "assistant", "content": "old answer"})
+    session.messages.append({"role": "user", "content": "record this"})
+    for i in range(4):
+        session.messages.extend(_tool_turn("recent", i))
+    session.messages.append({"role": "assistant", "content": "done"})
+
+    hard_capped = session.get_history(max_messages=8)
+    extended = session.get_history(max_messages=8, extend_to_user=True)
+
+    assert len(hard_capped) <= 8
+    assert len(extended) > 8
+    assert extended[0]["content"] == "record this"
+    assert extended[-1]["content"] == "done"
+    _assert_no_orphans(extended)
+
+
+def test_get_history_extend_to_user_keeps_newer_user_inside_window():
+    session = Session(key="test:history-extend-newer-user")
+    session.messages.append({"role": "user", "content": "old"})
+    session.messages.append({"role": "assistant", "content": "old answer"})
+    session.messages.append({"role": "user", "content": "long older turn"})
+    for i in range(8):
+        session.messages.extend(_tool_turn("older", i))
+    session.messages.append({"role": "assistant", "content": "older final"})
+    session.messages.append({"role": "user", "content": "new question"})
+    session.messages.append({"role": "assistant", "content": "new answer"})
+
+    history = session.get_history(max_messages=6, extend_to_user=True)
+
+    assert [m["content"] for m in history] == ["new question", "new answer"]
+    _assert_no_orphans(history)
+
+
 # --- enforce_file_cap archive correctness (issue #4128) ---
 
 
