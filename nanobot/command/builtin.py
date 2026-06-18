@@ -341,6 +341,9 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
     msg = ctx.msg
 
     async def _run_dream():
+        async def _silent(*_args, **_kwargs):
+            pass
+
         from nanobot.agent.memory import MemoryStore
 
         dream_session_key = MemoryStore.dream_session_key
@@ -367,6 +370,7 @@ async def cmd_dream(ctx: CommandContext) -> OutboundMessage:
                 session_key=key,
                 ephemeral=True,
                 tools=store.build_dream_tools(),
+                on_progress=_silent,
             )
             elapsed = time.monotonic() - t0
             if MemoryStore.dream_run_completed(resp):
