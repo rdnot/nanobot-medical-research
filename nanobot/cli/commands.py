@@ -5,7 +5,7 @@ import os
 import select
 import signal
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import nullcontext, suppress
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,7 @@ from nanobot.utils.restart import (  # noqa: E402
     format_restart_completed_message,
     should_show_cli_restart_notice,
 )
+from nanobot.webui.sidebar_state import read_webui_sidebar_state  # noqa: E402
 
 
 def _sanitize_surrogates(text: str) -> str:
@@ -78,6 +79,29 @@ def _signal_name(signum: int) -> str:
     with suppress(ValueError):
         return signal.Signals(signum).name
     return f"signal {signum}"
+
+
+def _ensure_gateway_tty_signal_mode() -> None:
+    """Keep foreground gateway Ctrl+C usable even after a raw-mode TTY leak."""
+    try:
+        fd = sys.stdin.fileno()
+        if not os.isatty(fd):
+            return
+    except Exception:
+        return
+
+    with suppress(Exception):
+        import termios
+
+        attrs = termios.tcgetattr(fd)
+        lflag = attrs[3]
+        required = termios.ISIG | termios.ICANON | termios.ECHO
+        if (lflag & required) == required:
+            return
+        attrs[3] = lflag | required
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        termios.tcflush(fd, termios.TCIFLUSH)
+        logger.debug("Restored foreground gateway TTY signal mode")
 
 
 def _install_gateway_shutdown_handlers(
@@ -128,6 +152,12 @@ def _install_gateway_shutdown_handlers(
                 signal.signal(signum, handler)
 
     return restore
+
+
+def _advance_dream_cursor_if_behind(memory: Any) -> None:
+    latest = memory.get_latest_cursor()
+    if memory.get_last_dream_cursor() < latest:
+        memory.set_last_dream_cursor(latest)
 
 
 class SafeFileHistory(FileHistory):
@@ -186,6 +216,29 @@ def _heartbeat_has_active_tasks(content: str) -> bool:
             continue
         return True
     return False
+
+
+def _pick_heartbeat_target_from_sessions(
+    *,
+    enabled_channels: Iterable[str],
+    sessions: Iterable[dict[str, Any]],
+    archived_keys: Iterable[str],
+) -> tuple[str, str]:
+    enabled = set(enabled_channels)
+    archived = set(archived_keys)
+    for item in sessions:
+        key = item.get("key") or ""
+        if key in archived:
+            continue
+        if ":" not in key:
+            continue
+        channel, chat_id = key.split(":", 1)
+        if channel in {"cli", "system"}:
+            continue
+        if channel in enabled and chat_id:
+            return channel, chat_id
+    return "cli", "direct"
+
 
 # ---------------------------------------------------------------------------
 # CLI input: prompt_toolkit for editing, paste, history, and display
@@ -1041,17 +1094,12 @@ def _run_gateway(
 
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
-        enabled = set(channels.enabled_channels)
-        for item in session_manager.list_sessions():
-            key = item.get("key") or ""
-            if ":" not in key:
-                continue
-            channel, chat_id = key.split(":", 1)
-            if channel in {"cli", "system"}:
-                continue
-            if channel in enabled and chat_id:
-                return channel, chat_id
-        return "cli", "direct"
+        sidebar_state = read_webui_sidebar_state()
+        return _pick_heartbeat_target_from_sessions(
+            enabled_channels=channels.enabled_channels,
+            sessions=session_manager.list_sessions(),
+            archived_keys=sidebar_state.get("archived_keys", []),
+        )
 
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
@@ -1123,6 +1171,7 @@ def _run_gateway(
         console.print(f"[green]✓[/green] Dream: {dream_cfg.describe_schedule()}")
     else:
         console.print("[yellow]○[/yellow] Dream: disabled")
+        _advance_dream_cursor_if_behind(agent.context.memory)
 
     # Register Heartbeat system job (idempotent on restart)
     if hb_cfg.enabled:
@@ -1166,6 +1215,7 @@ def _run_gateway(
         runtime_tasks: asyncio.Future | None = None
         runtime_tasks_drained = False
         shutdown_event = asyncio.Event()
+        _ensure_gateway_tty_signal_mode()
         restore_shutdown_handlers = _install_gateway_shutdown_handlers(
             asyncio.get_running_loop(),
             shutdown_event,
