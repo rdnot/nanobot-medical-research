@@ -14,7 +14,7 @@ import httpx
 from loguru import logger
 from pydantic import Field
 
-from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
 from nanobot.agent.tools.schema import (
     BooleanSchema,
     IntegerSchema,
@@ -1336,13 +1336,13 @@ class WebSearchTool(Tool):
         elif provider == "keenable":
             return await self._search_keenable(query, n)
         else:
-            return f"Error: unknown search provider '{provider}'"
+            return ToolResult.error(f"Error: unknown search provider '{provider}'")
 
     async def _search_olostep(self, query: str, n: int) -> str:
         try:
             from olostep import AsyncOlostep, Olostep_BaseError
         except ImportError:
-            return "Error: olostep package not installed. Run: pip install olostep"
+            return ToolResult.error("Error: olostep package not installed. Run: pip install olostep")
         api_key = self.config.api_key or os.environ.get("OLOSTEP_API_KEY", "")
         if not api_key:
             logger.warning("OLOSTEP_API_KEY not set, falling back to DuckDuckGo")
@@ -1386,9 +1386,9 @@ class WebSearchTool(Tool):
             items = [{"title": answer_text or "Olostep answer", "url": "", "content": "\n".join(source_lines)}]
             return _format_results(query, items, n)
         except Olostep_BaseError as e:
-            return f"Olostep search error: {type(e).__name__}: {e}"
+            return ToolResult.error(f"Error: Olostep search error: {type(e).__name__}: {e}")
         except Exception as e:
-            return f"Olostep search error: {type(e).__name__}: {e}"
+            return ToolResult.error(f"Error: Olostep search error: {type(e).__name__}: {e}")
 
     async def _search_brave(self, query: str, n: int) -> str:
         api_key = self.config.api_key or os.environ.get("BRAVE_API_KEY", "")
@@ -1422,13 +1422,13 @@ class WebSearchTool(Tool):
             return _format_results(query, items, n)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
-                return (
+                return ToolResult.error(
                     "Error: Brave search rate limited after retry. "
                     "Retry later or reduce consecutive web_search calls."
                 )
-            return f"Error: {e}"
+            return ToolResult.error(f"Error: {e}")
         except Exception as e:
-            return f"Error: {e}"
+            return ToolResult.error(f"Error: {e}")
 
     async def _search_tavily(self, query: str, n: int) -> str:
         api_key = self.config.api_key or os.environ.get("TAVILY_API_KEY", "")
@@ -1446,7 +1446,7 @@ class WebSearchTool(Tool):
                 r.raise_for_status()
             return _format_results(query, r.json().get("results", []), n)
         except Exception as e:
-            return f"Error: {e}"
+            return ToolResult.error(f"Error: {e}")
 
     async def _search_keenable(self, query: str, n: int) -> str:
         api_key = self.config.api_key or os.environ.get("KEENABLE_API_KEY", "")
@@ -1481,10 +1481,10 @@ class WebSearchTool(Tool):
             return _format_results(query, items, n)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
-                return "Error: Keenable search rate limited. Try again later or reduce search frequency."
-            return f"Error: Keenable search failed ({e.response.status_code}): {e}"
+                return ToolResult.error("Error: Keenable search rate limited. Try again later or reduce search frequency.")
+            return ToolResult.error(f"Error: Keenable search failed ({e.response.status_code}): {e}")
         except Exception as e:
-            return f"Error: Keenable search failed: {e}"
+            return ToolResult.error(f"Error: Keenable search failed: {e}")
 
     async def _search_searxng(self, query: str, n: int) -> str:
         # Priority: hardcoded DEFAULT_SEARXNG_URL > config.base_url > env var
@@ -1499,7 +1499,7 @@ class WebSearchTool(Tool):
         endpoint = f"{base_url.rstrip('/')}/search"
         is_valid, error_msg = _validate_url(endpoint)
         if not is_valid:
-            return f"Error: invalid SearXNG URL: {error_msg}"
+            return ToolResult.error(f"Error: invalid SearXNG URL: {error_msg}")
         try:
             async with httpx.AsyncClient(proxy=self.proxy) as client:
                 r = await client.get(
@@ -1573,7 +1573,7 @@ class WebSearchTool(Tool):
             ]
             return _format_results(query, items, n)
         except Exception as e:
-            return f"Error: {e}"
+            return ToolResult.error(f"Error: {e}")
 
     async def _search_exa(self, query: str, n: int) -> str:
         api_key = self.config.api_key or os.environ.get("EXA_API_KEY", "")
@@ -1620,10 +1620,10 @@ class WebSearchTool(Tool):
             return _format_results(query, items, n)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
-                return "Error: Exa search rate limited. Try again later or reduce search frequency."
-            return f"Error: Exa search failed ({e.response.status_code}): {e}"
+                return ToolResult.error("Error: Exa search rate limited. Try again later or reduce search frequency.")
+            return ToolResult.error(f"Error: Exa search failed ({e.response.status_code}): {e}")
         except Exception as e:
-            return f"Error: Exa search failed: {e}"
+            return ToolResult.error(f"Error: Exa search failed: {e}")
 
     async def _search_volcengine(
         self,
@@ -1647,7 +1647,7 @@ class WebSearchTool(Tool):
             normalized_time_range = _normalize_volcengine_time_range(time_range) if time_range else None
             normalized_auth_level = _normalize_volcengine_auth_level(auth_level) if auth_level is not None else None
         except ValueError as e:
-            return f"Error: {e}"
+            return ToolResult.error(f"Error: {e}")
 
         body: dict[str, Any] = {
             "Query": query,
@@ -1680,18 +1680,18 @@ class WebSearchTool(Tool):
             data = r.json()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
-                return "Error: Volcengine search rate limited. Try again later or reduce search frequency."
-            return f"Error: Volcengine search failed ({e.response.status_code}): {e}"
+                return ToolResult.error("Error: Volcengine search rate limited. Try again later or reduce search frequency.")
+            return ToolResult.error(f"Error: Volcengine search failed ({e.response.status_code}): {e}")
         except Exception as e:
-            return f"Error: Volcengine search failed: {e}"
+            return ToolResult.error(f"Error: Volcengine search failed: {e}")
 
         error = (data.get("ResponseMetadata") or {}).get("Error") or data.get("Error") or data.get("error")
         if error:
             if isinstance(error, dict):
                 code = error.get("Code") or error.get("code") or "unknown"
                 message = error.get("Message") or error.get("message") or error
-                return f"Error: Volcengine search error {code}: {message}"
-            return f"Error: Volcengine search error: {error}"
+                return ToolResult.error(f"Error: Volcengine search error {code}: {message}")
+            return ToolResult.error(f"Error: Volcengine search error: {error}")
 
         result = data.get("Result") or data
         web_results = result.get("WebResults") or result.get("webResults") or result.get("results") or []
@@ -1746,7 +1746,7 @@ class WebSearchTool(Tool):
             return _format_results(query, items, n)
         except Exception as e:
             logger.warning("DuckDuckGo search failed: {}", e)
-            return f"Error: DuckDuckGo search failed ({e})"
+            return ToolResult.error(f"Error: DuckDuckGo search failed ({e})")
 
     async def _search_bocha(self, query: str, n: int, freshness: str = "noLimit") -> str:
         api_key = self.config.api_key or os.environ.get("BOCHA_API_KEY", "")
@@ -1774,7 +1774,7 @@ class WebSearchTool(Tool):
                     timeout=self.config.timeout,
                 )
                 if r.status_code == 429:
-                    return "Error: Bocha search rate-limited (HTTP 429). Wait and retry."
+                    return ToolResult.error("Error: Bocha search rate-limited (HTTP 429). Wait and retry.")
                 r.raise_for_status()
             data = r.json()
             wrapped_data = data.get("data") if isinstance(data, dict) else None
@@ -1794,9 +1794,9 @@ class WebSearchTool(Tool):
             ]
             return _format_results(query, items, n)
         except httpx.HTTPStatusError as e:
-            return f"Error: Bocha search HTTP {e.response.status_code}: {e.response.text[:200]}"
+            return ToolResult.error(f"Error: Bocha search HTTP {e.response.status_code}: {e.response.text[:200]}")
         except Exception as e:
-            return f"Error: {e}"
+            return ToolResult.error(f"Error: {e}")
 
 
 @tool_parameters(
