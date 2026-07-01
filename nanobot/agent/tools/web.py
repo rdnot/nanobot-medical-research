@@ -206,8 +206,13 @@ def _is_content_sufficient(content_bytes: bytes, url: str) -> bool:
     # (checked here so curl_cffi returns False → falls through to Scrapling)
     if any(sig in raw for sig in [
         "just a moment", "checking your browser",
-        "cf-browser-verification", "cf_chl_opt", "challenge-platform",
+        "cf-browser-verification", "cf_chl_opt",
     ]):
+        return False
+    # "challenge-platform" is a Cloudflare marker, but the benign beacon
+    # script at /cdn-cgi/challenge-platform/scripts/jsd/main.js also
+    # contains it — only flag it when the beacon path is NOT present.
+    if "challenge-platform" in raw and "/cdn-cgi/challenge-platform/" not in raw:
         return False
 
     # Generic JS-shell signals (framework-agnostic)
@@ -280,8 +285,10 @@ def _is_cloudflare_protected(status: int | None, content: bytes | None) -> bool:
             "cf-browser-verification",  # CF challenge form
             "checking your browser",    # CF spinner text
             "cf_chl_opt",               # CF challenge JS variable
-            "challenge-platform",       # CF challenge platform
-        ])
+        ]) or (
+            "challenge-platform" in snippet   # CF challenge platform
+            and "/cdn-cgi/challenge-platform/" not in snippet  # but NOT the benign beacon
+        )
     except Exception:
         return False
 
