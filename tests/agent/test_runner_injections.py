@@ -508,7 +508,7 @@ async def test_subagent_pending_injection_is_hidden_history_and_not_merged(tmp_p
         metadata={"injected_event": "subagent_result", "subagent_task_id": "sub-1"},
     ))
 
-    final_content, _, all_msgs, _, had_injections = await loop._run_agent_loop(
+    final_content, _, all_msgs, _, tool_calls_log, had_injections = await loop._run_agent_loop(
         [{"role": "user", "content": "hello"}],
         channel="cli",
         chat_id="c",
