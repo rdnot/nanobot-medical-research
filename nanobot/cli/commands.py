@@ -50,6 +50,8 @@ from prompt_toolkit import PromptSession, print_formatted_text  # noqa: E402
 from prompt_toolkit.application import run_in_terminal  # noqa: E402
 from prompt_toolkit.formatted_text import ANSI, HTML  # noqa: E402
 from prompt_toolkit.history import FileHistory  # noqa: E402
+from prompt_toolkit.key_binding import KeyBindings  # noqa: E402
+from prompt_toolkit.keys import Keys  # noqa: E402
 from prompt_toolkit.patch_stdout import patch_stdout  # noqa: E402
 from rich.console import Console  # noqa: E402
 from rich.markdown import Markdown  # noqa: E402
@@ -300,6 +302,33 @@ def _restore_terminal() -> None:
         termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _SAVED_TERM_ATTRS)
 
 
+def _build_cli_key_bindings() -> KeyBindings:
+    """Key bindings for the interactive prompt.
+
+    Behaviour:
+      * Enter       -> submit the current input (keeps the familiar
+                       single-line Enter-to-send feel even though the buffer
+                       is multiline-capable).
+      * Alt+Enter   -> insert a newline for multi-line input.
+    """
+    kb = KeyBindings()
+
+    @kb.add("enter")
+    def _(event):
+        event.current_buffer.validate_and_handle()
+
+    @kb.add("escape", "enter")  # Alt+Enter / Meta+Enter (ESC + CR, "\x1b\r")
+    def _(event):
+        event.current_buffer.insert_text("\n")
+
+    # LF-as-Enter terminals send Alt+Enter as ESC + LF rather than ESC + CR.
+    @kb.add("escape", Keys.ControlJ)  # Alt+Enter on LF-as-Enter terminals
+    def _(event):
+        event.current_buffer.insert_text("\n")
+
+    return kb
+
+
 def _init_prompt_session() -> None:
     """Create the prompt_toolkit session with persistent file history."""
     global _PROMPT_SESSION, _SAVED_TERM_ATTRS
@@ -318,7 +347,10 @@ def _init_prompt_session() -> None:
     _PROMPT_SESSION = PromptSession(
         history=SafeFileHistory(str(history_file)),
         enable_open_in_editor=False,
-        multiline=False,  # Enter submits (single line mode)
+        # Multiline-capable buffer; Enter still submits via the custom key
+        # bindings, while Alt+Enter adds a newline.
+        multiline=True,
+        key_bindings=_build_cli_key_bindings(),
     )
 
 
