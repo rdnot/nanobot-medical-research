@@ -121,6 +121,7 @@ def _validate_url_safe(url: str) -> tuple[bool, str]:
     return validate_url_target(url)
 
 
+# FORK: Truncate at paragraph/sentence boundary instead of mid-sentence
 def _smart_truncate(text: str, max_chars: int) -> str:
     """Truncate at paragraph boundary instead of mid-sentence."""
     if len(text) <= max_chars:
@@ -134,6 +135,7 @@ def _smart_truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + " [...truncated...]"
 
 
+# FORK: PDF text extraction using PyMuPDF
 def _extract_pdf_text(pdf_data: bytes) -> str:
     """Extract text from PDF using PyMuPDF."""
     try:
@@ -152,6 +154,7 @@ def _extract_pdf_text(pdf_data: bytes) -> str:
         return f"Error extracting PDF: {e}"
 
 
+# FORK: Extract author, date, description from HTML meta tags
 def _extract_meta(raw_html: str) -> dict[str, str]:
     """Extract useful meta tags: author, date, description, og fields."""
     meta: dict[str, str] = {}
@@ -172,6 +175,7 @@ def _extract_meta(raw_html: str) -> dict[str, str]:
     return meta
 
 
+# FORK: Convert raw image bytes into multimodal content blocks for vision LLMs
 def _build_image_blocks(data: bytes, content_type: str, url: str) -> list[dict[str, Any]]:
     """Convert raw image bytes into multimodal content blocks for vision-capable LLMs."""
     import base64
@@ -326,6 +330,40 @@ def _has_pubmed_article_content(content_bytes: bytes) -> bool:
     ])
 
 
+# UPSTREAM (pinned DNS, SSRF hardening): validate URL and return resolved IPs for pinning
+def _resolve_url_safe(url: str) -> tuple[bool, str, tuple[str, ...]]:
+    """Validate URL and return the resolved IPs to pin during the request."""
+    from nanobot.security.network import resolve_url_target
+
+    return resolve_url_target(url)
+
+
+def _pinned_dns_transport() -> httpx.AsyncBaseTransport:
+    from nanobot.security.network import PinnedDNSAsyncTransport
+
+    return PinnedDNSAsyncTransport()
+
+
+def _fetch_client_kwargs(proxy: str | None, timeout: float) -> dict[str, Any]:
+    from nanobot.security.network import httpx_env_proxy_mounts
+
+    kwargs: dict[str, Any] = {"timeout": timeout}
+    if proxy:
+        kwargs["proxy"] = proxy
+    else:
+        kwargs["transport"] = _pinned_dns_transport()
+        mounts = httpx_env_proxy_mounts()
+        if mounts:
+            kwargs["mounts"] = mounts
+    return kwargs
+
+
+def _unsafe_url_request_error(exc: BaseException) -> str | None:
+    from nanobot.security.network import UnsafeURLRequestError
+
+    return str(exc) if isinstance(exc, UnsafeURLRequestError) else None
+
+
 # UPSTREAM (SSRF hardening, PR #3928): validate every redirect hop before fetching.
 # Used by _fetch_readability and any GET path that needs safe redirect handling.
 async def _get_with_safe_redirects(
@@ -336,11 +374,17 @@ async def _get_with_safe_redirects(
     """GET a URL while validating every redirect target before requesting it."""
     current_url = url
     for _ in range(MAX_REDIRECTS + 1):
-        is_valid, error_msg = _validate_url_safe(current_url)
+        is_valid, error_msg, _ = _resolve_url_safe(current_url)
         if not is_valid:
             return None, f"Redirect blocked: {error_msg}"
 
-        response = await client.get(current_url, headers=headers, follow_redirects=False)
+        try:
+            response = await client.get(current_url, headers=headers, follow_redirects=False)
+        except httpx.RequestError as exc:
+            unsafe_error = _unsafe_url_request_error(exc)
+            if unsafe_error is not None:
+                return None, f"Redirect blocked: {unsafe_error}"
+            raise
         is_redirect = 300 <= response.status_code < 400
         if not is_redirect:
             return response, None
@@ -369,7 +413,7 @@ async def _stream_with_safe_redirects(
     """Open a streamed response while validating every redirect target first."""
     current_url = url
     for _ in range(MAX_REDIRECTS + 1):
-        is_valid, error_msg = _validate_url_safe(current_url)
+        is_valid, error_msg, _ = _resolve_url_safe(current_url)
         if not is_valid:
             return None, None, f"Redirect blocked: {error_msg}"
 
@@ -379,7 +423,13 @@ async def _stream_with_safe_redirects(
             headers=headers,
             follow_redirects=False,
         )
-        response = await stream.__aenter__()
+        try:
+            response = await stream.__aenter__()
+        except httpx.RequestError as exc:
+            unsafe_error = _unsafe_url_request_error(exc)
+            if unsafe_error is not None:
+                return None, None, f"Redirect blocked: {unsafe_error}"
+            raise
         is_redirect = 300 <= response.status_code < 400
         if not is_redirect:
             return response, stream, None
@@ -1918,15 +1968,18 @@ class WebFetchTool(Tool):
             return self._cache[cache_key]
 
         # UPSTREAM: Optional Jina Reader (when enabled via config)
-        # Note: upstream PR #3928 added an httpx-based image pre-fetch detection
-        # block here using `_stream_with_safe_redirects`. The fork skips that block
-        # because its tiered fetcher (`_fetch_raw`: curl_cffi → httpx) below already
-        # detects images by content-type / URL extension and returns image blocks
-        # via `_build_image_blocks()`. Re-running the pre-fetch via httpx would
-        # double-request every URL (curl_cffi can fetch sites httpx cannot, so the
-        # pre-fetch would also leak fetch attempts past curl_cffi's stealth layer).
-        # The SSRF helpers (`_get_with_safe_redirects`, `_stream_with_safe_redirects`)
+        # Note: upstream pinned-DNS feature added an httpx-based image pre-fetch
+        # detection block here using `_stream_with_safe_redirects`. The fork skips
+        # that block because its tiered fetcher (`_fetch_raw`: curl_cffi → httpx)
+        # below already detects images by content-type / URL extension and returns
+        # image blocks via `_build_image_blocks()`. Re-running the pre-fetch via
+        # httpx would double-request every URL (curl_cffi can fetch sites httpx
+        # cannot, so the pre-fetch would also leak fetch attempts past curl_cffi's
+        # stealth layer). The pinned-DNS SSRF helpers (`_get_with_safe_redirects`,
+        # `_stream_with_safe_redirects`, `_resolve_url_safe`, `_fetch_client_kwargs`)
         # are still defined at module scope and used by `_fetch_readability`.
+
+        result = None
         if self.config.use_jina_reader:
             result = await self._fetch_jina(url, max_chars)
             if result is not None:
@@ -2156,8 +2209,7 @@ class WebFetchTool(Tool):
         """Local fallback using readability-lxml."""
         try:
             async with httpx.AsyncClient(
-                timeout=30.0,
-                proxy=self.proxy,
+                **_fetch_client_kwargs(self.proxy, 30.0),
             ) as client:
                 r, redirect_error = await _get_with_safe_redirects(
                     client,
