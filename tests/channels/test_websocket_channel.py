@@ -87,6 +87,7 @@ def _basic_handler(bus: Any, **kw: Any) -> GatewayServices:
         "enabled": True, "allowFrom": ["*"],
         "host": "127.0.0.1", "port": _PORT,
         "path": "/ws", "websocketRequiresToken": False,
+        "tokenIssueSecret": kw.get("token_issue_secret", ""),
     })
     return build_gateway_services(
         config=cfg,
@@ -2098,7 +2099,12 @@ async def test_bootstrap_exposes_native_surface(bus: MagicMock) -> None:
             "websocketRequiresToken": True,
         },
         bus,
-        gateway=_basic_handler(bus, runtime_surface="native", runtime_capabilities_overrides={"can_pick_folder": True}),
+        gateway=_basic_handler(
+            bus,
+            token_issue_secret="native-secret",
+            runtime_surface="native",
+            runtime_capabilities_overrides={"can_pick_folder": True},
+        ),
     )
 
     server_task = asyncio.create_task(channel.start())
@@ -2115,6 +2121,8 @@ async def test_bootstrap_exposes_native_surface(bus: MagicMock) -> None:
         assert body["runtime_capabilities"]["can_pick_folder"] is True
         assert body["runtime_capabilities"]["can_restart_engine"] is True
         assert body["token"].startswith("nbwt_")
+        assert body["api_token"].startswith("nbwt_")
+        assert body["api_token"] != body["token"]
     finally:
         await channel.stop()
         await server_task
@@ -2905,7 +2913,11 @@ def test_handle_file_preview_rejects_paths_outside_workspace(tmp_path) -> None:
     outside = tmp_path / "secret.py"
     outside.write_text("secret = True\n", encoding="utf-8")
 
-    gateway = _basic_handler(MagicMock(), workspace_path=workspace)
+    gateway = _basic_handler(
+        MagicMock(),
+        workspace_path=workspace,
+        default_restrict_to_workspace=True,
+    )
     gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
     key = "websocket:file-preview"
     enc = quote(key, safe="")
@@ -2917,6 +2929,39 @@ def test_handle_file_preview_rejects_paths_outside_workspace(tmp_path) -> None:
     resp = gateway.http._handle_file_preview(req, enc)
 
     assert resp.status_code == 403
+
+
+def test_handle_file_preview_allows_paths_outside_workspace_in_full_access(tmp_path) -> None:
+    from urllib.parse import quote
+
+    from websockets.datastructures import Headers
+    from websockets.http11 import Request
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "notes.py"
+    outside.write_text("value = 42\n", encoding="utf-8")
+
+    gateway = _basic_handler(
+        MagicMock(),
+        workspace_path=workspace,
+        default_restrict_to_workspace=False,
+    )
+    gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
+    key = "websocket:file-preview"
+    enc = quote(key, safe="")
+    req = Request(
+        f"/api/sessions/{enc}/file-preview?path={quote(str(outside), safe='')}",
+        Headers([("Authorization", "Bearer tok")]),
+    )
+
+    resp = gateway.http._handle_file_preview(req, enc)
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body.decode())
+    assert body["path"] == str(outside.resolve())
+    assert body["display_path"] == outside.resolve().as_posix()
+    assert body["content"].splitlines() == ["value = 42"]
 
 
 def test_handle_webui_thread_get_backfills_legacy_missing_user_rows(
