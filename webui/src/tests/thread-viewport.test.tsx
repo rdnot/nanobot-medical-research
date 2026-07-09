@@ -132,6 +132,46 @@ function makePromptExchangeMessages(count: number): UIMessage[] {
   ])).flat();
 }
 
+async function renderPromptRailViewport({
+  scrollTo,
+}: {
+  scrollTo?: (options?: ScrollToOptions) => void;
+} = {}) {
+  const promptMessages = makePromptExchangeMessages(5);
+  const { container } = render(
+    <ThreadViewport
+      messages={promptMessages}
+      isStreaming={false}
+      composer={<div />}
+    />,
+  );
+
+  const scroller = container.firstElementChild?.firstElementChild as HTMLElement;
+  Object.defineProperties(scroller, {
+    scrollHeight: { configurable: true, value: 1800 },
+    clientHeight: { configurable: true, value: 600 },
+    scrollTop: { configurable: true, value: 0 },
+    ...(scrollTo ? { scrollTo: { configurable: true, value: scrollTo } } : {}),
+  });
+
+  const promptEls = Array.from(
+    container.querySelectorAll<HTMLElement>("[data-user-prompt-id]"),
+  );
+  promptEls.forEach((el, index) => {
+    Object.defineProperty(el, "offsetTop", {
+      configurable: true,
+      value: index * 360,
+    });
+  });
+
+  await act(async () => {
+    window.dispatchEvent(new Event("resize"));
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  });
+
+  return { promptEls };
+}
+
 function ViewportWithPromptNavigator({ messages }: { messages: UIMessage[] }) {
   const viewportRef = useRef<ThreadViewportHandle | null>(null);
   return (
@@ -738,39 +778,10 @@ describe("ThreadViewport", () => {
   });
 
   it("renders a prompt rail that jumps to user messages", async () => {
-    const promptMessages = makePromptExchangeMessages(5);
-    const { container } = render(
-      <ThreadViewport
-        messages={promptMessages}
-        isStreaming={false}
-        composer={<div />}
-      />,
-    );
-
-    const scroller = container.firstElementChild?.firstElementChild as HTMLElement;
     const scrollTo = vi.fn();
-    Object.defineProperties(scroller, {
-      scrollHeight: { configurable: true, value: 1800 },
-      clientHeight: { configurable: true, value: 600 },
-      scrollTop: { configurable: true, value: 0 },
-      scrollTo: { configurable: true, value: scrollTo },
-    });
+    const { promptEls } = await renderPromptRailViewport({ scrollTo });
 
-    const promptEls = Array.from(
-      container.querySelectorAll<HTMLElement>("[data-user-prompt-id]"),
-    );
     expect(promptEls).toHaveLength(5);
-    promptEls.forEach((el, index) => {
-      Object.defineProperty(el, "offsetTop", {
-        configurable: true,
-        value: index * 360,
-      });
-    });
-
-    await act(async () => {
-      window.dispatchEvent(new Event("resize"));
-      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
-    });
 
     expect(screen.getByLabelText("User prompt navigation")).toBeInTheDocument();
     const promptMarkers = screen.getAllByRole("button", { name: /Jump to prompt:/ });

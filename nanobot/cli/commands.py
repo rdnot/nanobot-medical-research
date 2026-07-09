@@ -61,6 +61,7 @@ from rich.text import Text  # noqa: E402
 
 from nanobot import __logo__, __version__  # noqa: E402
 from nanobot import optional_features as feature_support  # noqa: E402
+from nanobot.agent.hooks import create_file_edit_activity_hook  # noqa: E402
 from nanobot.agent.loop import AgentLoop  # noqa: E402
 from nanobot.bus.outbound_events import (  # noqa: E402
     ProgressEvent,
@@ -597,6 +598,7 @@ def onboard(
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
     wizard: bool = typer.Option(False, "--wizard", help="Use interactive wizard"),
+    non_interactive_refresh: bool = typer.Option(False, "--refresh", help="Refresh config, preserving existing settings without prompting"),
 ):
     """Initialize nanobot configuration and workspace."""
     from nanobot.config.loader import get_config_path, load_config, save_config, set_config_path
@@ -619,18 +621,23 @@ def onboard(
         if wizard:
             config = _apply_workspace_override(load_config(config_path))
         else:
-            console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
-            console.print(
-                "  [bold]y[/bold] = overwrite with defaults (existing values will be lost)"
-            )
-            console.print(
-                "  [bold]N[/bold] = refresh config, keeping existing values and adding new fields"
-            )
-            if typer.confirm("Overwrite?"):
-                config = _apply_workspace_override(Config())
-                save_config(config, config_path)
-                console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
-            else:
+            should_refresh = non_interactive_refresh
+            if not non_interactive_refresh:
+                console.print(f"[yellow]Config already exists at {config_path}[/yellow]")
+                console.print(
+                    "  [bold]y[/bold] = overwrite with defaults (existing values will be lost)"
+                )
+                console.print(
+                    "  [bold]N[/bold] = refresh config, keeping existing values and adding new fields"
+                )
+                if typer.confirm("Overwrite?"):
+                    config = _apply_workspace_override(Config())
+                    save_config(config, config_path)
+                    console.print(f"[green]✓[/green] Config reset to defaults at {config_path}")
+                else:
+                    should_refresh = True
+
+            if should_refresh:
                 config = _apply_workspace_override(load_config(config_path))
                 save_config(config, config_path)
                 console.print(
@@ -919,36 +926,57 @@ def _host_for_local_browser(host: str) -> str:
     return host
 
 
+def _webui_bootstrap_secret(config: Config) -> str:
+    ws_cfg = _webui_config_dict(config)
+    return str(ws_cfg.get("tokenIssueSecret") or ws_cfg.get("token") or "").strip()
+
+
 def _webui_browser_url(config: Config) -> str:
+    from urllib.parse import quote
+
     ws_cfg = _webui_config_dict(config)
     host = _host_for_local_browser(str(ws_cfg.get("host") or "127.0.0.1"))
     port = int(ws_cfg.get("port") or 8765)
-    return f"http://{host}:{port}"
+    base_url = f"http://{host}:{port}"
+    secret = _webui_bootstrap_secret(config)
+    if not secret:
+        return base_url
+    return f"{base_url}/#/?bootstrapSecret={quote(secret, safe='')}"
 
 
-def _ensure_local_webui_channel(config: Config, *, port: int | None, yes: bool) -> bool:
+def _webui_display_url(url: str) -> str:
+    marker = "bootstrapSecret="
+    if marker not in url:
+        return url
+    prefix, _ = url.split(marker, 1)
+    return f"{prefix}{marker}<redacted>"
+
+
+def _ensure_local_webui_channel(config: Config, *, port: int | None, yes: bool) -> tuple[bool, bool]:
     """Enable the local WebUI channel with safe localhost defaults."""
     from nanobot.channels.websocket import WebSocketConfig
 
     current = getattr(config.channels, "websocket", None) or {}
     model = WebSocketConfig.model_validate(current)
     changed = False
+    generated_secret = False
 
     needs_enable = not model.enabled
     needs_port = port is not None and model.port != port
-    if not needs_enable and not needs_port:
-        return False
+    needs_secret = not model.token_issue_secret.strip() and not model.token.strip()
+    if not needs_enable and not needs_port and not needs_secret:
+        return False, False
 
     target_port = port if port is not None else model.port
     console.print()
     console.print("[bold]Local WebUI setup[/bold]")
     console.print(f"  URL: [cyan]http://127.0.0.1:{target_port}[/cyan]")
     console.print("  Bind: [cyan]127.0.0.1 only[/cyan] (not exposed to your LAN)")
-    console.print("  Auth: localhost bootstrap issues short-lived WebSocket tokens")
+    console.print("  Auth: generated WebUI bootstrap secret stored in config")
     console.print(
         "  LAN access requires an explicit host change plus a WebUI password in config."
     )
-    _confirm_webui_action("Enable the local WebUI channel in this config?", yes=yes)
+    _confirm_webui_action("Update the local WebUI channel in this config?", yes=yes)
 
     if not model.enabled:
         model.enabled = True
@@ -962,9 +990,15 @@ def _ensure_local_webui_channel(config: Config, *, port: int | None, yes: bool) 
     if not model.websocket_requires_token:
         model.websocket_requires_token = True
         changed = True
+    if needs_secret:
+        import secrets
+
+        model.token_issue_secret = secrets.token_urlsafe(32)
+        changed = True
+        generated_secret = True
 
     setattr(config.channels, "websocket", model.model_dump(by_alias=True, exclude_none=True))
-    return changed
+    return changed, generated_secret
 
 
 def _warn_webui_bind_scope(config: Config) -> None:
@@ -1129,6 +1163,13 @@ def serve(
     host = host if host is not None else api_cfg.host
     port = port if port is not None else api_cfg.port
     timeout = timeout if timeout is not None else api_cfg.timeout
+    api_key = api_cfg.api_key.strip() if api_cfg.api_key else ""
+    if host in {"0.0.0.0", "::"} and not api_key:
+        console.print(
+            "[red]Error: host is 0.0.0.0 (all interfaces) but api_key is not set. "
+            "Set api.api_key in config to prevent unauthenticated access.[/red]"
+        )
+        raise typer.Exit(1)
     sync_workspace_templates(runtime_config.workspace_path)
     bus = MessageBus()
     session_manager = SessionManager(runtime_config.workspace_path)
@@ -1137,6 +1178,7 @@ def serve(
             runtime_config, bus,
             session_manager=session_manager,
             image_generation_provider_configs=image_gen_provider_configs(runtime_config),
+            hook_factories=[create_file_edit_activity_hook],
         )
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
@@ -1148,14 +1190,7 @@ def serve(
     console.print(f"  [cyan]Model[/cyan]    : {model_name}{preset_tag}")
     console.print("  [cyan]Session[/cyan]  : api:default")
     console.print(f"  [cyan]Timeout[/cyan]  : {timeout}s")
-    api_key = api_cfg.api_key.strip() if api_cfg.api_key else ""
     if host in {"0.0.0.0", "::"}:
-        if not api_key:
-            console.print(
-                "[red]Error: host is 0.0.0.0 (all interfaces) but api_key is not set. "
-                "Set api.api_key in config to prevent unauthenticated access.[/red]"
-            )
-            raise typer.Exit(1)
         console.print(
             "[yellow]API is bound to all interfaces "
             "(authentication required).[/yellow]"
@@ -1225,7 +1260,11 @@ def webui(
             setup_config.agents.defaults.workspace = workspace
 
     try:
-        changed_webui = _ensure_local_webui_channel(setup_config, port=port, yes=yes)
+        changed_webui, generated_bootstrap_secret = _ensure_local_webui_channel(
+            setup_config,
+            port=port,
+            yes=yes,
+        )
         _warn_webui_bind_scope(setup_config)
         webui_url = _webui_browser_url(setup_config)
     except ValueError as exc:
@@ -1244,10 +1283,18 @@ def webui(
     effective_gateway_port = gateway_port if gateway_port is not None else runtime_config.gateway.port
 
     console.print()
-    console.print(f"WebUI: [cyan]{webui_url}[/cyan]")
+    console.print(f"WebUI: [cyan]{_webui_display_url(webui_url)}[/cyan]")
     console.print(f"Gateway health: [cyan]http://{runtime_config.gateway.host}:{effective_gateway_port}/health[/cyan]")
     if no_open:
         console.print("[dim]Browser opening disabled by --no-open.[/dim]")
+        if generated_bootstrap_secret:
+            console.print(
+                "[yellow]A WebUI bootstrap secret was generated and saved in this config.[/yellow]"
+            )
+            console.print(
+                "[dim]Open the WebUI and enter channels.websocket.tokenIssueSecret from "
+                f"{config_path}, or rerun without --no-open to open the authenticated URL.[/dim]"
+            )
 
     if background:
         config_arg = str(config_path)
@@ -1259,18 +1306,27 @@ def webui(
                 config_path=config_arg,
             )
         )
-        result = runtime.start_background(
-            GatewayStartOptions(
-                port=effective_gateway_port,
-                workspace=workspace_arg,
-                config_path=config_arg,
-            )
+        start_options = GatewayStartOptions(
+            port=effective_gateway_port,
+            workspace=workspace_arg,
+            config_path=config_arg,
         )
-        if not result.ok and result.message != "gateway_already_running":
-            console.print(f"[yellow]Gateway was not started: {result.message}[/yellow]")
+        result = runtime.start_background(start_options)
+        restarted = False
+        restart_attempted = False
+        if not result.ok and result.message == "gateway_already_running" and changed_webui:
+            restart_attempted = True
+            console.print("[yellow]WebUI config changed; restarting the background gateway.[/yellow]")
+            result = runtime.restart(start_options, timeout_s=20)
+            restarted = result.ok
+        if not result.ok and (restart_attempted or result.message != "gateway_already_running"):
+            action = "restarted" if restart_attempted else "started"
+            console.print(f"[yellow]Gateway was not {action}: {result.message}[/yellow]")
             console.print(f"Logs: {result.status.log_path}")
             raise typer.Exit(1)
-        if result.ok:
+        if restarted:
+            console.print("[green]Gateway restarted in the background.[/green]")
+        elif result.ok:
             console.print("[green]Gateway started in the background.[/green]")
         else:
             console.print("[yellow]Gateway is already running in the background.[/yellow]")
@@ -1375,6 +1431,7 @@ def _run_gateway(
         provider_signature=provider_snapshot.signature,
         hooks=[TokenUsageHook(timezone_name=config.agents.defaults.timezone)],
         local_trigger_store=trigger_store,
+        hook_factories=[create_file_edit_activity_hook],
     )
     WebuiTurnCoordinator(
         bus=bus,
@@ -1860,6 +1917,7 @@ def agent(
             config, bus,
             cron_service=cron,
             image_generation_provider_configs=image_gen_provider_configs(config),
+            hook_factories=[create_file_edit_activity_hook],
         )
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")

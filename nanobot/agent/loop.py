@@ -21,9 +21,9 @@ from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.automation_turns import publish_next_deferred_turn
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.cron_turns import CronTurnCoordinator
-from nanobot.agent.hook import AgentHook, AgentHookContext, CompositeHook
+from nanobot.agent.hook import AgentHook, AgentHookContext, AgentTurnHookFactory
+from nanobot.agent.progress_hook import AgentProgressHook  # FORK: subclass for _ForkProgressHook
 from nanobot.agent.memory import Consolidator
-from nanobot.agent.progress_hook import AgentProgressHook
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
@@ -31,6 +31,7 @@ from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, res
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.self import MyTool
+from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.outbound_events import (
     RetryWaitEvent,
@@ -228,6 +229,7 @@ class TurnContext:
     ephemeral: bool = False
     run_extra_hooks_for_ephemeral: bool = False
     hooks: list[AgentHook] = field(default_factory=list)
+    hook_factories: list[AgentTurnHookFactory] = field(default_factory=list)
     tools: ToolRegistry | None = None
 
     turn_wall_started_at: float = field(default_factory=time.time)
@@ -301,6 +303,7 @@ class AgentLoop:
         session_ttl_minutes: int = 0,
         consolidation_ratio: float = 0.5,
         hooks: list[AgentHook] | None = None,
+        hook_factories: list[AgentTurnHookFactory] | None = None,
         unified_session: bool = False,
         disabled_skills: list[str] | None = None,
         tools_config: ToolsConfig | None = None,
@@ -371,6 +374,7 @@ class AgentLoop:
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
+        self._hook_factories: list[AgentTurnHookFactory] = hook_factories or []
 
         self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
         self.sessions = session_manager or SessionManager(workspace)
@@ -930,6 +934,7 @@ class AgentLoop:
         ephemeral: bool = False,
         run_extra_hooks_for_ephemeral: bool = False,
         hooks: list[AgentHook] | None = None,
+        hook_factories: list[AgentTurnHookFactory] | None = None,
         tools: ToolRegistry | None = None,
     ) -> tuple[str | None, list[str], list[dict], str, list[dict], bool]:
         """Run the agent iteration loop.
@@ -950,6 +955,10 @@ class AgentLoop:
         # FORK: Compute force-final threshold and pass it into the hook
         force_final_threshold = max(1, self.max_iterations - 2)
 
+        # FORK: build _ForkProgressHook here (subclass of AgentProgressHook)
+        # so force_final_threshold, all_tool_calls_log, and _tool_hint are active.
+        # Pass it into build_agent_turn_hook via spec.progress_hook so upstream's
+        # hook-factory composition still works around it.
         loop_hook = _ForkProgressHook(
             self,
             on_progress=on_progress,
@@ -965,11 +974,6 @@ class AgentLoop:
             set_tool_context=self._set_tool_context,
             on_iteration=lambda iteration: setattr(self, "_current_iteration", iteration),
         )
-        run_hooks = [*self._extra_hooks, *(hooks or [])]
-        hook: AgentHook = loop_hook
-        if run_hooks and (not ephemeral or run_extra_hooks_for_ephemeral):
-            hook = CompositeHook([loop_hook, *run_hooks])
-
         async def _checkpoint(payload: dict[str, Any]) -> None:
             if session is None:
                 return
@@ -1045,6 +1049,28 @@ class AgentLoop:
             message_metadata=metadata,
             session_metadata=session.metadata if session is not None else None,
         )
+        effective_tools = tools or self.tools
+        hook = build_agent_turn_hook(AgentTurnHookSpec(
+            on_progress=on_progress,
+            on_stream=on_stream,
+            on_stream_end=on_stream_end,
+            channel=channel,
+            chat_id=chat_id,
+            message_id=message_id,
+            metadata=metadata,
+            session_key=active_session_key,
+            workspace=effective_scope.project_path,
+            tool_hint_max_length=self.tool_hint_max_length,
+            set_tool_context=self._set_tool_context,
+            on_iteration=lambda iteration: setattr(self, "_current_iteration", iteration),
+            progress_hook=loop_hook,  # FORK: inject _ForkProgressHook
+            registered_hook_factories=self._hook_factories,
+            turn_hook_factories=list(hook_factories or []),
+            registered_hooks=self._extra_hooks,
+            turn_hooks=list(hooks or []),
+            ephemeral=ephemeral,
+            run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,
+        ))
         request_ctx = RequestContext(
             channel=channel,
             chat_id=chat_id,
@@ -1071,7 +1097,7 @@ class AgentLoop:
         try:
             result = await self.runner.run(AgentRunSpec(
                 initial_messages=initial_messages,
-                tools=tools or self.tools,
+                tools=effective_tools,
                 model=self.model,
                 max_iterations=self.max_iterations,
                 max_tool_result_chars=self.max_tool_result_chars,
@@ -1422,6 +1448,7 @@ class AgentLoop:
         on_stream: Callable[[str], Awaitable[None]] | None = None,
         on_stream_end: Callable[..., Awaitable[None]] | None = None,
         pending_queue: asyncio.Queue | None = None,
+        hook_factories: list[AgentTurnHookFactory] | None = None,
     ) -> OutboundMessage | None:
         """Process a system inbound message (e.g. subagent announce)."""
         channel, chat_id = (
@@ -1484,6 +1511,7 @@ class AgentLoop:
             metadata=msg.metadata,
             session_key=key,
             pending_queue=pending_queue,
+            hook_factories=hook_factories,
         )
         wall_done = time.time()
         latency_ms = max(0, int((wall_done - t_wall) * 1000))
@@ -1524,6 +1552,7 @@ class AgentLoop:
         ephemeral: bool = False,
         run_extra_hooks_for_ephemeral: bool = False,
         hooks: list[AgentHook] | None = None,
+        hook_factories: list[AgentTurnHookFactory] | None = None,
         tools: ToolRegistry | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
@@ -1537,6 +1566,7 @@ class AgentLoop:
                 on_stream=on_stream,
                 on_stream_end=on_stream_end,
                 pending_queue=pending_queue,
+                hook_factories=hook_factories,
             )
 
         key = session_key or msg.session_key
@@ -1558,6 +1588,7 @@ class AgentLoop:
             ephemeral=ephemeral,
             run_extra_hooks_for_ephemeral=run_extra_hooks_for_ephemeral,
             hooks=list(hooks or []),
+            hook_factories=list(hook_factories or []),
             tools=tools,
         )
 
@@ -1787,6 +1818,7 @@ class AgentLoop:
             ephemeral=ctx.ephemeral,
             run_extra_hooks_for_ephemeral=ctx.run_extra_hooks_for_ephemeral,
             hooks=ctx.hooks,
+            hook_factories=ctx.hook_factories,
             tools=ctx.tools,
         )
         # FORK: 6-tuple — tool_calls_log (5th, FORK), had_injections (6th, UPSTREAM)
@@ -2116,6 +2148,7 @@ class AgentLoop:
         ephemeral: bool = False,
         _run_extra_hooks_for_ephemeral: bool = False,
         hooks: list[AgentHook] | None = None,
+        hook_factories: list[AgentTurnHookFactory] | None = None,
         tools: ToolRegistry | None = None,
         persist_user_message: bool = True,
     ) -> OutboundMessage | None:
@@ -2143,6 +2176,8 @@ class AgentLoop:
                     kwargs["run_extra_hooks_for_ephemeral"] = True
                 if hooks is not None:
                     kwargs["hooks"] = hooks
+                if hook_factories is not None:
+                    kwargs["hook_factories"] = hook_factories
                 if tools is not None:
                     kwargs["tools"] = tools
                 return await self._process_message(
