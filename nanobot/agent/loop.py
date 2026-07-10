@@ -950,7 +950,6 @@ class AgentLoop:
             metadata=metadata,
             session_key=session_key,
             tool_hint_max_length=self.tool_hint_max_length,
-            set_tool_context=self._set_tool_context,
             on_iteration=lambda iteration: setattr(self, "_current_iteration", iteration),
         )
         async def _checkpoint(payload: dict[str, Any]) -> None:
