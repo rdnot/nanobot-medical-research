@@ -20,6 +20,7 @@
 
 -  **Web_fetch improvements** : `curl_cffi + trafilatura` upgrade (better anti-bot evasion and text extraction)
   > This fork bypasses Jina `web_fetch` and uses the fork's local web_fetch by default (`curl_cffi` on main branch, `curl_cffi`/`scrapling` on scrapling branch). To use Jina web_fetch, set `"useJinaReader": true` in your config.
+
   > install required dependencies: `pip install curl_cffi trafilatura markdownify` (and `PyMuPDF` for PDF support)
 
 - **Scrapling Branch** (`scrapling` branch only): Adds a browser tier (Scrapling/Playwright) between curl_cffi and httpx for JS-rendered pages / Cloudflare
