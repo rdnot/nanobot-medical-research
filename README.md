@@ -1,10 +1,3 @@
-## Main changes in This Branch
-
-- **feat(web_fetch): add scrapling browser tier between curl_cffi and httpx fallback** : Manage JS-rendered pages / Cloudflare
- > install required dependencies (curl_cffi, scrapling, scrapling[fetchers], trafilatura, markdownify, PyMuPDF(optional)) then install the browser dependencies with `scrapling install`)
-
----
-
 # Nanobot Medical Research Fork
 
 > *"Turns Nanobot into something I'd actually want running during a busy shift — fetches real PubMed articles, PDF guidelines, and full journal articles without getting blocked or cutting the answer short. Give it a complex clinical question and it pulls 10+ sources, reads them properly, and writes a structured answer that respects the depth the topic deserves. For evidence-based acute care research at the end of a long night, this does what a good medical library tool should."*
@@ -30,7 +23,7 @@
 
 - **Loop Control**: `FORCE_FINAL_THRESHOLD = max_iterations - 2` — Forces final answer after [max_iterations - 2] iterations (default max_iterations = 200, unless specify in config `maxToolIterations`) to prevent infinite tool loops
 
-- **SelfTool Opt-in** (aligned with upstream): The `my` skill (runtime self-inspection) is set to `always: false`. Combined with upstream's on-demand skill loading (merged `perf(agent): load my skill on demand`), the skill loads only when needed — the agent discovers it in the skills summary and pulls the full content on-demand (e.g., diagnosing issues, checking token usage). This reduces tool call overhead for users who don't need frequent self-inspection.
+- **SelfTool On-Demand** (aligned with upstream): The `my` skill (runtime self-inspection) loads only when needed. Upstream's on-demand skill loading (`perf(agent): load my skill on demand`) keeps the full skill body out of the system prompt until the agent actually calls it (e.g., diagnosing issues, checking token usage), reducing tool call overhead for users who don't need frequent self-inspection.
 
 - **WhatsApp Channel**: Enhanced message markdown rendering for WhatsApp integration
 
