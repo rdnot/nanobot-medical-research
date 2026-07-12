@@ -1941,8 +1941,6 @@ class WebFetchTool(Tool):
         self.proxy = proxy
         self.user_agent = user_agent or _DEFAULT_USER_AGENT
         self.max_chars = max_chars
-        self._cache: dict[str, str] = {}  # FORK: session-level URL cache
-        self._cache_max = 50  # FORK: prevent unbounded memory growth
 
     @property
     def read_only(self) -> bool:
@@ -1961,11 +1959,6 @@ class WebFetchTool(Tool):
         is_valid, error_msg = _validate_url_safe(url)
         if not is_valid:
             return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
-
-        # FORK: Cache hit
-        cache_key = f"{url}::{extract_mode}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
 
         # UPSTREAM: Optional Jina Reader (when enabled via config)
         # Note: upstream pinned-DNS feature added an httpx-based image pre-fetch
@@ -2102,9 +2095,6 @@ class WebFetchTool(Tool):
                         "untrusted": True, "text": text
                     }, ensure_ascii=False)
 
-                if len(self._cache) >= self._cache_max:
-                    self._cache.pop(next(iter(self._cache)))
-                self._cache[cache_key] = result
                 return result
 
             # --- HTML ---
@@ -2147,10 +2137,6 @@ class WebFetchTool(Tool):
                     "untrusted": True, "text": text
                 }, ensure_ascii=False)
 
-            if len(self._cache) >= self._cache_max:
-                # Evict oldest entry (insertion-order dict, Python 3.7+)
-                self._cache.pop(next(iter(self._cache)))
-            self._cache[cache_key] = result
             return result
 
         except httpx.ProxyError as e:
@@ -2193,12 +2179,6 @@ class WebFetchTool(Tool):
                 "extractor": "jina", "truncated": truncated, "length": len(text),
                 "untrusted": True, "text": text,
             }, ensure_ascii=False)
-
-            # FORK: Cache the result
-            cache_key = f"{url}::jina"
-            if len(self._cache) >= self._cache_max:
-                self._cache.pop(next(iter(self._cache)))
-            self._cache[cache_key] = result
 
             return result
         except Exception as e:
