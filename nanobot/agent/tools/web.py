@@ -781,8 +781,8 @@ class WebSearchTool(Tool):
     async def _search_searxng(self, query: str, n: int) -> str:
         # Priority: hardcoded DEFAULT_SEARXNG_URL > config.base_url > env var
         base_url = (
-            DEFAULT_SEARXNG_URL 
-            or self.config.base_url 
+            DEFAULT_SEARXNG_URL
+            or self.config.base_url
             or os.environ.get("SEARXNG_BASE_URL", "")
         ).strip()
         if not base_url:
@@ -1237,7 +1237,7 @@ class WebFetchTool(Tool):
                     text = content_bytes.decode("utf-8", errors="replace")
                     text = f"{_UNTRUSTED_BANNER}\n\n[JSON parse failed]\n\n{text}"
                     text = _smart_truncate(text, max_chars)
-                    result = json.dumps({   # <-- must build result here  
+                    result = json.dumps({   # <-- must build result here
                         "url": url, "status": status_code, "fetcher": fetcher,
                         "extractor": "raw", "truncated": "[...truncated...]" in text,
                         "word_count": len(text.split()), "length": len(text),
