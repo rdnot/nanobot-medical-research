@@ -2015,7 +2015,7 @@ class WebFetchTool(Tool):
             elif "application/json" in ctype or url.endswith(".json"):
                 # Minimal fix: Reddit now returns HTML-wrapped + escaped JSON inside <p>
                 content_str = content_bytes.decode("utf-8", errors="replace")
-                
+
                 if "reddit.com" in url.lower() and url.endswith(".json"):
                     # Extract the actual JSON from <html><body><p>[{...}]</p></body></html>
                     p_match = re.search(r'<p[^>]*>([\s\S]*?)</p>', content_str, re.IGNORECASE)
@@ -2034,11 +2034,11 @@ class WebFetchTool(Tool):
                         logger.warning("JSON parse failed for {} ({}): falling back to raw text", url, e)
                         text = content_bytes.decode("utf-8", errors="replace")
                         text = f"{_UNTRUSTED_BANNER}\n\n[JSON parse failed]\n\n{text}"
-                    
+
                     text = _smart_truncate(text, max_chars)
                     result = json.dumps({   # <-- must build result here
                         "url": url, "status": status_code, "fetcher": fetcher,
-                        "extractor": "reddit_html_fallback" if is_reddit else "raw", 
+                        "extractor": "reddit_html_fallback" if is_reddit else "raw",
                         "truncated": "[...truncated...]" in text,
                         "word_count": len(text.split()), "length": len(text),
                         "untrusted": True, "text": text
