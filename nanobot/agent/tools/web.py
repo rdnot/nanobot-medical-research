@@ -1544,8 +1544,8 @@ class WebSearchTool(Tool):
     async def _search_searxng(self, query: str, n: int) -> str:
         # Priority: hardcoded DEFAULT_SEARXNG_URL > config.base_url > env var
         base_url = (
-            DEFAULT_SEARXNG_URL 
-            or self.config.base_url 
+            DEFAULT_SEARXNG_URL
+            or self.config.base_url
             or os.environ.get("SEARXNG_BASE_URL", "")
         ).strip()
         if not base_url:
@@ -2036,7 +2036,7 @@ class WebFetchTool(Tool):
                         text = f"{_UNTRUSTED_BANNER}\n\n[JSON parse failed]\n\n{text}"
                     
                     text = _smart_truncate(text, max_chars)
-                    result = json.dumps({   
+                    result = json.dumps({   # <-- must build result here
                         "url": url, "status": status_code, "fetcher": fetcher,
                         "extractor": "reddit_html_fallback" if is_reddit else "raw", 
                         "truncated": "[...truncated...]" in text,

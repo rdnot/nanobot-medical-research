@@ -191,7 +191,7 @@ async def test_web_fetch_proxy_remains_supported(monkeypatch):
     # FORK: Same as test_web_fetch_env_proxy — upstream's FakeClient intercepts
     # the tiered fetcher's httpx fallback. Use _fetch_raw mock instead.
     tool = WebFetchTool(proxy="http://config-proxy.example:7890")
-    client_kwargs = _patch_web_fetch_fake_client(monkeypatch)
+    _patch_web_fetch_fake_client(monkeypatch)
 
     monkeypatch.setenv("HTTPS_PROXY", "http://env-proxy.example:8080")
     monkeypatch.setenv("NO_PROXY", "example.com")
@@ -345,11 +345,6 @@ async def test_web_fetch_falls_back_when_readability_dependency_is_missing(monke
     assert data["untrusted"] is True
     assert "Hello world" in data["text"]
 
-
-@pytest.mark.asyncio
-async def test_web_fetch_blocks_private_redirect_before_readability_request(monkeypatch):
-    tool = WebFetchTool(config=WebFetchConfig(use_jina_reader=False))
-    requested: list[str] = []
 
 @pytest.mark.asyncio
 async def test_web_fetch_blocks_private_redirect_before_returning_image():

@@ -20,7 +20,6 @@ from nanobot.channels.base import BaseChannel
 from nanobot.config.paths import get_media_dir, get_runtime_subdir
 from nanobot.config.schema import Base
 
-
 # Safe placeholders using STX/ETX control characters (rarely appear in text)
 _PH_BOLD_START = "\x02B\x02"
 _PH_BOLD_END = "\x02/B\x02"
