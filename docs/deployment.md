@@ -13,7 +13,7 @@ Check these once before Docker, systemd, or LaunchAgent:
 | Secrets are in environment variables or protected config files | API keys, bot tokens, OAuth state, and chat credentials should not be world-readable |
 | `~/.nanobot/` or your custom config/workspace path is persistent | Sessions, memory, channel login state, generated artifacts, and cron jobs live there |
 | Channel access control is intentional | Use `allowFrom`, pairing, WebSocket `token`/`tokenIssueSecret`, or private test channels before exposing the bot |
-| Ports are planned | Gateway health defaults to `18790`; WebUI/WebSocket defaults to `8765`; `nanobot serve` defaults to `8900` |
+| Ports are planned | Gateway health defaults to local-only `127.0.0.1:18790`; WebUI/WebSocket defaults to `8765`; `nanobot serve` defaults to `8900` |
 | Logs are easy to reach | Use `docker compose logs`, `journalctl`, LaunchAgent log files, or `nanobot gateway --verbose` while diagnosing startup |
 
 Restart the deployed process after editing `config.json`. Long-running processes read config at startup.
@@ -54,6 +54,11 @@ Restart the deployed process after editing `config.json`. Long-running processes
 > ```
 >
 > When the WebSocket `host` is `0.0.0.0`, the channel refuses to start unless `token` or `tokenIssueSecret` is also configured. See [`webui.md#lan-access`](./webui.md#lan-access) for details.
+> The gateway health route itself is intentionally minimal and unauthenticated. When the
+> container binds it to `0.0.0.0`, publish port `18790` to host loopback only; place any
+> remotely monitored health endpoint behind a firewall or reverse proxy. If another host
+> must probe it directly, replace `127.0.0.1` in the port mapping with a trusted host
+> interface and restrict inbound traffic to the monitoring system.
 
 ### Docker Compose
 
@@ -69,6 +74,20 @@ docker compose logs -f nanobot-gateway                   # view logs
 docker compose down                                      # stop
 ```
 
+The default Compose file drops all Linux capabilities and keeps Docker's default
+AppArmor/seccomp profiles enabled. If you explicitly set
+`"tools.exec.sandbox": "bwrap"` in `~/.nanobot/config.json`, add the bwrap
+override file when starting containers:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.bwrap.yml up -d nanobot-gateway
+docker compose -f docker-compose.yml -f docker-compose.bwrap.yml run --rm nanobot-cli agent -m "Hello!"
+```
+
+The override grants `CAP_SYS_ADMIN` and disables AppArmor/seccomp confinement for
+the container so bubblewrap can create its nested namespaces. Use it only when the
+bwrap sandbox is enabled.
+
 ### Docker
 
 ```bash
@@ -82,18 +101,23 @@ docker run -v ~/.nanobot:/home/nanobot/.nanobot --rm nanobot onboard
 vim ~/.nanobot/config.json
 
 # Run gateway (connects to enabled channels, e.g. Telegram/Discord/Mochat).
-# Mirrors the security caps and port mappings declared in docker-compose.yml:
-#   - `--cap-drop ALL --cap-add SYS_ADMIN` + unconfined apparmor/seccomp are required
-#     when `tools.exec.sandbox: "bwrap"` is enabled (bwrap needs CAP_SYS_ADMIN for
-#     user namespaces). Without them, `bwrap` exits with `clone3: Operation not permitted`.
-#   - `-p 8765:8765` exposes the WebSocket channel / WebUI alongside the gateway health
-#     endpoint on 18790.
+# `-p 8765:8765` exposes the WebSocket channel / WebUI alongside the gateway
+# health endpoint on 18790.
+docker run \
+  --cap-drop ALL \
+  -v ~/.nanobot:/home/nanobot/.nanobot \
+  -p 18790:18790 -p 8765:8765 \
+  nanobot gateway
+
+# If `tools.exec.sandbox: "bwrap"` is enabled, run with the extra permissions
+# bubblewrap needs for nested namespaces. Without them, `bwrap` may exit with
+# `clone3: Operation not permitted`.
 docker run \
   --cap-drop ALL --cap-add SYS_ADMIN \
   --security-opt apparmor=unconfined \
   --security-opt seccomp=unconfined \
   -v ~/.nanobot:/home/nanobot/.nanobot \
-  -p 18790:18790 -p 8765:8765 \
+  -p 127.0.0.1:18790:18790 -p 8765:8765 \
   nanobot gateway
 
 # Or run a single command

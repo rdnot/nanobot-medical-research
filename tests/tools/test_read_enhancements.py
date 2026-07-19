@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
 from nanobot.agent.tools import file_state
+from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
 
 
 @pytest.fixture(autouse=True)
@@ -199,6 +199,19 @@ class TestReadPdf:
         assert "Page 2 content" in result
         assert "Page 3 content" in result
         assert "Page 1 content" not in result
+
+    @pytest.mark.asyncio
+    async def test_pdf_rejects_invalid_page_range(self, tool, tmp_path):
+        fitz = pytest.importorskip("fitz")
+        pdf_path = tmp_path / "test.pdf"
+        doc = fitz.open()
+        doc.new_page()
+        doc.save(str(pdf_path))
+        doc.close()
+
+        result = await tool.execute(path=str(pdf_path), pages="bad")
+
+        assert "Invalid page range" in result
 
     @pytest.mark.asyncio
     async def test_pdf_file_not_found_error(self, tool, tmp_path):
