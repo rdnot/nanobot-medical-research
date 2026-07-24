@@ -511,6 +511,7 @@ class WriteFileTool(_FsTool):
         file_states: FileStates | None = None,
         restrict_to_workspace: bool | None = None,
         sandbox_restricts_workspace: bool = False,
+        extra_read_allowed_files: list[Path] | None = None,
     ):
         super().__init__(
             workspace, allowed_dir, extra_allowed_dirs,
@@ -520,6 +521,7 @@ class WriteFileTool(_FsTool):
             file_states=file_states,
             restrict_to_workspace=restrict_to_workspace,
             sandbox_restricts_workspace=sandbox_restricts_workspace,
+            extra_read_allowed_files=extra_read_allowed_files,
         )
 
         if max_tokens is None:
@@ -890,6 +892,7 @@ class EditFileTool(_FsTool):
         file_states: FileStates | None = None,
         restrict_to_workspace: bool | None = None,
         sandbox_restricts_workspace: bool = False,
+        extra_read_allowed_files: list[Path] | None = None,
     ):
         super().__init__(
             workspace, allowed_dir, extra_allowed_dirs,
@@ -899,6 +902,7 @@ class EditFileTool(_FsTool):
             file_states=file_states,
             restrict_to_workspace=restrict_to_workspace,
             sandbox_restricts_workspace=sandbox_restricts_workspace,
+            extra_read_allowed_files=extra_read_allowed_files,
         )
 
         if max_tokens is None:
