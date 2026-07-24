@@ -307,7 +307,7 @@ class TestAutoCompact:
         loop.sessions.save(s2)
 
         loop.consolidator.compact_idle_session = _make_fake_compact(loop)
-        loop.auto_compact.check_expired(loop._schedule_background, loop.llm_runtime)
+        loop.auto_compact.check_expired(loop._schedule_background, loop.runtime_for_session)
         await _drain_background_tasks(loop)
 
         active_after = loop.sessions.get_or_create("cli:active")
@@ -776,10 +776,44 @@ class TestProactiveAutoCompact:
         """Helper: run check_expired via callback and wait for background tasks."""
         loop.auto_compact.check_expired(
             loop._schedule_background,
-            loop.llm_runtime,
+            loop.runtime_for_session,
             active_session_keys=active_session_keys,
         )
         await _drain_background_tasks(loop)
+
+    @pytest.mark.asyncio
+    async def test_idle_tick_survives_session_removed_during_listing(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        loop = _make_loop(tmp_path, session_ttl_minutes=15)
+        removed = loop.sessions.get_or_create("cli:removed")
+        removed.add_message("user", "remove me")
+        loop.sessions.save(removed)
+        healthy = loop.sessions.get_or_create("cli:healthy")
+        healthy.add_message("user", "keep me")
+        loop.sessions.save(healthy)
+
+        removed_path = loop.sessions._get_session_path(removed.key)
+        original_open = open
+
+        def remove_before_open(path, *args, **kwargs):
+            if Path(path) == removed_path:
+                removed_path.unlink()
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.open", remove_before_open)
+
+        async def idle_once():
+            loop._running = False
+            raise asyncio.TimeoutError
+
+        monkeypatch.setattr(loop.bus, "consume_inbound", idle_once)
+
+        await loop.run()
+
+        assert [row["key"] for row in loop.sessions.list_sessions()] == ["cli:healthy"]
 
     @pytest.mark.asyncio
     async def test_no_check_when_ttl_disabled(self, tmp_path):
@@ -878,12 +912,12 @@ class TestProactiveAutoCompact:
         loop.consolidator.compact_idle_session = _slow_compact
 
         # First call starts archiving via callback
-        loop.auto_compact.check_expired(loop._schedule_background, loop.llm_runtime)
+        loop.auto_compact.check_expired(loop._schedule_background, loop.runtime_for_session)
         await started.wait()
         assert archive_count == 1
 
         # Second call should skip (key is in _archiving)
-        loop.auto_compact.check_expired(loop._schedule_background, loop.llm_runtime)
+        loop.auto_compact.check_expired(loop._schedule_background, loop.runtime_for_session)
         assert archive_count == 1
 
         # Clean up

@@ -302,7 +302,7 @@ class TestCmdNewUnifiedSession:
             sessions=sessions,
             consolidator=SimpleNamespace(archive=AsyncMock(return_value=True)),
             _cancel_active_tasks=AsyncMock(return_value=0),
-            llm_runtime=MagicMock(return_value=MagicMock()),
+            runtime_for_session=MagicMock(return_value=MagicMock()),
         )
         loop._schedule_background = lambda coro: asyncio.ensure_future(coro)
 
@@ -349,6 +349,7 @@ class TestConsolidationUnaffectedByUnifiedSession:
 
         session = Session(key="unified:default")
         session.messages = []
+        sessions.get_or_create.return_value = session
 
         await consolidator.maybe_consolidate_by_tokens(session, runtime=runtime)
 
@@ -378,6 +379,7 @@ class TestConsolidationUnaffectedByUnifiedSession:
 
             session = Session(key=key)
             session.messages = []  # empty → exits immediately for both keys
+            sessions.get_or_create.return_value = session
 
             consolidator.archive = AsyncMock()
             await consolidator.maybe_consolidate_by_tokens(

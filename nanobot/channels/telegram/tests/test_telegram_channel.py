@@ -15,6 +15,7 @@ from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import ProgressEvent
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram.runtime import (
+    TELEGRAM_MAX_MESSAGE_LEN,
     TELEGRAM_REPLY_CONTEXT_MAX_LEN,
     TelegramChannel,
     TelegramConfig,
@@ -241,6 +242,69 @@ def test_split_telegram_markdown_leading_whitespace_before_fence() -> None:
     assert all(chunk.strip() for chunk in chunks)
     assert chunks[0].startswith("```python\n")
     _assert_code_blocks_render_balanced(chunks)
+
+
+def test_split_telegram_markdown_long_single_line_code_body() -> None:
+    """Long fence bodies with no interior newlines must still advance."""
+    body = "a" * 4500
+    content = f"```\n{body}\n```"
+
+    chunks = _split_telegram_markdown(content, TELEGRAM_MAX_MESSAGE_LEN)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= TELEGRAM_MAX_MESSAGE_LEN for chunk in chunks)
+    assert chunks[0].startswith("```\n")
+    assert chunks[0].endswith("\n```")
+    assert chunks[1].startswith("```\n")
+    reassembled = []
+    for chunk in chunks:
+        part = chunk.split("\n", 1)[1]
+        if part.endswith("\n```"):
+            part = part[:-4]
+        elif part.endswith("```"):
+            part = part[:-3]
+        reassembled.append(part)
+    assert "".join(reassembled) == body
+    _assert_code_blocks_render_balanced(chunks)
+
+
+def test_split_telegram_markdown_tiny_limit_hard_cuts_fence_prefix() -> None:
+    """Adaptive HTML limits can shrink max_len to the fence+closer size."""
+    body = "a" * 100
+    content = f"```\n{body}"
+
+    chunks = _split_telegram_markdown(content, max_len=8)
+
+    assert chunks
+    assert all(len(chunk) <= 8 for chunk in chunks)
+    assert "".join(chunks).replace("```", "").replace("\n", "") == body
+
+
+def test_split_telegram_markdown_tiny_limit_with_early_body_newline() -> None:
+    body = "a" * 100
+    content = f"```\na\n{body}"
+
+    chunks = _split_telegram_markdown(content, max_len=8)
+
+    assert chunks
+    assert all(len(chunk) <= 8 for chunk in chunks)
+    plain = "".join(chunks).replace("```", "")
+    assert "a" in plain
+    assert plain.count("a") >= 100
+
+
+def test_split_telegram_markdown_leading_space_in_fence_body() -> None:
+    body = "a" * 4500
+    content = f"```\n {body}"
+
+    chunks = _split_telegram_markdown(content, TELEGRAM_MAX_MESSAGE_LEN)
+
+    assert chunks
+    assert all(len(chunk) <= TELEGRAM_MAX_MESSAGE_LEN for chunk in chunks)
+    plain = "".join(chunks).replace("```", "").replace("\n", "")
+    assert plain.count("a") == 4500
+
+
 
 
 @pytest.mark.asyncio

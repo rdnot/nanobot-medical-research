@@ -13,10 +13,12 @@ import json
 import time
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import unquote
 
 from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
 
+from nanobot.agent.tools.image_generation import request_image_generation_reload
 from nanobot.agent.tools.mcp import request_mcp_reload
 from nanobot.api.runtime import ApiRuntime, ApiStartOptions, api_runtime_paths
 from nanobot.bus.queue import MessageBus
@@ -37,6 +39,7 @@ from nanobot.optional_features import (
 )
 from nanobot.pairing import approve_code, deny_code, list_pending
 from nanobot.webui.cli_apps_api import cli_apps_action, cli_apps_payload
+from nanobot.webui.http_utils import case_insensitive_header
 from nanobot.webui.http_utils import is_local_browser_request as _is_local_browser_request
 from nanobot.webui.http_utils import query_first as _query_first
 from nanobot.webui.mcp_presets_api import mcp_presets_settings_action
@@ -47,16 +50,21 @@ from nanobot.webui.nanobot_features_api import (
 )
 from nanobot.webui.settings_api import (
     WebUISettingsError,
+    complete_oauth_provider,
     create_model_configuration,
+    create_provider_settings,
     decorate_settings_payload,
+    delete_model_configuration,
     login_oauth_provider,
     logout_oauth_provider,
+    migrate_model_configurations,
     provider_models_payload,
     settings_payload,
     settings_usage_payload,
     update_agent_settings,
     update_api_settings,
     update_image_generation_settings,
+    update_model_call_order,
     update_model_configuration,
     update_network_safety_settings,
     update_provider_settings,
@@ -69,10 +77,14 @@ QueryParams = dict[str, list[str]]
 
 _MCP_VALUES_HEADER = "X-Nanobot-MCP-Values"
 _MCP_VALUES_HEADER_MAX_BYTES = 64 * 1024
+_PROVIDER_VALUES_HEADER = "X-Nanobot-Provider-Values"
+_PROVIDER_VALUES_HEADER_MAX_BYTES = 64 * 1024
 _CHANNEL_VALUES_HEADER = "X-Nanobot-Channel-Values"
 _CHANNEL_VALUES_HEADER_MAX_BYTES = 64 * 1024
 _API_SERVICE_VALUES_HEADER = "X-Nanobot-API-Service-Values"
 _API_SERVICE_VALUES_HEADER_MAX_BYTES = 8 * 1024
+_OAUTH_CODE_HEADER = "X-Nanobot-OAuth-Code"
+_OAUTH_CODE_HEADER_MAX_BYTES = 8 * 1024
 
 _SKIP_FIELD = object()
 _CHANNEL_CONNECT_ACTIONS = frozenset({"start", "poll", "cancel"})
@@ -140,12 +152,22 @@ class WebUISettingsRouter:
             return self._handle_settings_model_configuration_create(request)
         if path == "/api/settings/model-configurations/update":
             return self._handle_settings_model_configuration_update(request)
+        if path == "/api/settings/model-configurations/delete":
+            return self._handle_settings_model_configuration_delete(request)
+        if path == "/api/settings/model-configurations/migrate":
+            return self._handle_settings_model_configurations_migrate(request)
+        if path == "/api/settings/model-call-order/update":
+            return self._handle_settings_model_call_order_update(request)
         if path == "/api/settings/provider/update":
-            return self._handle_settings_provider_update(request)
+            return await self._handle_settings_provider_update(request)
+        if path == "/api/settings/provider/create":
+            return self._handle_settings_provider_create(request)
         if path == "/api/settings/provider-models":
             return await self._handle_settings_provider_models(request)
         if path == "/api/settings/provider/oauth-login":
             return await self._handle_settings_provider_oauth(request, "login")
+        if path == "/api/settings/provider/oauth-login/complete":
+            return await self._handle_settings_provider_oauth(request, "complete")
         if path == "/api/settings/provider/oauth-logout":
             return await self._handle_settings_provider_oauth(request, "logout")
         if path == "/api/settings/web-search/update":
@@ -157,7 +179,7 @@ class WebUISettingsRouter:
         if path == "/api/settings/api-service/stop":
             return await self._handle_settings_api_service_stop(request)
         if path == "/api/settings/image-generation/update":
-            return self._handle_settings_image_generation_update(request)
+            return await self._handle_settings_image_generation_update(request)
         if path == "/api/settings/transcription/update":
             return self._handle_settings_transcription_update(request)
         if path == "/api/settings/network-safety/update":
@@ -262,6 +284,36 @@ class WebUISettingsRouter:
                 merged[key] = [text]
         return merged
 
+    def _parse_provider_settings_query(self, request: WsRequest) -> QueryParams:
+        query = self._query(request)
+        raw = request.headers.get(_PROVIDER_VALUES_HEADER)
+        if not raw:
+            return query
+        if len(raw.encode("utf-8")) > _PROVIDER_VALUES_HEADER_MAX_BYTES:
+            raise WebUISettingsError("provider settings payload is too large")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            try:
+                payload = json.loads(unquote(raw))
+            except json.JSONDecodeError:
+                raise WebUISettingsError("invalid provider settings payload") from exc
+        if not isinstance(payload, dict):
+            raise WebUISettingsError("provider settings payload must be a JSON object")
+
+        merged = {key: list(values) for key, values in query.items()}
+        for key, value in payload.items():
+            if not isinstance(key, str) or not key:
+                raise WebUISettingsError("provider settings payload contains an invalid key")
+            if isinstance(value, str):
+                text = value
+            elif value is None:
+                text = ""
+            else:
+                text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            merged[key] = [text]
+        return merged
+
     def _handle_settings(self, request: WsRequest) -> Response:
         if not self._authorized(request):
             return self._unauthorized()
@@ -346,14 +398,51 @@ class WebUISettingsRouter:
             return self._error_response(e.status, e.message)
         return self._json_response(self._with_restart_state(payload))
 
-    def _handle_settings_provider_update(self, request: WsRequest) -> Response:
+    def _handle_settings_model_configuration_delete(self, request: WsRequest) -> Response:
         if not self._authorized(request):
             return self._unauthorized()
         try:
-            payload = update_provider_settings(self._query(request))
+            payload = delete_model_configuration(self._query(request))
         except WebUISettingsError as e:
             return self._error_response(e.status, e.message)
+        return self._json_response(self._with_restart_state(payload))
+
+    def _handle_settings_model_configurations_migrate(self, request: WsRequest) -> Response:
+        if not self._authorized(request):
+            return self._unauthorized()
+        try:
+            payload = migrate_model_configurations(self._query(request))
+        except WebUISettingsError as e:
+            return self._error_response(e.status, e.message)
+        return self._json_response(self._with_restart_state(payload))
+
+    def _handle_settings_model_call_order_update(self, request: WsRequest) -> Response:
+        if not self._authorized(request):
+            return self._unauthorized()
+        try:
+            payload = update_model_call_order(self._query(request))
+        except WebUISettingsError as e:
+            return self._error_response(e.status, e.message)
+        return self._json_response(self._with_restart_state(payload))
+
+    async def _handle_settings_provider_update(self, request: WsRequest) -> Response:
+        if not self._authorized(request):
+            return self._unauthorized()
+        try:
+            payload = update_provider_settings(self._parse_provider_settings_query(request))
+        except WebUISettingsError as e:
+            return self._error_response(e.status, e.message)
+        payload = await self._apply_image_generation_runtime_change(payload)
         return self._json_response(self._with_restart_state(payload, section="image"))
+
+    def _handle_settings_provider_create(self, request: WsRequest) -> Response:
+        if not self._authorized(request):
+            return self._unauthorized()
+        try:
+            payload = create_provider_settings(self._parse_provider_settings_query(request))
+        except WebUISettingsError as e:
+            return self._error_response(e.status, e.message)
+        return self._json_response(self._with_restart_state(payload))
 
     async def _handle_settings_provider_models(self, request: WsRequest) -> Response:
         if not self._authorized(request):
@@ -378,10 +467,24 @@ class WebUISettingsRouter:
         try:
             if action == "login":
                 payload = await asyncio.to_thread(login_oauth_provider, query)
+            elif action == "complete":
+                authorization_code = case_insensitive_header(
+                    request.headers,
+                    _OAUTH_CODE_HEADER,
+                )
+                if len(authorization_code.encode("utf-8")) > _OAUTH_CODE_HEADER_MAX_BYTES:
+                    raise WebUISettingsError("OAuth authorization code is too large")
+                payload = await asyncio.to_thread(
+                    complete_oauth_provider,
+                    query,
+                    authorization_code or None,
+                )
             else:
                 payload = await asyncio.to_thread(logout_oauth_provider, query)
         except WebUISettingsError as e:
             return self._error_response(e.status, e.message)
+        if payload.get("status") in {"authorization_required", "pending"}:
+            return self._json_response(payload)
         return self._json_response(self._with_restart_state(payload))
 
     def _handle_settings_web_search_update(self, request: WsRequest) -> Response:
@@ -521,14 +624,40 @@ class WebUISettingsRouter:
             return f"API server {message.removeprefix('api_').replace('_', ' ')}"
         return message.replace("_", " ")
 
-    def _handle_settings_image_generation_update(self, request: WsRequest) -> Response:
+    async def _handle_settings_image_generation_update(self, request: WsRequest) -> Response:
         if not self._authorized(request):
             return self._unauthorized()
         try:
             payload = update_image_generation_settings(self._query(request))
         except WebUISettingsError as e:
             return self._error_response(e.status, e.message)
+        payload = await self._apply_image_generation_runtime_change(payload)
         return self._json_response(self._with_restart_state(payload, section="image"))
+
+    async def _apply_image_generation_runtime_change(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Hot-apply image settings, preserving restart fallback on failure."""
+        if not payload.get("requires_restart"):
+            return payload
+        try:
+            result = await request_image_generation_reload(self.bus)
+        except Exception:
+            self.logger.exception("failed to hot-reload image generation settings")
+            return payload
+
+        applied = bool(result.get("ok")) and not result.get("requires_restart")
+        payload = dict(payload)
+        payload["requires_restart"] = not applied
+        if applied:
+            self._restart_sections.discard("image")
+        else:
+            self.logger.warning(
+                "image generation settings were saved but require restart: {}",
+                result.get("message") or "hot reload failed",
+            )
+        return payload
 
     def _handle_settings_transcription_update(self, request: WsRequest) -> Response:
         if not self._authorized(request):

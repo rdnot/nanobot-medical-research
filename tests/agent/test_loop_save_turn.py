@@ -4,9 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
-from nanobot.agent.loop import AgentLoop
+from nanobot.agent.loop import AgentLoop, TurnState
 from nanobot.agent.tools.context import RequestContext, request_context
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.outbound_events import (
@@ -1153,6 +1154,19 @@ async def test_run_agent_loop_goal_continue_message_reads_latest_metadata(
 
 
 @pytest.mark.asyncio
+async def test_process_direct_rejects_reserved_system_channel(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    loop._connect_mcp = AsyncMock()  # type: ignore[method-assign]
+    loop._process_message = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="reserved for internal messages"):
+        await loop.process_direct("external input", channel="system")
+
+    loop._connect_mcp.assert_not_awaited()
+    loop._process_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_process_direct_skip_user_persist_does_not_save_retry_user(
     tmp_path: Path,
 ) -> None:
@@ -1374,6 +1388,7 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
     async def fake_run_agent_loop(initial_messages, **kwargs):
         seen["initial_messages"] = initial_messages
         seen["runtime"] = kwargs["runtime"]
+        seen["request_context"] = kwargs["request_context"]
         return (
             "done",
             [],
@@ -1397,6 +1412,15 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
     )
 
     assert seen["runtime"] is runtime
+    request = seen["request_context"]
+    assert isinstance(request, RequestContext)
+    assert request.channel == "cli"
+    assert request.chat_id == "test"
+    assert request.session_key == "cli:test"
+    assert request.original_user_text is None
+    assert request.sender_id == "subagent"
+    assert request.metadata == {"subagent_task_id": "sub-1"}
+    assert request.turn_id
     record_runtime.assert_called_once_with("cli:test", runtime)
     assert len(loop.consolidator.maybe_consolidate_by_tokens.call_args_list) == 2
     assert all(
@@ -1412,6 +1436,7 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
     # rewritten with volatile ``[Message Time: ...]`` prefixes.
     assert "[Message Time:" not in non_system[0]["content"]
     assert "[Message Time:" not in non_system[1]["content"]
+    assert non_system[2]["role"] == "user"
     assert non_system[2]["content"].count("subagent result") == 1
     assert non_system[2]["content"] == "subagent result"
 
@@ -1430,6 +1455,104 @@ async def test_system_subagent_followup_is_persisted_before_prompt_assembly(tmp_
             "subagent_task_id": "sub-1",
         },
         {"role": "assistant", "content": "done"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_system_subagent_followup_does_not_log_content(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(  # type: ignore[method-assign]
+        return_value=False
+    )
+
+    async def fake_run_agent_loop(initial_messages, **_kwargs):
+        return (
+            "done",
+            [],
+            [*initial_messages, {"role": "assistant", "content": "done"}],
+            "stop",
+            False,
+        )
+
+    loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
+    secret = "LEAKME42"
+    content = f"[Subagent 'research' completed]\n\nTask: inspect logs\n\nResult:\n{secret}"
+    logs: list[str] = []
+    sink_id = logger.add(logs.append, level="INFO", format="{message}")
+
+    try:
+        await loop._process_message(
+            InboundMessage(
+                channel="system",
+                sender_id="subagent",
+                chat_id="cli:logs",
+                content=content,
+                metadata={"subagent_task_id": "sub-logs"},
+            )
+        )
+    finally:
+        logger.remove(sink_id)
+
+    logged = "".join(logs)
+    assert "Processing system message from subagent" in logged
+    assert secret not in logged
+
+
+@pytest.mark.asyncio
+async def test_system_subagent_followup_uses_common_turn_state_machine(tmp_path: Path) -> None:
+    loop = _make_full_loop(tmp_path)
+    loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(  # type: ignore[method-assign]
+        return_value=False
+    )
+    visited: list[TurnState] = []
+
+    for state in (
+        TurnState.RESTORE,
+        TurnState.COMPACT,
+        TurnState.COMMAND,
+        TurnState.BUILD,
+        TurnState.RUN,
+        TurnState.SAVE,
+        TurnState.RESPOND,
+    ):
+        name = f"_state_{state.name.lower()}"
+        original = getattr(loop, name)
+
+        async def record(ctx, *, _original=original, _state=state):
+            visited.append(_state)
+            return await _original(ctx)
+
+        setattr(loop, name, record)
+
+    async def fake_run_agent_loop(initial_messages, **_kwargs):
+        return (
+            "done",
+            [],
+            [*initial_messages, {"role": "assistant", "content": "done"}],
+            "stop",
+            False,
+        )
+
+    loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
+
+    await loop._process_message(
+        InboundMessage(
+            channel="system",
+            sender_id="subagent",
+            chat_id="cli:test",
+            content="subagent result",
+            metadata={"subagent_task_id": "sub-1"},
+        )
+    )
+
+    assert visited == [
+        TurnState.RESTORE,
+        TurnState.COMPACT,
+        TurnState.COMMAND,
+        TurnState.BUILD,
+        TurnState.RUN,
+        TurnState.SAVE,
+        TurnState.RESPOND,
     ]
 
 
@@ -1471,10 +1594,11 @@ async def test_multiple_subagent_followups_all_persist_as_standalone_history(tmp
     ]
 
 
-def test_prompt_merge_does_not_replace_standalone_subagent_history_entry(tmp_path: Path) -> None:
+def test_subagent_followup_uses_user_model_input_and_assistant_history(tmp_path: Path) -> None:
     loop = _mk_loop()
     session = Session(key="cli:merge")
     session.add_message("assistant", "previous assistant")
+    history = session.get_history(max_messages=0)
 
     inserted = loop._persist_subagent_followup(
         session,
@@ -1491,16 +1615,18 @@ def test_prompt_merge_does_not_replace_standalone_subagent_history_entry(tmp_pat
 
     builder = ContextBuilder(tmp_path)
     projected = builder.build_messages(
-        history=session.get_history(max_messages=0),
-        current_message="",
-        current_role="assistant",
+        history=history,
+        current_message="subagent result",
+        current_role="user",
         channel="cli",
         chat_id="merge",
     )
 
     non_system = [m for m in projected if m.get("role") != "system"]
     assert len(non_system) == 2
+    assert non_system[-1]["role"] == "user"
     assert "subagent result" in non_system[-1]["content"]
+    assert session.messages[-1]["role"] == "assistant"
     assert session.messages[-1]["content"] == "subagent result"
     assert session.messages[-1]["injected_event"] == "subagent_result"
 
@@ -1569,10 +1695,11 @@ async def test_system_subagent_followup_uses_thread_session_and_slack_metadata(t
     thread_session.add_message("user", "thread question")
     loop.sessions.save(thread_session)
 
-    seen: dict[str, list[dict]] = {}
+    seen: dict[str, object] = {}
 
-    async def fake_run_agent_loop(initial_messages, **_kwargs):
+    async def fake_run_agent_loop(initial_messages, **kwargs):
         seen["initial_messages"] = initial_messages
+        seen["request_context"] = kwargs["request_context"]
         return (
             "done",
             [],
@@ -1602,7 +1729,18 @@ async def test_system_subagent_followup_uses_thread_session_and_slack_metadata(t
         "slack": {"thread_ts": "1700.42"},
         "origin_message_id": "msg-123",
     }
-    assert "thread question" in seen["initial_messages"][1]["content"]
+    request = seen["request_context"]
+    assert isinstance(request, RequestContext)
+    assert request.channel == "slack"
+    assert request.chat_id == "C123"
+    assert request.metadata == {
+        "subagent_task_id": "sub-1",
+        "origin_message_id": "msg-123",
+    }
+    assert "slack" not in request.metadata
+    initial_messages = seen["initial_messages"]
+    assert isinstance(initial_messages, list)
+    assert "thread question" in initial_messages[1]["content"]
 
     loop.sessions.invalidate("slack:C123:1700.42")
     persisted = loop.sessions.get_or_create("slack:C123:1700.42")
@@ -1751,3 +1889,58 @@ def test_save_turn_keeps_tool_results_declared_in_prior_history() -> None:
     )
 
     assert [m["role"] for m in session.messages] == ["assistant", "tool"]
+
+
+def test_save_turn_drops_tool_result_already_fulfilled_in_history() -> None:
+    loop = _mk_loop()
+    session = Session(key="test:prior-fulfilled")
+    session.add_message(
+        "assistant",
+        "",
+        tool_calls=[{
+            "id": "call_prior",
+            "type": "function",
+            "function": {"name": "exec", "arguments": "{}"},
+        }],
+    )
+    session.add_message(
+        "tool",
+        "first",
+        tool_call_id="call_prior",
+        name="exec",
+    )
+
+    loop._save_turn(
+        session,
+        [{"role": "tool", "tool_call_id": "call_prior", "name": "exec", "content": "duplicate"}],
+        skip=0,
+    )
+
+    assert [m["role"] for m in session.messages] == ["assistant", "tool"]
+    assert session.messages[1]["content"] == "first"
+
+
+def test_save_turn_drops_duplicate_tool_result_ids() -> None:
+    loop = _mk_loop()
+    session = Session(key="test:duplicate-tool-result")
+
+    loop._save_turn(
+        session,
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_dupe",
+                    "type": "function",
+                    "function": {"name": "exec", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "call_dupe", "name": "exec", "content": "first"},
+            {"role": "tool", "tool_call_id": "call_dupe", "name": "exec", "content": "second"},
+        ],
+        skip=0,
+    )
+
+    assert [m["role"] for m in session.messages] == ["assistant", "tool"]
+    assert session.messages[1]["content"] == "first"

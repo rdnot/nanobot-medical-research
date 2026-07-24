@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { preloadMarkdownText } from "@/components/MarkdownText";
 import { ThreadShell } from "@/components/thread/ThreadShell";
 import { CLI_APPS_CHANGED_EVENT } from "@/lib/cli-app-events";
 import { ClientProvider } from "@/providers/ClientProvider";
@@ -13,13 +14,23 @@ const HERO_GREETING_PATTERN =
 function makeClient() {
   const errorHandlers = new Set<(err: { kind: string }) => void>();
   const chatHandlers = new Map<string, Set<(ev: import("@/lib/types").InboundEvent) => void>>();
+  const runtimeModelHandlers = new Set<
+    (modelName: string | null, modelPreset?: string | null) => void
+  >();
   const sessionUpdateHandlers = new Set<(chatId: string, scope?: string) => void>();
   const goalStateByChatId = new Map<string, import("@/lib/types").GoalStateWsPayload>();
   return {
     status: "open" as const,
     defaultChatId: null as string | null,
     onStatus: () => () => {},
-    onRuntimeModelUpdate: () => () => {},
+    onRuntimeModelUpdate: (
+      handler: (modelName: string | null, modelPreset?: string | null) => void,
+    ) => {
+      runtimeModelHandlers.add(handler);
+      return () => {
+        runtimeModelHandlers.delete(handler);
+      };
+    },
     getRunStartedAt: () => null,
     getGoalState: (chatId: string) => goalStateByChatId.get(chatId),
     onChat: (chatId: string, handler: (ev: import("@/lib/types").InboundEvent) => void) => {
@@ -54,10 +65,14 @@ function makeClient() {
       }
       for (const h of chatHandlers.get(chatId) ?? []) h(ev);
     },
+    _emitRuntimeModelUpdate(modelName: string | null, modelPreset?: string | null) {
+      for (const h of runtimeModelHandlers) h(modelName, modelPreset);
+    },
     _emitSessionUpdate(chatId: string, scope?: string) {
       for (const h of sessionUpdateHandlers) h(chatId, scope);
     },
     sendMessage: vi.fn(),
+    sendSystemCommand: vi.fn().mockResolvedValue(undefined),
     newChat: vi.fn(),
     forkChat: vi.fn(),
     attach: vi.fn(),
@@ -93,7 +108,7 @@ function expectSendMessageWithTurn(
   );
 }
 
-function session(chatId: string) {
+function session(chatId: string, modelPreset?: string | null) {
   return {
     key: `websocket:${chatId}`,
     channel: "websocket" as const,
@@ -101,6 +116,7 @@ function session(chatId: string) {
     createdAt: null,
     updatedAt: null,
     preview: "",
+    modelPreset,
   };
 }
 
@@ -155,6 +171,8 @@ function modelSettings(model: string, provider: string): SettingsPayload {
       temperature: 0.7,
       reasoning_effort: null,
     }],
+    model_call_order: [],
+    model_call_order_editable: false,
     providers: [
       { name: "deepseek", label: "DeepSeek", configured: true },
       { name: "openai_codex", label: "OpenAI Codex", configured: true },
@@ -219,6 +237,20 @@ function modelSettings(model: string, provider: string): SettingsPayload {
   };
 }
 
+function settingsWithFastPreset(): SettingsPayload {
+  const settings = modelSettings("deepseek-v4-pro", "deepseek");
+  settings.model_presets.push({
+    ...settings.model_presets[0]!,
+    name: "fast",
+    label: "Fast",
+    active: false,
+    is_default: false,
+    model: "openai-codex/gpt-5.5",
+    provider: "openai_codex",
+  });
+  return settings;
+}
+
 describe("ThreadShell", () => {
   beforeEach(() => {
     vi.stubGlobal(
@@ -232,6 +264,7 @@ describe("ThreadShell", () => {
   });
 
   it("keeps inferred file paths non-interactive when the availability probe fails", async () => {
+    await preloadMarkdownText();
     const client = makeClient();
     let resolveProbe!: (value: Response) => void;
     const probe = new Promise<Response>((resolve) => {
@@ -337,6 +370,188 @@ describe("ThreadShell", () => {
     });
 
     expect(await screen.findByTestId("composer-model-logo-openai_codex")).toBeInTheDocument();
+  });
+
+  it("keeps the composer model name and provider on the same settings snapshot", async () => {
+    const client = makeClient();
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("model-settings-sync")}
+          title="Model settings sync"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={modelSettings("openai-codex/gpt-5.5", "openai_codex")}
+        />,
+        "ling/ling-3.0-flash",
+      ),
+    );
+
+    expect(await screen.findByTestId("composer-model-logo-openai_codex")).toBeInTheDocument();
+    expect(screen.getByText("Default")).toBeInTheDocument();
+    expect(screen.queryByText("ling-3.0-flash")).not.toBeInTheDocument();
+  });
+
+  it("resolves the composer model from the active session preset", async () => {
+    const client = makeClient();
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("chat-fast", "fast")}
+          title="Fast session"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={settingsWithFastPreset()}
+        />,
+        "deepseek-v4-pro",
+      ),
+    );
+
+    expect(await screen.findByTitle("Fast · gpt-5.5 · OpenAI Codex")).toBeInTheDocument();
+    expect(screen.queryByTitle("Default · deepseek-v4-pro · DeepSeek")).not.toBeInTheDocument();
+  });
+
+  it("switches through every named preset while preserving call-order priority", async () => {
+    const client = makeClient();
+    const settings = settingsWithFastPreset();
+    settings.model_presets.push({
+      ...settings.model_presets.at(-1)!,
+      name: "extra",
+      label: "Extra",
+      model: "deepseek/extra",
+      provider: "deepseek",
+      active: false,
+      is_default: false,
+    });
+    settings.model_call_order = ["fast"];
+
+    const view = (preset: string) => wrap(client, (
+      <ThreadShell
+        session={session("preset-order", preset)}
+        title="Preset order"
+        onToggleSidebar={() => {}}
+        settingsSnapshot={settings}
+      />
+    ));
+    const { rerender } = render(view("default"));
+
+    const badge = await screen.findByRole("spinbutton", { name: "Default" });
+    expect(badge).toHaveTextContent("Default");
+    fireEvent.keyDown(badge, { key: "ArrowDown" });
+
+    expect(client.sendSystemCommand).toHaveBeenCalledWith(
+      "preset-order",
+      "/model fast",
+    );
+    expect(await screen.findByText("Fast")).toBeInTheDocument();
+    fireEvent.keyDown(
+      screen.getByRole("spinbutton", { name: "Fast" }),
+      { key: "End" },
+    );
+    expect(client.sendSystemCommand).toHaveBeenLastCalledWith(
+      "preset-order",
+      "/model extra",
+    );
+    expect(await screen.findByText("Extra")).toBeInTheDocument();
+
+    rerender(view("fast"));
+    expect(await screen.findByText("Fast")).toBeInTheDocument();
+  });
+
+  it("uses the backend-resolved provider for an auto session preset", async () => {
+    const client = makeClient();
+    const settings = modelSettings("deepseek-v4-pro", "deepseek");
+    settings.providers.push({
+      name: "companyproxy",
+      label: "Company Proxy",
+      configured: true,
+    });
+    settings.model_presets.push({
+      ...settings.model_presets[0]!,
+      name: "fast",
+      label: "Fast",
+      active: false,
+      is_default: false,
+      model: "companyproxy/gpt-4",
+      provider: "auto",
+      resolved_provider: "companyproxy",
+    });
+
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("chat-auto", "fast")}
+          title="Auto provider session"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={settings}
+        />,
+        "deepseek-v4-pro",
+      ),
+    );
+
+    expect(await screen.findByTitle("Fast · gpt-4 · Company Proxy")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Model not configured" })).not.toBeInTheDocument();
+  });
+
+  it("highlights the configured model badge without replacing the preset label", async () => {
+    const client = makeClient();
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("fallback-model")}
+        title="Fallback model"
+        onToggleSidebar={() => {}}
+        settingsSnapshot={modelSettings("openai-codex/gpt-5.5", "openai_codex")}
+      />,
+      "openai-codex/gpt-5.5",
+    ));
+
+    expect(await screen.findByText("Default")).toBeInTheDocument();
+    const configuredBadge = screen.getByTestId("composer-model-logo-openai_codex").parentElement;
+    expect(configuredBadge).not.toBeNull();
+    expect(configuredBadge).toHaveClass("composer-model-badge");
+    expect(configuredBadge).not.toHaveAttribute("data-fallback");
+
+    act(() => {
+      client._emitChat("fallback-model", {
+        event: "turn_model_updated",
+        chat_id: "fallback-model",
+        model_name: "deepseek/deepseek-chat",
+      });
+    });
+
+    const logo = screen.getByTestId("composer-model-logo-openai_codex");
+    const badge = logo.parentElement;
+    expect(badge).not.toBeNull();
+    expect(badge).toBe(configuredBadge);
+    expect(screen.getByText("Default")).toBeInTheDocument();
+    expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
+    expect(badge).toHaveAttribute("data-fallback", "true");
+    expect(badge).toHaveAttribute(
+      "title",
+      "deepseek/deepseek-chat",
+    );
+    expect(logo).not.toHaveAttribute("data-fallback");
+
+    act(() => {
+      client._emitChat("fallback-model", {
+        event: "turn_end",
+        chat_id: "fallback-model",
+      });
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("composer-model-logo-openai_codex").parentElement,
+      ).not.toHaveAttribute("data-fallback");
+    });
+    expect(
+      screen.getByTestId("composer-model-logo-openai_codex").parentElement,
+    ).toHaveAttribute("title", "Default · gpt-5.5 · OpenAI Codex");
+    expect(
+      screen.getByTestId("composer-model-logo-openai_codex").parentElement,
+    ).toBe(badge);
   });
 
   it("opens model settings from the unconfigured model badge", async () => {
@@ -484,6 +699,29 @@ describe("ThreadShell", () => {
     expect(screen.getByText("persist me across tabs")).toBeInTheDocument();
   });
 
+  it("highlights sent skill references without skill metadata", async () => {
+    const client = makeClient();
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("skill-reference")}
+        title="Skill reference"
+        onToggleSidebar={() => {}}
+      />,
+    ));
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "Use $github for this" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expectSendMessageWithTurn(client, "skill-reference", "Use $github for this"),
+    );
+    expect(screen.getByTestId("message-skill-reference-github"))
+      .toHaveTextContent("$github");
+  });
+
   it("clears the old thread when the active session is removed", async () => {
     const client = makeClient();
     const onNewChat = vi.fn().mockResolvedValue("chat-a");
@@ -558,6 +796,57 @@ describe("ThreadShell", () => {
 
     await waitFor(() => expect(onCreateChat).toHaveBeenCalledTimes(1));
     expect(onNewChat).not.toHaveBeenCalled();
+  });
+
+  it("applies the selected landing preset before sending the first prompt", async () => {
+    const client = makeClient();
+    const settings = settingsWithFastPreset();
+    settings.model_call_order = ["fast"];
+    let resolveModelCommand!: () => void;
+    client.sendSystemCommand.mockImplementation(
+      () => new Promise<void>((resolve) => {
+        resolveModelCommand = resolve;
+      }),
+    );
+    const onCreateChat = vi.fn().mockResolvedValue("chat-new");
+
+    const view = (currentSession: ReturnType<typeof session> | null) => wrap(client, (
+      <ThreadShell
+        session={currentSession}
+        title={currentSession ? "New chat" : "nanobot"}
+        onToggleSidebar={() => {}}
+        onCreateChat={onCreateChat}
+        settingsSnapshot={settings}
+      />
+    ));
+    const { rerender } = render(view(null));
+
+    fireEvent.keyDown(
+      await screen.findByRole("spinbutton", { name: "Default" }),
+      { key: "ArrowDown" },
+    );
+    expect(await screen.findByText("Fast")).toBeInTheDocument();
+    expect(client.sendSystemCommand).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Message input"), {
+      target: { value: "use the selected model" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(client.sendSystemCommand).toHaveBeenCalledWith(
+      "chat-new",
+      "/model fast",
+    ));
+
+    rerender(view(session("chat-new")));
+    expect(client.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveModelCommand();
+    });
+    await waitFor(() => {
+      expectSendMessageWithTurn(client, "chat-new", "use the selected model");
+    });
   });
 
   it("binds a pending landing message to the chat created for it", async () => {
@@ -679,7 +968,7 @@ describe("ThreadShell", () => {
     expect(screen.queryByText(HERO_GREETING_PATTERN)).not.toBeInTheDocument();
   });
 
-  it("keeps a live first command reply when the initial history snapshot is stale", async () => {
+  it("hides a live first /model turn when the initial history snapshot is stale", async () => {
     const client = makeClient();
     const onCreateChat = vi.fn().mockResolvedValue("chat-new");
     let resolveThread:
@@ -745,8 +1034,15 @@ describe("ThreadShell", () => {
         chat_id: "chat-new",
         text: "## Model\n- Current model: `Ring-2.6-1T`",
       });
+      client._emitChat("chat-new", {
+        event: "message",
+        chat_id: "chat-new",
+        text: "This unrelated reply stays visible.",
+      });
     });
-    expect(screen.getByText(/Current model/)).toBeInTheDocument();
+    expect(screen.queryByText("/model")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Current model/)).not.toBeInTheDocument();
+    expect(screen.getByText("This unrelated reply stays visible.")).toBeInTheDocument();
 
     await act(async () => {
       resolveThread?.(
@@ -754,7 +1050,11 @@ describe("ThreadShell", () => {
       );
     });
 
-    await waitFor(() => expect(screen.getByText(/Current model/)).toBeInTheDocument());
+    await waitFor(() => {
+      expect(screen.queryByText("/model")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Current model/)).not.toBeInTheDocument();
+      expect(screen.getByText("This unrelated reply stays visible.")).toBeInTheDocument();
+    });
   });
 
   it("keeps the empty thread landing focused on the composer", async () => {
@@ -773,7 +1073,9 @@ describe("ThreadShell", () => {
     );
     await act(async () => {});
 
-    expect(screen.getByText(HERO_GREETING_PATTERN)).toBeInTheDocument();
+    const greeting = screen.getByRole("heading", { level: 1, name: HERO_GREETING_PATTERN });
+    expect(greeting).toHaveAttribute("data-testid", "hero-greeting");
+    expect(greeting).toHaveClass("whitespace-nowrap");
     expect(screen.getByPlaceholderText("Ask anything...")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Write code" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create a project plan" })).not.toBeInTheDocument();

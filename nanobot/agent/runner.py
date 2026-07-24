@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
-from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -353,37 +352,16 @@ class AgentRunner:
         )
 
         for iteration in range(spec.max_iterations):
-            try:
-                # Keep the persisted conversation untouched. Context governance
-                # may repair or compact historical messages for the model, but
-                # those synthetic edits must not shift the append boundary used
-                # later when the caller saves only the new turn.
-                messages_for_model = self.context_governor.prepare_for_model(
-                    governance_config,
-                    messages,
-                    compacted_tool_call_ids,
-                )
-            except Exception:
-                logger.exception(
-                    "Context governance failed on turn {} for {}; applying minimal repair",
-                    iteration,
-                    spec.session_key or "default",
-                )
-                try:
-                    messages_for_model = ContextGovernor.strip_placeholder_assistant_messages(
-                        messages
-                    )
-                    messages_for_model = ContextGovernor.strip_malformed_tool_calls(
-                        messages_for_model
-                    )
-                    messages_for_model = ContextGovernor.drop_orphan_tool_results(
-                        messages_for_model
-                    )
-                    messages_for_model = ContextGovernor.backfill_missing_tool_results(
-                        messages_for_model
-                    )
-                except Exception:
-                    messages_for_model = messages
+            # Keep the persisted conversation untouched. Context governance
+            # may repair or compact historical messages for the model, but
+            # those synthetic edits must not shift the append boundary used
+            # later when the caller saves only the new turn. A governance
+            # failure must stop the run instead of sending an ungoverned copy.
+            messages_for_model = self.context_governor.prepare_for_model(
+                governance_config,
+                messages,
+                compacted_tool_call_ids,
+            )
             context = AgentHookContext(
                 iteration=iteration,
                 messages=messages,
@@ -744,6 +722,20 @@ class AgentRunner:
         )
 
         progress_state: dict[str, bool] | None = None
+        active_hosted_tools: dict[str, dict[str, Any]] = {}
+
+        async def _provider_tool_event(event: dict[str, Any]) -> None:
+            if event.get("kind") != "hosted_tool":
+                return
+            await hook.on_provider_tool_event(context, event)
+            call_id = event.get("call_id")
+            if not call_id:
+                return
+            call_id = str(call_id)
+            if event.get("phase") == "start":
+                active_hosted_tools[call_id] = dict(event)
+            elif event.get("phase") in {"end", "error"}:
+                active_hosted_tools.pop(call_id, None)
 
         if wants_streaming:
             thinking_buf = ""
@@ -772,6 +764,7 @@ class AgentRunner:
                 **kwargs,
                 on_content_delta=_stream,
                 on_thinking_delta=_thinking,
+                on_tool_call_delta=_provider_tool_event,
                 on_stream_recover=_stream_recover,
             )
         elif wants_progress_streaming:
@@ -802,6 +795,7 @@ class AgentRunner:
             coro = spec.runtime.provider.chat_stream_with_retry(
                 **kwargs,
                 on_content_delta=_stream_progress,
+                on_tool_call_delta=_provider_tool_event,
             )
         else:
             coro = spec.runtime.provider.chat_with_retry(**kwargs)
@@ -835,6 +829,17 @@ class AgentRunner:
                     finish_reason="error",
                     error_kind="timeout",
                 )
+        # chat_stream_with_retry may recover internally, so only fail unfinished
+        # hosted calls after the provider returns its final error response.
+        if response.finish_reason == "error":
+            for event in list(active_hosted_tools.values()):
+                await _provider_tool_event({
+                    **event,
+                    "phase": "error",
+                    "result": None,
+                    "error": response.content
+                    or "Model request failed before the provider-hosted tool completed.",
+                })
         if progress_state and progress_state.get("reasoning_open"):
             await hook.emit_reasoning_end()
         dropped, all_dropped, original_finish_reason = (
@@ -1167,10 +1172,9 @@ class AgentRunner:
         prepare_call = getattr(spec.tools, "prepare_call", None)
         tool, params, prep_error = None, tool_call.arguments, None
         if callable(prepare_call):
-            with suppress(Exception):
-                prepared = prepare_call(tool_call.name, tool_call.arguments)
-                if isinstance(prepared, tuple) and len(prepared) == 3:
-                    tool, params, prep_error = prepared
+            prepared = prepare_call(tool_call.name, tool_call.arguments)
+            if isinstance(prepared, tuple) and len(prepared) == 3:
+                tool, params, prep_error = prepared
         if prep_error:
             event = {
                 "name": tool_call.name,
@@ -1197,7 +1201,7 @@ class AgentRunner:
                 result = await spec.tools.execute(tool_call.name, params)
         except asyncio.CancelledError:
             raise
-        except BaseException as exc:
+        except Exception as exc:
             await hook.on_execute_tool_error(context, tool_call, tool, params, exc)
             event = {
                 "name": tool_call.name,

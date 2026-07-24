@@ -8,6 +8,7 @@ from typing import Any, Mapping, Sequence
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+from nanobot.agent.tools import image_generation as image_generation_tools
 from nanobot.agent.tools import mcp as mcp_tools
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.apps.cli import utils as cli_app_utils
@@ -41,13 +42,20 @@ async def close_mcp(state: Any) -> None:
 
 
 async def handle_runtime_control(state: Any, msg: InboundMessage, tools: ToolRegistry) -> bool:
-    return await mcp_tools.handle_runtime_control(state, msg, tools)
+    for handler in (
+        image_generation_tools.handle_runtime_control,
+        mcp_tools.handle_runtime_control,
+    ):
+        if await handler(state, msg, tools):
+            return True
+    return False
 
 
 class ContextBuilder:
     """Builds the context (system prompt + messages) for the agent."""
 
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md"]
+    _SKIPPABLE_DEFAULTS = {"AGENTS.md", "USER.md"}
     _RUNTIME_CONTEXT_TAG = RUNTIME_CONTEXT_TAG
     _MAX_RECENT_HISTORY = 50
     _MAX_HISTORY_TOKENS = 8_000  # hard cap on recent history section size (tokens)
@@ -116,12 +124,14 @@ class ContextBuilder:
         """Get the core identity section."""
         root = workspace or self.workspace
         workspace_path = str(root.expanduser().resolve())
+        agent_workspace_path = str(self.workspace.expanduser().resolve())
         system = platform.system()
         runtime = f"{'macOS' if system == 'Darwin' else system} {platform.machine()}, Python {platform.python_version()}"
 
         return render_template(
             "agent/identity.md",
             workspace_path=workspace_path,
+            agent_workspace_path=agent_workspace_path,
             runtime=runtime,
             platform_policy=render_template("agent/platform_policy.md", system=system),
             channel=channel or "",
@@ -146,14 +156,25 @@ class ContextBuilder:
         return _to_blocks(left) + _to_blocks(right)
 
     def _load_bootstrap_files(self, workspace: Path | None = None) -> str:
-        """Load all bootstrap files from workspace."""
+        """Load project instructions plus the agent's global profile files."""
         parts = []
-        root = workspace or self.workspace
+        project_root = workspace or self.workspace
+        sources = [
+            ("AGENTS.md", project_root),
+            ("SOUL.md", self.workspace),
+            ("USER.md", self.workspace),
+        ]
 
-        for filename in self.BOOTSTRAP_FILES:
+        for filename, root in sources:
             file_path = root / filename
             if file_path.exists():
                 content = file_path.read_text(encoding="utf-8")
+                if not content.strip():
+                    continue
+                if filename in self._SKIPPABLE_DEFAULTS and self._is_template_content(
+                    content, filename
+                ):
+                    continue
                 parts.append(f"## {filename}\n\n{content}")
 
         return "\n\n".join(parts) if parts else ""

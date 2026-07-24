@@ -106,7 +106,7 @@ export function WorkspaceProjectPicker({
 
   if (nativeProjectPicker) {
     return (
-      <div className="flex min-w-0 items-center rounded-b-[28px] border-t border-border/25 bg-muted/60 px-3 py-1.5 dark:bg-white/[0.055] sm:px-4">
+      <div className="flex min-w-0 items-center rounded-b-[28px] bg-muted/45 px-3 py-1.5 dark:bg-white/[0.045] sm:px-4">
         <button
           type="button"
           disabled={disabled || pickingFolder}
@@ -133,7 +133,7 @@ export function WorkspaceProjectPicker({
   }
 
   return (
-    <div className="flex min-w-0 items-center rounded-b-[28px] border-t border-border/25 bg-muted/60 px-3 py-1.5 dark:bg-white/[0.055] sm:px-4">
+    <div className="flex min-w-0 items-center rounded-b-[28px] bg-muted/45 px-3 py-1.5 dark:bg-white/[0.045] sm:px-4">
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
           <button
@@ -239,6 +239,13 @@ export function WorkspaceAccessMenu({
   const { t } = useTranslation();
   const mode = scope.access_mode;
   const isFull = mode === "full";
+  const accessLabel = t(
+    isFull ? "thread.composer.workspace.full" : "thread.composer.workspace.default",
+  );
+  const shortAccessLabel = t(
+    isFull ? "thread.composer.workspace.fullShort" : "thread.composer.workspace.defaultShort",
+  );
+  const accessAriaLabel = `${t("thread.composer.workspace.accessAria")}: ${accessLabel}`;
 
   const setMode = (value: WorkspaceAccessMode) => {
     if (value === "full" && !canUseFullAccess) return;
@@ -252,9 +259,10 @@ export function WorkspaceAccessMenu({
         <Button
           type="button"
           variant="ghost"
-          aria-label={t("thread.composer.workspace.accessAria")}
+          aria-label={accessAriaLabel}
+          title={accessLabel}
           className={cn(
-            "max-w-[min(12.5rem,42vw)] rounded-[10px] border border-transparent font-semibold shadow-none",
+            "thread-composer-access touch-target min-w-0 max-w-[min(12.5rem,42vw)] whitespace-nowrap rounded-[10px] border border-transparent font-semibold shadow-none",
             isHero ? "h-8 px-2.5 text-[12px]" : "h-9 px-3 text-[12.5px]",
             isFull
               ? "bg-transparent text-orange-600 hover:bg-orange-500/8 dark:text-orange-300 dark:hover:bg-orange-400/10"
@@ -262,14 +270,17 @@ export function WorkspaceAccessMenu({
           )}
         >
           {isFull ? (
-            <AlertTriangle className={cn("mr-1.5 shrink-0", isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} />
+            <AlertTriangle className={cn("thread-composer-access-icon mr-1.5 shrink-0", isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} />
           ) : (
-            <Hand className={cn("mr-1.5 shrink-0", isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} />
+            <Hand className={cn("thread-composer-access-icon mr-1.5 shrink-0", isHero ? "h-3.5 w-3.5" : "h-3.5 w-3.5")} />
           )}
-          <span className="truncate">
-            {t(isFull ? "thread.composer.workspace.full" : "thread.composer.workspace.default")}
+          <span aria-hidden className="thread-composer-access-label-full min-w-0 truncate">
+            {accessLabel}
           </span>
-          <ChevronDown className={cn("ml-1.5 shrink-0", isHero ? "h-3 w-3" : "h-3 w-3")} />
+          <span aria-hidden className="thread-composer-access-label-short hidden min-w-0 truncate">
+            {shortAccessLabel}
+          </span>
+          <ChevronDown className={cn("thread-composer-access-chevron ml-1.5 shrink-0", isHero ? "h-3 w-3" : "h-3 w-3")} />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
