@@ -78,7 +78,12 @@ from nanobot.config.paths import get_workspace_path, is_default_workspace  # noq
 from nanobot.config.schema import Config  # noqa: E402
 from nanobot.security.network import is_loopback_host  # noqa: E402
 from nanobot.utils.evaluator import evaluate_response, resolve_evaluator_prompt  # noqa: E402
-from nanobot.utils.helpers import sync_workspace_templates  # noqa: E402
+from nanobot.utils.helpers import (  # noqa: E402
+    sanitize_surrogates as _sanitize_surrogates,
+)
+from nanobot.utils.helpers import (  # noqa: E402
+    sync_workspace_templates,
+)
 from nanobot.utils.restart import (  # noqa: E402
     consume_restart_notice_from_env,
     format_restart_completed_message,
@@ -90,17 +95,6 @@ from nanobot.webui.build import (  # noqa: E402
     ensure_webui_bundle,
 )
 from nanobot.webui.sidebar_state import read_webui_sidebar_state  # noqa: E402
-
-
-def _sanitize_surrogates(text: str) -> str:
-    """Reconstruct surrogate pairs into real characters; replace lone surrogates.
-
-    On Windows, console input may produce lone surrogate code points (e.g.
-    ``\\ud83d\\udc08`` for U+1F408).  Round-tripping through UTF-16 reconstructs
-    paired surrogates into their actual characters and replaces unpaired ones
-    with U+FFFD.
-    """
-    return text.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="replace")
 
 
 def _signal_name(signum: int) -> str:
@@ -1611,18 +1605,26 @@ def _run_gateway(
     health_server_enabled: bool = True,
 ) -> None:
     """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
+    from nanobot.agent.model_presets import load_model_preset_catalog
     from nanobot.agent.tools.message import MessageTool
+    from nanobot.agent.turn_delivery import TurnDeliveryFactory
     from nanobot.bus.queue import MessageBus
     from nanobot.bus.runtime_events import RuntimeEventBus
     from nanobot.channels.manager import ChannelManager
+    from nanobot.config.watcher import watch_config_file
     from nanobot.cron.bound_runner import run_bound_cron_job
     from nanobot.cron.service import CronJobSkippedError, CronService
     from nanobot.cron.session_turns import is_bound_cron_job
     from nanobot.cron.types import CronJob
     from nanobot.providers.factory import build_provider_snapshot, load_provider_snapshot
+    from nanobot.providers.fallback_provider import FallbackProvider
     from nanobot.providers.image_generation import image_gen_provider_configs
     from nanobot.session.manager import SessionManager
-    from nanobot.session.webui_turns import WebuiTurnCoordinator
+    from nanobot.session.webui_turns import (
+        WebuiTurnCoordinator,
+        WebuiTurnRoutePolicy,
+        build_webui_fallback_model_observer,
+    )
     from nanobot.triggers.local_runner import run_local_trigger_queue
     from nanobot.triggers.local_store import LocalTriggerStore
     from nanobot.webui.token_usage import TokenUsageHook
@@ -1654,8 +1656,18 @@ def _run_gateway(
     sync_workspace_templates(config.workspace_path)
     bus = MessageBus()
     runtime_events = RuntimeEventBus()
+    fallback_model_observer = build_webui_fallback_model_observer(bus)
+
+    def _observe_fallback_models(snapshot):
+        if isinstance(snapshot.provider, FallbackProvider):
+            snapshot.provider.set_fallback_model_observer(fallback_model_observer)
+        return snapshot
+
+    def _load_gateway_provider_snapshot(*args: Any, **kwargs: Any):
+        return _observe_fallback_models(load_provider_snapshot(*args, **kwargs))
+
     try:
-        provider_snapshot = build_provider_snapshot(config)
+        provider_snapshot = _observe_fallback_models(build_provider_snapshot(config))
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1) from exc
@@ -1684,6 +1696,12 @@ def _run_gateway(
     cron = CronService(cron_store_path)
     trigger_store = LocalTriggerStore(config.workspace_path)
 
+    turn_delivery_factory = TurnDeliveryFactory(
+        bus,
+        runtime_events,
+        route_policy=WebuiTurnRoutePolicy(session_manager),
+    )
+
     # Create agent with cron service
     agent = AgentLoop.from_config(
         config, bus,
@@ -1693,18 +1711,21 @@ def _run_gateway(
         cron_service=cron,
         session_manager=session_manager,
         image_generation_provider_configs=image_gen_provider_configs(config),
-        provider_snapshot_loader=load_provider_snapshot,
+        provider_snapshot_loader=_load_gateway_provider_snapshot,
+        preset_catalog_loader=load_model_preset_catalog,
         runtime_events=runtime_events,
+        turn_delivery_factory=turn_delivery_factory,
         provider_signature=provider_snapshot.signature,
         hooks=[TokenUsageHook(timezone_name=config.agents.defaults.timezone)],
         local_trigger_store=trigger_store,
         hook_factories=[create_file_edit_activity_hook],
     )
-    WebuiTurnCoordinator(
+    webui_turn_coordinator = WebuiTurnCoordinator(
         bus=bus,
         sessions=session_manager,
         schedule_background=lambda coro: agent._schedule_background(coro),
-    ).subscribe(runtime_events)
+    )
+    webui_turn_coordinator.subscribe(runtime_events)
     from nanobot.bus.events import OutboundMessage
     from nanobot.session.keys import session_key_for_channel
 
@@ -2076,7 +2097,16 @@ def _run_gateway(
         )
         try:
             await cron.start()
+            # Re-read once on first admission to close the watcher subscription window.
+            agent.runtime_resolver.invalidate()
             tasks = [
+                asyncio.create_task(
+                    watch_config_file(
+                        Path(config_path),
+                        lambda: agent.invalidate_runtime_config(),
+                    ),
+                    name="nanobot-config-watcher",
+                ),
                 asyncio.create_task(agent.run(), name="nanobot-agent-loop"),
                 asyncio.create_task(channels.start_all(), name="nanobot-channels"),
                 asyncio.create_task(
@@ -2647,11 +2677,13 @@ _LOGOUT_HANDLERS: dict[str, Callable[[], None]] = {}
 
 _PROVIDER_DISPLAY: dict[str, str] = {
     "openai_codex": "OpenAI Codex",
+    "xai_grok": "xAI Grok",
     "github_copilot": "GitHub Copilot",
 }
 
 _OAUTH_PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "openai_codex": "openai-codex/gpt-5.6-sol",
+    "xai_grok": "xai-grok/grok-4.5",
     "github_copilot": "github-copilot/gpt-5.4-mini",
 }
 
@@ -2705,6 +2737,8 @@ def _set_oauth_provider_as_main(
     config.agents.defaults.model_preset = None
     config.agents.defaults.provider = provider_name
     config.agents.defaults.model = selected_model
+    if provider_name == "xai_grok" and selected_model == "xai-grok/grok-4.5":
+        config.agents.defaults.context_window_tokens = 500_000
     save_config(config, resolved_config_path)
 
     saved_path = resolved_config_path or get_config_path()
@@ -2717,7 +2751,10 @@ def _set_oauth_provider_as_main(
 
 @provider_app.command("login")
 def provider_login(
-    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
+    provider: str = typer.Argument(
+        ...,
+        help="OAuth provider (e.g. 'openai-codex', 'xai-grok', 'github-copilot')",
+    ),
     set_main: bool = typer.Option(
         False,
         "--set-main",
@@ -2755,7 +2792,11 @@ def provider_login(
 
 @provider_app.command("logout")
 def provider_logout(
-    provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
+    provider: str = typer.Argument(
+        ...,
+        help="OAuth provider (e.g. 'openai-codex', 'xai-grok', 'github-copilot')",
+    ),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Log out from an OAuth provider."""
     spec = _resolve_oauth_provider(provider)
@@ -2764,6 +2805,13 @@ def provider_logout(
     if not handler:
         console.print(f"[red]Logout not implemented for {spec.label}[/red]")
         raise typer.Exit(1)
+
+    if config:
+        from nanobot.config.loader import set_config_path
+
+        resolved_config_path = Path(config).expanduser().resolve()
+        set_config_path(resolved_config_path)
+        console.print(f"[dim]Using config: {resolved_config_path}[/dim]")
 
     console.print(f"{__logo__} OAuth Logout - {spec.label}\n")
     handler()
@@ -2813,6 +2861,55 @@ def _logout_openai_codex() -> None:
 
     storage = FileTokenStorage(token_filename=OPENAI_CODEX_PROVIDER.token_filename)
     _delete_oauth_files(storage.get_token_path(), _PROVIDER_DISPLAY["openai_codex"])
+
+
+@_register_login("xai_grok")
+def _login_xai_grok() -> None:
+    """Authenticate with xAI using the Grok subscription OAuth contract."""
+    from nanobot.config.loader import load_config, resolve_config_env_vars
+    from nanobot.providers.xai_oauth import get_xai_oauth_token, login_xai_oauth
+
+    try:
+        proxy = resolve_config_env_vars(load_config()).providers.xai_grok.proxy or None
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    token = None
+    with suppress(Exception):
+        token = get_xai_oauth_token(proxy=proxy)
+    if not (token and token.access):
+        console.print(
+            "[cyan]Starting xAI browser sign-in for your X Premium / Grok subscription...[/cyan]\n"
+        )
+        try:
+            token = login_xai_oauth(
+                print_fn=lambda message: console.print(message),
+                prompt_fn=lambda prompt: typer.prompt(prompt),
+                proxy=proxy,
+            )
+        except Exception as exc:
+            console.print(f"[red]Authentication error: {exc}[/red]")
+            raise typer.Exit(1) from exc
+    account = token.account_id or "xAI account"
+    console.print(f"[green]✓ Authenticated with xAI[/green]  [dim]{account}[/dim]")
+    console.print(
+        "[dim]Hosted X Search is enabled automatically when the selected model supports it.[/dim]"
+    )
+
+
+@_register_logout("xai_grok")
+def _logout_xai_grok() -> None:
+    """Clear local xAI OAuth credentials for this nanobot instance."""
+    from nanobot.providers.xai_oauth import get_xai_oauth_storage_path, logout_xai_oauth
+
+    token_path = get_xai_oauth_storage_path()
+    provider_label = _PROVIDER_DISPLAY["xai_grok"]
+    if logout_xai_oauth():
+        console.print(f"[green]✓ Logged out from {provider_label}[/green]")
+        console.print(f"[dim]Removed: {token_path}[/dim]")
+    else:
+        console.print(f"[yellow]! No local OAuth credentials found for {provider_label}[/yellow]")
 
 
 @_register_logout("github_copilot")

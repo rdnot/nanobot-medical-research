@@ -11,6 +11,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from nanobot.config.schema import Config, _resolve_tool_config_refs
+from nanobot.utils.helpers import _write_text_atomic
 
 # Global variable to store current config path (for multi-instance support)
 _current_config_path: Path | None = None
@@ -80,13 +81,23 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     data = config.model_dump(mode="json", by_alias=True)
-    if config.providers.openai_codex.proxy is not None:
-        data.setdefault("providers", {})["openaiCodex"] = {
-            "proxy": config.providers.openai_codex.proxy,
-        }
+    # OAuth credentials live in dedicated token stores. Persist only the
+    # non-credential request settings consumed by these provider backends.
+    for alias, provider in (
+        ("openaiCodex", config.providers.openai_codex),
+        ("xaiGrok", config.providers.xai_grok),
+    ):
+        settings = provider.model_dump(
+            mode="json",
+            by_alias=True,
+            include={"proxy", "extra_body"},
+            exclude_none=True,
+        )
+        if settings:
+            data.setdefault("providers", {})[alias] = settings
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+    # Temp + replace so a crash mid-write cannot leave a truncated config.json.
+    _write_text_atomic(path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def merge_missing_defaults(existing: Any, defaults: Any) -> Any:
@@ -114,6 +125,24 @@ def resolve_config_env_vars(config: Config) -> Config:
     Raises ``ValueError`` if a referenced variable is not set.
     """
     return _resolve_in_place(config)
+
+
+def resolve_env_refs(value: str) -> str:
+    """Resolve ``${VAR}`` references in a single string, leniently.
+
+    Unlike :func:`resolve_config_env_vars` (which walks a whole ``Config`` and
+    raises on a missing variable), this resolves one value and returns an empty
+    string if any reference is unset. It is meant for individual, lazily consumed
+    fields — e.g. a transcription provider's ``api_key`` or ``api_base`` — so a
+    missing variable degrades to "not configured" instead of producing a partial
+    value. Non-string input is returned unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    names = _ENV_REF_PATTERN.findall(value)
+    if any(name not in os.environ for name in names):
+        return ""
+    return _ENV_REF_PATTERN.sub(lambda m: os.environ[m.group(1)], value)
 
 
 def _resolve_in_place(obj: Any) -> Any:
@@ -180,8 +209,8 @@ def _migrate_config(data: dict) -> dict:
         defaults.pop("maxMessages", None)
         defaults.pop("max_messages", None)
         if had_legacy_max_messages:
-            # TODO(next version): Remove this legacy cleanup branch; the schema
-            # will silently ignore this field once the warning grace period ends.
+            # TODO(v0.2.4): Remove this legacy cleanup branch. v0.2.3 is the
+            # final release that warns before the schema silently ignores the field.
             logger.warning(
                 "agents.defaults.maxMessages/max_messages is legacy and ignored; "
                 "replay max messages is now an internal safety cap. Remove it from "

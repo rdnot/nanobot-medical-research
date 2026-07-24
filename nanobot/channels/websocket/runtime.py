@@ -26,12 +26,18 @@ from nanobot.bus.outbound_events import (
     RuntimeModelUpdatedEvent,
     SessionUpdatedEvent,
     TurnEndEvent,
+    TurnModelUpdatedEvent,
     outbound_event_from_message,
     outbound_message_for_event,
 )
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.config.schema import Base
+from nanobot.runtime_context import (
+    RUNTIME_CONTEXT_INPUT_META,
+    WEBUI_QUOTE_METADATA,
+    webui_quote_runtime_context,
+)
 from nanobot.security.workspace_access import (
     WORKSPACE_SCOPE_METADATA_KEY,
     WorkspaceScopeError,
@@ -250,6 +256,8 @@ class WebSocketChannel(BaseChannel):
         self._conn_chats: dict[Any, set[str]] = {}
         # connection -> default chat_id for legacy frames that omit routing.
         self._conn_default: dict[Any, str] = {}
+        # Connections authenticated with a one-time token from /webui/bootstrap.
+        self._webui_connections: set[Any] = set()
         self._stop_event: asyncio.Event | None = None
         self._server_task: asyncio.Task[None] | None = None
 
@@ -284,6 +292,7 @@ class WebSocketChannel(BaseChannel):
             if not subs:
                 self._subs.pop(cid, None)
         self._conn_default.pop(connection, None)
+        self._webui_connections.discard(connection)
 
     async def _maybe_push_active_goal_state(self, chat_id: str) -> None:
         """Replay an active sustained goal from session metadata after *chat_id* is subscribed.
@@ -311,7 +320,7 @@ class WebSocketChannel(BaseChannel):
         await self.send_goal_status(chat_id, "running", started_at=t0)
 
     async def _hydrate_after_subscribe(self, chat_id: str) -> None:
-        """Replay goal/run strip state after subscribe (same-process refresh)."""
+        """Replay persisted or actively running per-chat state after subscribe."""
         await self._maybe_push_active_goal_state(chat_id)
         await self._maybe_push_turn_run_wall_clock(chat_id)
 
@@ -374,18 +383,24 @@ class WebSocketChannel(BaseChannel):
         if static_token:
             if supplied and hmac.compare_digest(supplied, static_token):
                 return None
-            if supplied and self._tokens.take_issued_token_if_valid(supplied):
+            if supplied and self._consume_issued_token(connection, supplied):
                 return None
             return connection.respond(401, "Unauthorized")
 
         if self.config.websocket_requires_token:
-            if supplied and self._tokens.take_issued_token_if_valid(supplied):
+            if supplied and self._consume_issued_token(connection, supplied):
                 return None
             return connection.respond(401, "Unauthorized")
 
         if supplied:
-            self._tokens.take_issued_token_if_valid(supplied)
+            self._consume_issued_token(connection, supplied)
         return None
+
+    def _consume_issued_token(self, connection: Any, token: str) -> bool:
+        audience = self._tokens.take_issued_token_audience(token)
+        if audience == "webui":
+            self._webui_connections.add(connection)
+        return audience is not None
 
     # -- Server lifecycle and connection ingress ---------------------------
 
@@ -696,6 +711,12 @@ class WebSocketChannel(BaseChannel):
                     cli_apps=cli_apps or None,
                     mcp_presets=mcp_presets or None,
                 )
+            if metadata.get("webui") is True and connection in self._webui_connections:
+                quote = webui_quote_runtime_context({
+                    WEBUI_QUOTE_METADATA: envelope.get("quoted_context"),
+                })
+                if quote is not None:
+                    metadata[RUNTIME_CONTEXT_INPUT_META] = [quote]
             await self._handle_message(
                 sender_id=client_id,
                 chat_id=cid,
@@ -747,6 +768,7 @@ class WebSocketChannel(BaseChannel):
         self._subs.clear()
         self._conn_chats.clear()
         self._conn_default.clear()
+        self._webui_connections.clear()
         self._tokens.clear()
 
     async def _safe_send_to(self, connection: Any, raw: str, *, label: str = "") -> None:
@@ -784,6 +806,13 @@ class WebSocketChannel(BaseChannel):
                 self.logger.debug("no active subscribers for chat_id={}", msg.chat_id)
             else:
                 self.logger.warning("no active subscribers for chat_id={}", msg.chat_id)
+        if isinstance(event, TurnModelUpdatedEvent):
+            if conns:
+                await self.send_turn_model_updated(
+                    msg.chat_id,
+                    model_name=event.model,
+                )
+            return
         if isinstance(event, GoalStateSyncEvent):
             if conns:
                 await self.send_goal_state(msg.chat_id, event.goal_state or {"active": False})
@@ -988,6 +1017,8 @@ class WebSocketChannel(BaseChannel):
             self._stream_text_buffers.setdefault(stream_key, []).append(delta)
         if stream_id is not None:
             body["stream_id"] = stream_id
+        if stream_end and resuming:
+            body["resuming"] = True
         self._transcripts.prepare_and_append(
             chat_id,
             body,
@@ -1090,3 +1121,26 @@ class WebSocketChannel(BaseChannel):
         raw = json.dumps(body, ensure_ascii=False)
         for connection in conns:
             await self._safe_send_to(connection, raw, label=" runtime_model_updated ")
+
+    async def send_turn_model_updated(
+        self,
+        chat_id: str,
+        *,
+        model_name: Any,
+    ) -> None:
+        """Notify one chat's subscribers which model is handling its current request."""
+        conns = list(self._subs.get(chat_id, ()))
+        if (
+            not conns
+            or not isinstance(model_name, str)
+            or not model_name.strip()
+        ):
+            return
+        body: dict[str, Any] = {
+            "event": "turn_model_updated",
+            "chat_id": chat_id,
+            "model_name": model_name.strip(),
+        }
+        raw = json.dumps(body, ensure_ascii=False)
+        for connection in conns:
+            await self._safe_send_to(connection, raw, label=" turn_model_updated ")

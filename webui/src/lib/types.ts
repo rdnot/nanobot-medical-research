@@ -245,6 +245,8 @@ export interface ChatSummary {
   updatedAt: string | null;
   title?: string;
   preview: string;
+  /** Model preset persisted for this session; null means it still follows the global default. */
+  modelPreset?: string | null;
   /** Unix epoch seconds when this session currently has a turn in flight. */
   runStartedAt?: number | null;
   workspaceScope?: WorkspaceScopePayload | null;
@@ -375,6 +377,23 @@ export interface ProviderModelsPayload {
   fetched_at?: number;
 }
 
+export interface ProviderOAuthAuthorizationRequired {
+  status: "authorization_required";
+  provider: string;
+  flow_id: string;
+  authorization_url: string;
+  expires_in: number;
+}
+
+export interface ProviderOAuthPending {
+  status: "pending";
+  provider: string;
+  flow_id: string;
+}
+
+export type ProviderOAuthLoginResult = SettingsPayload | ProviderOAuthAuthorizationRequired;
+export type ProviderOAuthCompletionResult = SettingsPayload | ProviderOAuthPending;
+
 export interface SettingsPayload {
   surface?: RuntimeSurface;
   runtime_surface?: RuntimeSurface;
@@ -406,15 +425,21 @@ export interface SettingsPayload {
     is_default: boolean;
     model: string;
     provider: string;
+    resolved_provider?: string | null;
     max_tokens: number;
     context_window_tokens: number;
     temperature: number;
     reasoning_effort: string | null;
     reasoning_effort_values?: string[];
   }>;
+  model_call_order: string[];
+  model_call_order_editable: boolean;
+  created_model_preset?: string;
+  created_provider?: string;
   providers: Array<{
     name: string;
     label: string;
+    is_custom?: boolean;
     configured: boolean;
     auth_type?: "api_key" | "oauth";
     api_key_required?: boolean;
@@ -427,6 +452,23 @@ export interface SettingsPayload {
     oauth_account?: string | null;
     oauth_expires_at?: number | null;
     oauth_login_supported?: boolean;
+    proxy?: string | null;
+    advanced_fields?: Array<
+      | "api_type"
+      | "extra_headers"
+      | "extra_body"
+      | "extra_query"
+      | "proxy"
+      | "thinking_style"
+      | "region"
+      | "profile"
+    >;
+    extra_headers?: Record<string, string> | null;
+    extra_body?: Record<string, unknown> | null;
+    extra_query?: Record<string, string> | null;
+    thinking_style?: string | null;
+    region?: string | null;
+    profile?: string | null;
   }>;
   web_search: {
     provider: string;
@@ -480,6 +522,8 @@ export interface SettingsPayload {
       api_key_hint?: string | null;
       api_base?: string | null;
       default_api_base?: string | null;
+      models?: string[];
+      default_model?: string | null;
     }>;
   };
   transcription?: {
@@ -918,6 +962,10 @@ export interface ModelConfigurationCreate {
   label: string;
   provider: string;
   model: string;
+  maxTokens?: number;
+  contextWindowTokens?: number;
+  temperature?: number;
+  reasoningEffort?: string | null;
 }
 
 export interface ModelConfigurationUpdate {
@@ -925,14 +973,36 @@ export interface ModelConfigurationUpdate {
   label?: string;
   provider?: string;
   model?: string;
+  maxTokens?: number;
   contextWindowTokens?: number;
+  temperature?: number;
+  reasoningEffort?: string | null;
 }
 
 export interface ProviderSettingsUpdate {
   provider: string;
+  displayName?: string;
   apiKey?: string;
   apiBase?: string;
   apiType?: "auto" | "chat_completions" | "responses";
+  proxy?: string;
+  extraHeaders?: string;
+  extraBody?: string;
+  extraQuery?: string;
+  thinkingStyle?: string;
+  region?: string;
+  profile?: string;
+}
+
+export interface ProviderCreationUpdate {
+  name: string;
+  apiKey?: string;
+  apiBase: string;
+  proxy?: string;
+  extraHeaders?: string;
+  extraBody?: string;
+  extraQuery?: string;
+  thinkingStyle?: string;
 }
 
 export interface WebSearchSettingsUpdate {
@@ -1044,6 +1114,8 @@ export type InboundEvent =
       chat_id: string;
       stream_id?: string;
       text?: string;
+      /** This answer segment ended, but the active agent turn will continue. */
+      resuming?: boolean;
     } & InboundTurnMetadata)
   | ({
       event: "reasoning_delta";
@@ -1060,6 +1132,11 @@ export type InboundEvent =
       event: "runtime_model_updated";
       model_name: string;
       model_preset?: string | null;
+    }
+  | {
+      event: "turn_model_updated";
+      chat_id: string;
+      model_name: string;
     }
   | ({
       event: "turn_end";
@@ -1171,6 +1248,7 @@ export type Outbound =
       media?: OutboundMedia[];
       cli_apps?: OutboundCliAppMention[];
       mcp_presets?: OutboundMcpPresetMention[];
+      quoted_context?: string;
       workspace_scope?: WorkspaceScopePayload;
       turn_id?: string;
       /** Marks messages sent by the embedded WebUI, without changing the

@@ -7,6 +7,7 @@ import { FilePreviewPanel } from "@/components/FilePreviewPanel";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
 import { SessionInfoPopover } from "@/components/thread/SessionInfoPopover";
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
+import type { ModelPresetOption } from "@/components/thread/ModelPresetBadge";
 import { ThreadHeader } from "@/components/thread/ThreadHeader";
 import { StreamErrorNotice } from "@/components/thread/StreamErrorNotice";
 import { ThreadViewport, type ThreadViewportHandle } from "@/components/thread/ThreadViewport";
@@ -40,13 +41,8 @@ import type {
   WorkspaceScopePayload,
   WorkspacesPayload,
 } from "@/lib/types";
-import { normalizeLegacyLongTaskMessages } from "@/lib/thread-display-compat";
-import { scrubSubagentUiMessages } from "@/lib/subagent-channel-display";
+import { projectWebuiThreadMessages } from "@/lib/thread-display-compat";
 import { useClient } from "@/providers/ClientProvider";
-
-function projectWebuiThreadMessages(messages: UIMessage[]): UIMessage[] {
-  return scrubSubagentUiMessages(normalizeLegacyLongTaskMessages(messages));
-}
 
 type MessageShape = Pick<UIMessage, "role" | "kind" | "content">;
 
@@ -165,13 +161,20 @@ function toModelBadgeLabel(modelName: string | null): string | null {
 
 interface ModelBadgeInfo {
   label: string | null;
+  model: string | null;
   provider: string | null;
   providerLabel: string | null;
   needsSetup: boolean;
 }
 
-function activeModelPreset(settings: SettingsPayload | null): SettingsPayload["model_presets"][number] | null {
+function modelPresetForBadge(
+  settings: SettingsPayload | null,
+  scopedPreset: string | null,
+): SettingsPayload["model_presets"][number] | null {
   if (!settings) return null;
+  if (scopedPreset) {
+    return settings.model_presets.find((preset) => preset.name === scopedPreset) ?? null;
+  }
   const configured = settings.agent.model_preset || "default";
   return (
     settings.model_presets.find((preset) => preset.name === configured)
@@ -180,19 +183,25 @@ function activeModelPreset(settings: SettingsPayload | null): SettingsPayload["m
   );
 }
 
-function resolvedModelProvider(settings: SettingsPayload | null, modelName: string | null): string | null {
-  const preset = activeModelPreset(settings);
-  const rawProvider = preset?.provider || settings?.agent.provider || null;
-  if (rawProvider === "auto") {
-    return settings?.agent.resolved_provider || inferProviderFromModelName(modelName) || null;
-  }
-  return rawProvider || inferProviderFromModelName(modelName);
-}
-
-function toModelBadgeInfo(modelName: string | null, settings: SettingsPayload | null): ModelBadgeInfo {
-  const model = modelName || settings?.agent.model || null;
-  const label = toModelBadgeLabel(model);
-  const provider = resolvedModelProvider(settings, model);
+function toModelBadgeInfo(
+  modelName: string | null,
+  settings: SettingsPayload | null,
+  modelPreset: string | null = null,
+): ModelBadgeInfo {
+  const scopedPreset = modelPreset?.trim() || null;
+  const preset = modelPresetForBadge(settings, scopedPreset);
+  const model = scopedPreset
+    ? preset?.model || null
+    : settings?.agent.model || modelName || null;
+  const label = preset?.label?.trim() || scopedPreset || toModelBadgeLabel(model);
+  const rawProvider = preset?.provider
+    || (!scopedPreset ? settings?.agent.provider : null)
+    || null;
+  const provider = rawProvider === "auto"
+    ? preset?.resolved_provider
+      || (!scopedPreset ? settings?.agent.resolved_provider : null)
+      || null
+    : rawProvider || inferProviderFromModelName(model);
   const providerRow = provider
     ? settings?.providers.find((item) => item.name === provider)
     : null;
@@ -201,10 +210,35 @@ function toModelBadgeInfo(modelName: string | null, settings: SettingsPayload | 
   );
   return {
     label,
+    model: toModelBadgeLabel(model),
     provider,
     providerLabel: provider ? providerDisplayLabel(settings?.providers ?? [], provider) : null,
     needsSetup,
   };
+}
+
+function modelPresetOptionsFromSettings(
+  settings: SettingsPayload | null,
+): ModelPresetOption[] {
+  if (!settings) return [];
+  const order = new Map(
+    (settings.model_call_order ?? []).map((name, index) => [name.trim(), index]),
+  );
+  return settings.model_presets
+    .filter((preset) => !preset.is_default && preset.name.trim())
+    .sort((a, b) => (
+      (order.get(a.name.trim()) ?? Number.POSITIVE_INFINITY)
+      - (order.get(b.name.trim()) ?? Number.POSITIVE_INFINITY)
+    ))
+    .map((preset) => {
+      const name = preset.name.trim();
+      return {
+        name,
+        label: preset.label?.trim() || name,
+        model: preset.model,
+        provider: preset.resolved_provider || preset.provider,
+      };
+    });
 }
 
 const HERO_GREETING_KEYS = [
@@ -213,6 +247,76 @@ const HERO_GREETING_KEYS = [
   "thread.empty.greetings.build",
   "thread.empty.greetings.tackle",
 ] as const;
+
+function HeroGreeting({ text }: { text: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    const heading = headingRef.current;
+    if (!container || !heading) return;
+
+    const fitToWidth = () => {
+      heading.style.removeProperty("font-size");
+      const availableWidth = container.clientWidth;
+      if (availableWidth <= 0) return;
+
+      const naturalWidth = heading.scrollWidth;
+      const maximumFontSize = Number.parseFloat(window.getComputedStyle(heading).fontSize);
+      if (
+        naturalWidth <= availableWidth
+        || !Number.isFinite(maximumFontSize)
+        || maximumFontSize <= 0
+      ) {
+        return;
+      }
+
+      const fittedFontSize = Math.max(
+        12,
+        Math.floor(maximumFontSize * ((availableWidth - 2) / naturalWidth) * 100) / 100,
+      );
+      heading.style.fontSize = `${fittedFontSize}px`;
+    };
+
+    fitToWidth();
+
+    let lastObservedWidth = container.clientWidth;
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(([entry]) => {
+          const nextWidth = entry?.contentRect.width ?? container.clientWidth;
+          if (nextWidth === lastObservedWidth) return;
+          lastObservedWidth = nextWidth;
+          fitToWidth();
+        });
+    resizeObserver?.observe(container);
+    window.addEventListener("resize", fitToWidth);
+
+    let cancelled = false;
+    void document.fonts?.ready.then(() => {
+      if (!cancelled) fitToWidth();
+    });
+
+    return () => {
+      cancelled = true;
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", fitToWidth);
+    };
+  }, [text]);
+
+  return (
+    <div ref={containerRef} className="min-w-0 w-full max-w-[44rem]">
+      <h1
+        ref={headingRef}
+        data-testid="hero-greeting"
+        className="whitespace-nowrap text-[34px] font-normal leading-[1.08] tracking-normal text-foreground sm:text-[48px] sm:leading-tight"
+      >
+        {text}
+      </h1>
+    </div>
+  );
+}
 
 function randomHeroGreetingKey(): (typeof HERO_GREETING_KEYS)[number] {
   const index = Math.floor(Math.random() * HERO_GREETING_KEYS.length);
@@ -321,6 +425,7 @@ export function ThreadShell({
     forkBoundaryMessageCount,
   } = useSessionHistory(historyKey);
   const { client, ingressLimits, modelName, token } = useClient();
+  const [fallbackModelName, setFallbackModelName] = useState<string | null>(null);
   const [booting, setBooting] = useState(false);
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
   const cliApps = useInstalledSettingItems({
@@ -344,6 +449,8 @@ export function ThreadShell({
   const [filePreviewPath, setFilePreviewPath] = useState<string | null>(null);
   const [filePreviewClosing, setFilePreviewClosing] = useState(false);
   const [filePreviewWidth, setFilePreviewWidth] = useState(FILE_PREVIEW_DEFAULT_WIDTH);
+  const [quotedContext, setQuotedContext] = useState<string | null>(null);
+  const [composerFocusSignal, setComposerFocusSignal] = useState(0);
   const shellRef = useRef<HTMLElement | null>(null);
   const filePreviewWidthRef = useRef(FILE_PREVIEW_DEFAULT_WIDTH);
   const filePreviewCloseTimerRef = useRef<number | null>(null);
@@ -365,6 +472,7 @@ export function ThreadShell({
     return messageCacheRef.current.get(chatId) ?? historical;
   }, [chatId, historical]);
   const handleTurnEnd = useCallback(() => {
+    setFallbackModelName(null);
     onTurnEnd?.();
   }, [onTurnEnd]);
   const {
@@ -395,7 +503,13 @@ export function ThreadShell({
     }
     setFilePreviewClosing(false);
     setFilePreviewPath(null);
+    setQuotedContext(null);
   }, [historyKey]);
+
+  const handleQuoteSelection = useCallback((text: string) => {
+    setQuotedContext(text);
+    setComposerFocusSignal((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -449,11 +563,32 @@ export function ThreadShell({
     token,
   ]);
 
-  const showHeroComposer = messages.length === 0 && !loading;
+  const showHeroComposer = displayMessages.length === 0 && !loading;
   const wasShowingHeroComposerRef = useRef(showHeroComposer);
+  const sessionModelPreset = session?.modelPreset?.trim() || null;
+  const [localModelPreset, setLocalModelPreset] = useState<string | null>(null);
+  useEffect(() => {
+    setLocalModelPreset(null);
+  }, [session?.key, sessionModelPreset]);
+  const activeModelPreset = (
+    localModelPreset
+    || sessionModelPreset
+    || settings?.agent.model_preset
+    || "default"
+  );
+  const handleModelPresetChange = useCallback((name: string) => {
+    setLocalModelPreset(name);
+    if (chatId) {
+      void client.sendSystemCommand(chatId, `/model ${name}`).catch(() => {});
+    }
+  }, [chatId, client]);
+  const modelPresetOptions = useMemo(
+    () => modelPresetOptionsFromSettings(settings),
+    [settings],
+  );
   const modelBadge = useMemo(
-    () => toModelBadgeInfo(modelName, settings),
-    [modelName, settings],
+    () => toModelBadgeInfo(modelName, settings, activeModelPreset),
+    [activeModelPreset, modelName, settings],
   );
   const modelBadgeLabel = modelBadge.needsSetup
     ? t("thread.composer.modelNotConfigured", { defaultValue: "Model not configured" })
@@ -499,6 +634,18 @@ export function ThreadShell({
   }, [client, refreshModelSettings]);
 
   useEffect(() => {
+    if (!chatId) {
+      setFallbackModelName(null);
+      return;
+    }
+    setFallbackModelName(null);
+    return client.onChat(chatId, (event) => {
+      if (event.event !== "turn_model_updated") return;
+      setFallbackModelName(event.model_name);
+    });
+  }, [chatId, client]);
+
+  useEffect(() => {
     if (!chatId || loading) return;
     const cached = messageCacheRef.current.get(chatId);
     const appliedVersion = appliedHistoryVersionRef.current.get(chatId) ?? 0;
@@ -524,17 +671,16 @@ export function ThreadShell({
         return normalizedHistory;
       }
       if (cached && cached.length > 0) {
-        const normalizedCached = projectWebuiThreadMessages(cached);
         if (
-          normalizedHistory.length > normalizedCached.length
+          normalizedHistory.length > cached.length
           && !isStaleThreadSnapshot(prev, normalizedHistory)
         ) {
           messageCacheRef.current.set(chatId, normalizedHistory);
           appliedHistoryVersionRef.current.set(chatId, historyVersion);
           return normalizedHistory;
         }
-        if (isStaleThreadSnapshot(prev, normalizedCached)) return keepLiveMessages(prev);
-        return normalizedCached;
+        if (isStaleThreadSnapshot(prev, cached)) return keepLiveMessages(prev);
+        return cached;
       }
       if (isStaleThreadSnapshot(prev, normalizedHistory)) return keepLiveMessages(prev);
       appliedHistoryVersionRef.current.set(chatId, historyVersion);
@@ -574,7 +720,7 @@ export function ThreadShell({
     if (chatId) {
       const prev = prevChatIdForCacheRef.current;
       if (prev && prev !== chatId) {
-        messageCacheRef.current.set(prev, projectWebuiThreadMessages(messages));
+        messageCacheRef.current.set(prev, displayMessages);
         skipLayoutCacheRef.current = true;
       }
       prevChatIdForCacheRef.current = chatId;
@@ -582,13 +728,13 @@ export function ThreadShell({
       if (prevChatIdForCacheRef.current) {
         messageCacheRef.current.set(
           prevChatIdForCacheRef.current,
-          projectWebuiThreadMessages(messages),
+          displayMessages,
         );
         skipLayoutCacheRef.current = true;
       }
       prevChatIdForCacheRef.current = null;
     }
-  }, [chatId, messages]);
+  }, [chatId, displayMessages]);
 
   // Persist thread to in-memory cache after paint so ``useNanobotStream``'s chat switch
   // ``useEffect`` reset has flushed; ``skipLayoutCacheRef`` drops the first run that still
@@ -604,8 +750,8 @@ export function ThreadShell({
     if (loading) {
       return;
     }
-    messageCacheRef.current.set(chatId, projectWebuiThreadMessages(messages));
-  }, [chatId, loading, messages]);
+    messageCacheRef.current.set(chatId, displayMessages);
+  }, [chatId, displayMessages, loading]);
 
   // The landing composer queues the first message while `new_chat` is in flight.
   // Only the chat created for that send may consume it; selecting another chat
@@ -652,13 +798,17 @@ export function ThreadShell({
         setBooting(false);
         return;
       }
+      if (localModelPreset) {
+        await client.sendSystemCommand(newId, `/model ${localModelPreset}`).catch(() => {});
+      }
       setPendingFirstTargetChatId(newId);
     },
-    [booting, onCreateChat, withWorkspaceScope, workspaceScope],
+    [booting, client, localModelPreset, onCreateChat, withWorkspaceScope, workspaceScope],
   );
 
   const handleThreadSend = useCallback(
     (content: string, images?: SendAttachment[], options?: SendOptions) => {
+      setFallbackModelName(null);
       setScrollToLatestUserPromptSignal((value) => value + 1);
       send(content, images, withWorkspaceScope(options));
     },
@@ -784,9 +934,14 @@ export function ThreadShell({
               : t("thread.composer.placeholderThread")
           }
           modelLabel={modelBadgeLabel}
+          modelDetail={modelBadge.model}
+          modelPreset={activeModelPreset}
+          modelPresets={modelPresetOptions}
+          onModelPresetChange={handleModelPresetChange}
           modelProvider={modelBadge.provider}
           modelProviderLabel={modelBadge.providerLabel}
           modelNeedsSetup={modelBadge.needsSetup}
+          fallbackModelName={fallbackModelName}
           onModelBadgeClick={modelBadge.needsSetup ? onOpenModelSettings : undefined}
           variant={showHeroComposer ? "hero" : "thread"}
           slashCommands={slashCommands}
@@ -806,6 +961,9 @@ export function ThreadShell({
           pendingQueueKey={chatId}
           transcriptionProvider={settingsSnapshot?.transcription?.provider}
           ingressLimits={ingressLimits}
+          quotedContext={quotedContext}
+          focusRequest={composerFocusSignal}
+          onQuotedContextChange={setQuotedContext}
         />
       ) : (
         <ThreadComposer
@@ -818,9 +976,14 @@ export function ThreadShell({
               : t("thread.composer.placeholderHero")
           }
           modelLabel={modelBadgeLabel}
+          modelDetail={modelBadge.model}
+          modelPreset={activeModelPreset}
+          modelPresets={modelPresetOptions}
+          onModelPresetChange={handleModelPresetChange}
           modelProvider={modelBadge.provider}
           modelProviderLabel={modelBadge.providerLabel}
           modelNeedsSetup={modelBadge.needsSetup}
+          fallbackModelName={fallbackModelName}
           onModelBadgeClick={modelBadge.needsSetup ? onOpenModelSettings : undefined}
           variant="hero"
           slashCommands={slashCommands}
@@ -849,9 +1012,7 @@ export function ThreadShell({
     </div>
   ) : (
     <div className="flex w-full flex-col items-center text-center animate-in fade-in-0 slide-in-from-bottom-2 duration-500">
-      <h1 className="max-w-[44rem] text-balance text-[34px] font-normal leading-[1.08] tracking-normal text-foreground sm:text-[48px] sm:leading-tight">
-        {t(heroGreetingKey)}
-      </h1>
+      <HeroGreeting text={t(heroGreetingKey)} />
     </div>
   );
   const sessionInfoAction = historyKey ? (
@@ -904,6 +1065,7 @@ export function ThreadShell({
             onLoadOlder={loadOlder}
             onOpenFilePreview={historyKey ? handleOpenFilePreview : undefined}
             onForkFromMessage={onForkChat ? handleForkFromMessage : undefined}
+            onQuoteSelection={session ? handleQuoteSelection : undefined}
           />
         </FilePreviewAvailabilityProvider>
       </div>
