@@ -1471,7 +1471,8 @@ async def test_system_subagent_followup_does_not_log_content(tmp_path: Path) -> 
             [],
             [*initial_messages, {"role": "assistant", "content": "done"}],
             "stop",
-            False,
+            [],     # tool_calls_log (fork 6-tuple)
+            False,  # had_injections
         )
 
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
@@ -1530,7 +1531,8 @@ async def test_system_subagent_followup_uses_common_turn_state_machine(tmp_path:
             [],
             [*initial_messages, {"role": "assistant", "content": "done"}],
             "stop",
-            False,
+            [],     # tool_calls_log (fork 6-tuple)
+            False,  # had_injections
         )
 
     loop._run_agent_loop = fake_run_agent_loop  # type: ignore[method-assign]
