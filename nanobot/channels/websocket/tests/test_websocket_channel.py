@@ -2276,7 +2276,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert image_updated.status_code == 200
         image_body = image_updated.json()
         assert image_body["requires_restart"] is True
-        assert image_body["restart_required_sections"] == ["image", "runtime"]  # FORK: use_jina_reader already False, no web restart
+        assert image_body["restart_required_sections"] == ["runtime"]  # FORK: upstream removed "image" section; use_jina_reader already False, no browser restart
         assert image_body["image_generation"]["enabled"] is True
         assert image_body["image_generation"]["model"] == "openai/gpt-image-1"
         assert image_body["image_generation"]["default_aspect_ratio"] == "16:9"
@@ -2292,9 +2292,8 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert image_provider_updated.status_code == 200
         assert image_provider_updated.json()["requires_restart"] is True
         assert image_provider_updated.json()["restart_required_sections"] == [
-            "image",
             "runtime",
-        ]  # FORK: use_jina_reader already False, no browser restart
+        ]  # FORK: upstream removed "image" section; use_jina_reader already False, no browser restart
         assert "sk-or-next" not in image_provider_updated.text
         assert image_reload.await_count == 2
 
