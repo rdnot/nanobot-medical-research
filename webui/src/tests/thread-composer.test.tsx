@@ -406,6 +406,34 @@ describe("ThreadComposer", () => {
     expect(input.parentElement?.parentElement?.className).toContain("max-w-[58rem]");
   });
 
+  it("lets long model preset labels use their intrinsic width", () => {
+    render(
+      <ThreadComposer
+        onSend={vi.fn()}
+        modelLabel="gpt-5.6-sol"
+        modelPreset="gpt-5-6-sol"
+        modelProvider="openai_codex"
+        modelPresets={[
+          {
+            name: "gpt-5-6-sol",
+            label: "gpt-5.6-sol",
+            model: "openai-codex/gpt-5.6-sol",
+            provider: "openai_codex",
+          },
+          ...MODEL_PRESETS,
+        ]}
+        onModelPresetChange={vi.fn()}
+        placeholder="Ask anything..."
+        variant="hero"
+      />,
+    );
+
+    const badge = screen.getByRole("spinbutton", { name: "gpt-5.6-sol" });
+    expect(badge).toHaveClass("w-fit", "max-w-[min(18rem,44vw)]");
+    expect(badge).not.toHaveClass("w-[5.75rem]");
+    expect(screen.getByText("gpt-5.6-sol")).toBeInTheDocument();
+  });
+
   it("keeps the thread composer compact while matching the hero style", () => {
     render(
       <ThreadComposer
@@ -451,9 +479,16 @@ describe("ThreadComposer", () => {
     longPress(badge);
     expect(badge).toHaveAttribute("data-switching", "true");
     const viewport = screen.getByTestId("composer-model-pill-viewport");
-    expect(viewport).toHaveClass("overflow-hidden", "-left-2", "-top-3", "-bottom-3");
+    expect(viewport).toHaveClass(
+      "right-0",
+      "w-max",
+      "max-w-[calc(44vw+0.5rem)]",
+      "overflow-hidden",
+      "-top-3",
+      "-bottom-3",
+    );
     const track = screen.getByTestId("composer-model-pill-track");
-    expect(track).toHaveClass("items-end", "gap-1");
+    expect(track).toHaveClass("w-max", "max-w-full", "items-end", "gap-1");
     const activeTouchMove = new Event("touchmove", {
       bubbles: true,
       cancelable: true,
