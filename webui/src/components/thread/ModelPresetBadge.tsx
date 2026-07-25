@@ -245,18 +245,28 @@ export function ModelPresetBadge({
       onDragStart={(event) => event.preventDefault()}
       style={{ touchAction: canSwitch ? "manipulation" : undefined }}
       className={cn(
-        "thread-composer-model-badge group/model-badge relative inline-flex w-[5.75rem] min-w-0 justify-end appearance-none border-0 bg-transparent p-0 shadow-none",
+        "thread-composer-model-badge group/model-badge relative inline-flex w-fit min-w-0 max-w-[min(18rem,44vw)] justify-end appearance-none border-0 bg-transparent p-0 shadow-none",
         interactive && "cursor-pointer",
         canSwitch && "cursor-grab select-none focus-visible:outline-none",
         motion && "z-10 cursor-grabbing",
-        isHero ? "h-8 max-w-[44vw]" : "h-9 max-w-[44vw]",
+        isHero ? "h-8" : "h-9",
       )}
     >
+      <PresetPill
+        className={motion && "invisible"}
+        label={label}
+        modelDetail={modelDetail}
+        provider={provider}
+        providerLabel={providerLabel}
+        needsSetup={needsSetup}
+        fallbackModelName={fallbackModelName}
+        isHero={isHero}
+      />
       {motion ? (
         <span
           data-testid="composer-model-pill-viewport"
           className={cn(
-            "composer-model-pill-viewport pointer-events-none absolute -left-2 right-0 overflow-hidden bg-transparent",
+            "composer-model-pill-viewport pointer-events-none absolute right-0 w-max max-w-[calc(44vw+0.5rem)] overflow-hidden bg-transparent pl-2 sm:max-w-[18.5rem]",
             isHero ? "-bottom-2.5 -top-2.5" : "-bottom-3 -top-3",
           )}
           aria-hidden
@@ -264,7 +274,7 @@ export function ModelPresetBadge({
           <span
             data-testid="composer-model-pill-track"
             data-settling={motion.settling ? "true" : undefined}
-            className="composer-model-pill-track ml-auto flex w-[calc(100%-0.5rem)] flex-col items-end gap-1 will-change-transform"
+            className="composer-model-pill-track ml-auto flex w-max max-w-full flex-col items-end gap-1 will-change-transform"
             onTransitionEnd={(event) => {
               if (motion.settling && event.currentTarget === event.target) setMotion(null);
             }}
@@ -291,22 +301,13 @@ export function ModelPresetBadge({
             })}
           </span>
         </span>
-      ) : (
-        <PresetPill
-          label={label}
-          modelDetail={modelDetail}
-          provider={provider}
-          providerLabel={providerLabel}
-          needsSetup={needsSetup}
-          fallbackModelName={fallbackModelName}
-          isHero={isHero}
-        />
-      )}
+      ) : null}
     </Container>
   );
 }
 
 function PresetPill({
+  className,
   label,
   modelDetail,
   provider,
@@ -317,6 +318,7 @@ function PresetPill({
   offset,
   scale,
 }: {
+  className?: string | false | null;
   label: string;
   modelDetail?: string | null;
   provider?: string | null;
@@ -363,6 +365,7 @@ function PresetPill({
         needsSetup && "border-amber-500/35 bg-amber-50/70 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200",
         isHero ? "gap-1.5 px-2.5 text-[12px]" : "gap-2 px-3 text-[12.5px]",
         offset !== undefined && "composer-model-pill-dock",
+        className,
       )}
       style={scale === undefined ? undefined : {
         height: `${isHero ? 32 : 36}px`,
