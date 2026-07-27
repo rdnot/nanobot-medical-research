@@ -1728,17 +1728,6 @@ def test_agent_workspace_override_wins_over_config_workspace(mock_agent_runtime,
     assert passed_config.workspace_path == workspace_path
 
 
-def test_agent_hints_about_deprecated_memory_window(mock_agent_runtime, tmp_path):
-    config_file = tmp_path / "config.json"
-    config_file.write_text(json.dumps({"agents": {"defaults": {"memoryWindow": 42}}}))
-
-    result = runner.invoke(app, ["agent", "-m", "hello", "-c", str(config_file)])
-
-    assert result.exit_code == 0
-    assert "memoryWindow" in result.stdout
-    assert "no longer used" in result.stdout
-
-
 def test_heartbeat_retains_recent_messages_by_default():
     config = Config()
 
@@ -1785,6 +1774,42 @@ def test_heartbeat_target_skips_archived_webui_sessions():
     )
 
     assert target == ("websocket", "active")
+
+
+def test_heartbeat_target_uses_last_channel_for_unified_session():
+    from nanobot.cli.commands import _pick_heartbeat_target_from_sessions
+    from nanobot.session.keys import LAST_CHANNEL_METADATA_KEY, UNIFIED_SESSION_KEY
+
+    target = _pick_heartbeat_target_from_sessions(
+        enabled_channels=["telegram", "discord"],
+        archived_keys=[],
+        sessions=[{"key": UNIFIED_SESSION_KEY}],
+        unified_session_metadata={LAST_CHANNEL_METADATA_KEY: "discord:chat-42"},
+    )
+
+    assert target == ("discord", "chat-42")
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"last_channel": "telegram:chat-42"},
+        {"last_channel": "cli:direct"},
+        {"last_channel": "invalid"},
+    ],
+)
+def test_heartbeat_target_rejects_unroutable_unified_metadata(metadata):
+    from nanobot.cli.commands import _pick_heartbeat_target_from_sessions
+    from nanobot.session.keys import UNIFIED_SESSION_KEY
+
+    target = _pick_heartbeat_target_from_sessions(
+        enabled_channels=["discord"],
+        archived_keys=[],
+        sessions=[{"key": UNIFIED_SESSION_KEY}],
+        unified_session_metadata=metadata,
+    )
+
+    assert target == ("cli", "direct")
 
 
 def _write_instance_config(tmp_path: Path) -> Path:

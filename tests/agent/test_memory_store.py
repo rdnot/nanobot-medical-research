@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -234,10 +235,22 @@ class TestHistoryWithCursor:
         store.append_history("event 3")
         store.append_history("event 4")
         store.append_history("event 5")
+        store.set_last_dream_cursor(5)
         store.compact_history()
         entries = store.read_unprocessed_history(since_cursor=0)
         assert len(entries) == 2
         assert entries[0]["cursor"] in {4, 5}
+
+    def test_compact_history_preserves_entries_after_dream_cursor(self, tmp_path):
+        store = MemoryStore(tmp_path, max_history_entries=50)
+        for index in range(1, 101):
+            store.append_history(f"event {index}")
+        store.set_last_dream_cursor(20)
+
+        store.compact_history()
+
+        entries = store.read_unprocessed_history(since_cursor=0)
+        assert [entry["cursor"] for entry in entries] == list(range(21, 101))
 
     def test_write_entries_uses_atomic_write(self, tmp_path):
         """_write_entries uses temp file + os.replace for atomicity."""
@@ -538,3 +551,33 @@ class TestLegacyHistoryMigration:
         assert entries[0]["timestamp"] == "2026-04-01 10:00"
         assert "Broken" in entries[0]["content"]
         assert "migration." in entries[0]["content"]
+
+
+def test_history_skips_non_dict_jsonl_lines(tmp_path: Path) -> None:
+    """Null/list/bool history lines must not crash reads or appends."""
+    memory = MemoryStore(tmp_path)
+    memory.history_file.parent.mkdir(parents=True, exist_ok=True)
+    memory.history_file.write_text(
+        "\n".join([
+            "null",
+            "[1, 2]",
+            "true",
+            json.dumps({
+                "cursor": 1,
+                "timestamp": "2026-01-01T00:00:00",
+                "content": "kept",
+                "session_key": "cli:t",
+            }),
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    entries = memory.read_unprocessed_history(since_cursor=0)
+    assert entries == [{
+        "cursor": 1,
+        "timestamp": "2026-01-01T00:00:00",
+        "content": "kept",
+        "session_key": "cli:t",
+    }]
+    next_cursor = memory.append_history("next", session_key="cli:t")
+    assert next_cursor == 2

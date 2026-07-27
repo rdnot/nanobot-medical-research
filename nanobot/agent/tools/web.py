@@ -448,13 +448,12 @@ def _readability_to_markdown(raw_html: str) -> str:
 @tool_parameters(
     tool_parameters_schema(
         query=StringSchema("Search query"),
-        count=IntegerSchema(1, description="Results (1-10)", minimum=1, maximum=10),
+        count=IntegerSchema(description="Results (1-10)", minimum=1, maximum=10),
         timeRange=StringSchema(
             "Optional time filter for providers that support it: "
             "OneDay, OneWeek, OneMonth, OneYear, or YYYY-MM-DD..YYYY-MM-DD",
         ),
         authLevel=IntegerSchema(
-            0,
             description="Optional authority filter for providers that support it: 0=all, 1=authoritative",
             minimum=0,
             maximum=1,
@@ -1125,7 +1124,7 @@ class WebSearchTool(Tool):
             "enum": ["markdown", "text"],
             "default": "markdown",
         },
-        # maxChars disabled - uses default 500K
+        # FORK: maxChars disabled - uses default 500K (upstream exposes maxChars param)
         required=["url"],
     )
 )

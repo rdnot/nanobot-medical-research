@@ -77,6 +77,10 @@ from nanobot.cli.stream import StreamRenderer, ThinkingSpinner  # noqa: E402
 from nanobot.config.paths import get_workspace_path, is_default_workspace  # noqa: E402
 from nanobot.config.schema import Config  # noqa: E402
 from nanobot.security.network import is_loopback_host  # noqa: E402
+from nanobot.session.keys import (  # noqa: E402
+    UNIFIED_SESSION_KEY,
+    last_channel_from_metadata,
+)
 from nanobot.utils.evaluator import evaluate_response, resolve_evaluator_prompt  # noqa: E402
 from nanobot.utils.helpers import (  # noqa: E402
     sanitize_surrogates as _sanitize_surrogates,
@@ -264,12 +268,20 @@ def _pick_heartbeat_target_from_sessions(
     enabled_channels: Iterable[str],
     sessions: Iterable[dict[str, Any]],
     archived_keys: Iterable[str],
+    unified_session_metadata: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     enabled = set(enabled_channels)
     archived = set(archived_keys)
     for item in sessions:
         key = item.get("key") or ""
         if key in archived:
+            continue
+        if key == UNIFIED_SESSION_KEY:
+            route = last_channel_from_metadata(unified_session_metadata)
+            if route is not None:
+                channel, chat_id = route
+                if channel not in {"cli", "system"} and channel in enabled:
+                    return channel, chat_id
             continue
         if ":" not in key:
             continue
@@ -803,7 +815,6 @@ def _load_runtime_config(config: str | None = None, workspace: str | None = None
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1)
-    _warn_deprecated_config_keys(config_path)
     if workspace:
         loaded.agents.defaults.workspace = workspace
     return loaded
@@ -822,24 +833,6 @@ def _read_trigger_cli_message(message: str | None) -> str:
         pass
     console.print("[red]Error: trigger message is required[/red]")
     raise typer.Exit(1)
-
-
-def _warn_deprecated_config_keys(config_path: Path | None) -> None:
-    """Hint users to remove obsolete keys from their config file."""
-    import json
-
-    from nanobot.config.loader import get_config_path
-
-    path = config_path or get_config_path()
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return
-    if "memoryWindow" in raw.get("agents", {}).get("defaults", {}):
-        console.print(
-            "[dim]Hint: `memoryWindow` in your config is no longer used "
-            "and can be safely removed.[/dim]"
-        )
 
 
 def _load_inspection_config(
@@ -861,7 +854,6 @@ def _load_inspection_config(
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1) from exc
-    _warn_deprecated_config_keys(display_path)
     if workspace:
         loaded.agents.defaults.workspace = workspace
     return display_path, loaded
@@ -1812,12 +1804,13 @@ def _run_gateway(
 
         # Dream is an internal job — run directly, not through the agent loop.
         if job.name == "dream":
-            from nanobot.agent.memory import MemoryStore
+            from nanobot.agent.memory import DreamRunProgress, MemoryStore
 
             dream_session_key = MemoryStore.dream_session_key
             prune_dream_sessions = MemoryStore.prune_dream_sessions
 
             store = agent.context.memory
+            progress = DreamRunProgress()
             resp = None
             diff_body = ""
             try:
@@ -1827,27 +1820,38 @@ def _run_gateway(
                     return None
                 prompt, last_cursor = result
                 key = dream_session_key()
+                resolve_dream_runtime = getattr(agent, "dream_runtime", None)
+                dream_runtime = (
+                    resolve_dream_runtime() if callable(resolve_dream_runtime) else None
+                )
                 resp = await agent.process_direct(
                     prompt,
                     session_key=key,
                     ephemeral=True,
                     tools=store.build_dream_tools(),
-                    on_progress=_silent,
+                    on_progress=progress,
+                    runtime=dream_runtime,
                 )
-                # Ground truth: the real file delta, not the LLM's self-report.
+                # The real file delta grounds the audit record; clean completion
+                # decides whether this history batch has finished processing.
                 diff_body = store.dream_content_diff()
-                productive = bool(diff_body) or (
-                    not store.git.is_initialized()
-                    and MemoryStore.dream_run_completed(resp)
+                completed = MemoryStore.dream_run_completed(
+                    resp,
+                    had_tool_errors=progress.had_tool_errors,
                 )
-                if productive:
+                if completed:
                     store.set_last_dream_cursor(last_cursor)
-                    logger.info("Dream cron job completed, cursor advanced to {}", last_cursor)
-                elif MemoryStore.dream_run_completed(resp):
-                    logger.info(
-                        "Dream cron job completed with no memory changes; "
-                        "cursor not advanced",
-                    )
+                    if diff_body:
+                        logger.info(
+                            "Dream cron job completed, cursor advanced to {}",
+                            last_cursor,
+                        )
+                    else:
+                        logger.info(
+                            "Dream cron job completed with no memory changes; "
+                            "cursor advanced to {}",
+                            last_cursor,
+                        )
                 else:
                     logger.warning(
                         "Dream cron job did not complete; cursor remains at {}",
@@ -1984,10 +1988,16 @@ def _run_gateway(
     def _pick_heartbeat_target() -> tuple[str, str]:
         """Pick a routable channel/chat target for heartbeat-triggered messages."""
         sidebar_state = read_webui_sidebar_state()
+        unified_metadata = None
+        if config.agents.defaults.unified_session:
+            record = session_manager.read_session_metadata(UNIFIED_SESSION_KEY)
+            if isinstance(record, dict) and isinstance(record.get("metadata"), dict):
+                unified_metadata = record["metadata"]
         return _pick_heartbeat_target_from_sessions(
             enabled_channels=channels.enabled_channels,
             sessions=session_manager.list_sessions(),
             archived_keys=sidebar_state.get("archived_keys", []),
+            unified_session_metadata=unified_metadata,
         )
 
     if channels.enabled_channels:
