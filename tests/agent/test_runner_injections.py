@@ -578,7 +578,7 @@ async def test_pending_injection_resolves_its_own_runtime_context(tmp_path):
         },
     ))
 
-    _, _, all_messages, _, _ = await loop._run_agent_loop(
+    _, _, all_messages, _, _, _ = await loop._run_agent_loop(  # FORK: 6-tuple
         [{"role": "user", "content": "initial message from user A"}],
         runtime=loop.llm_runtime(),
         session=session,
