@@ -43,13 +43,33 @@ if TYPE_CHECKING:
 # MemoryStore — pure file I/O layer
 # ---------------------------------------------------------------------------
 
+
+class DreamRunProgress:
+    """Track tool failures that make a nominally completed Dream run unsafe to advance."""
+
+    def __init__(self) -> None:
+        self.had_tool_errors = False
+
+    async def __call__(
+        self,
+        *_args: Any,
+        tool_events: list[dict[str, Any]] | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        if any(
+            isinstance(event, dict) and event.get("phase") == "error"
+            for event in tool_events or ()
+        ):
+            self.had_tool_errors = True
+
+
 class MemoryStore:
     """Pure file I/O for memory files: MEMORY.md, history.jsonl, SOUL.md, USER.md."""
 
     _DEFAULT_MAX_HISTORY = 1000
-    # Durable files whose real working-tree delta grounds Dream commit messages
-    # and the cursor-advance gate. Deliberately excludes memory/.dream_cursor so
-    # that advancing the cursor itself is never mistaken for a productive edit.
+    # Durable files whose real working-tree delta grounds Dream commit messages.
+    # Deliberately excludes memory/.dream_cursor so progress bookkeeping never
+    # appears as a durable-memory edit in the audit record.
     _DREAM_CONTENT_PATHS = ("SOUL.md", "USER.md", "memory/MEMORY.md")
     # Per-file cap when embedding current contents into the Dream prompt. The
     # durable files are tiny in practice (~5 KB total), but a runaway file must
@@ -413,13 +433,33 @@ class MemoryStore:
         ]
 
     def compact_history(self) -> None:
-        """Drop oldest entries if the file exceeds *max_history_entries*."""
+        """Drop oldest processed entries without discarding pending Dream input."""
         if self.max_history_entries <= 0:
             return
         entries = self._read_entries()
         if len(entries) <= self.max_history_entries:
             return
-        kept = entries[-self.max_history_entries:]
+        last_dream_cursor = self.get_last_dream_cursor()
+        first_unprocessed = next(
+            (
+                index
+                for index, entry in enumerate(entries)
+                if (
+                    (cursor := self._valid_cursor(entry.get("cursor"))) is not None
+                    and cursor > last_dream_cursor
+                )
+            ),
+            len(entries),
+        )
+        keep_from = min(len(entries) - self.max_history_entries, first_unprocessed)
+        kept = entries[keep_from:]
+        if len(kept) > self.max_history_entries:
+            logger.warning(
+                "History compaction retained {} unprocessed entries beyond the configured "
+                "limit of {}",
+                len(kept),
+                self.max_history_entries,
+            )
         self._write_entries(kept)
 
     # -- JSONL helpers -------------------------------------------------------
@@ -433,9 +473,11 @@ class MemoryStore:
                     line = line.strip()
                     if line:
                         try:
-                            entries.append(json.loads(line))
+                            parsed = json.loads(line)
                         except json.JSONDecodeError:
                             continue
+                        if isinstance(parsed, dict):
+                            entries.append(parsed)
 
         return entries
 
@@ -453,7 +495,8 @@ class MemoryStore:
                 lines = [line for line in data.split("\n") if line.strip()]
                 if not lines:
                     return None
-                return json.loads(lines[-1])
+                parsed = json.loads(lines[-1])
+                return parsed if isinstance(parsed, dict) else None
         except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
             return None
 
@@ -583,8 +626,7 @@ class MemoryStore:
         """Structured summary of uncommitted changes to the durable memory files.
 
         Returns "" when git is unavailable or no content file changed. This is
-        the ground-truth input for diff-grounded Dream commit messages and for
-        gating cursor advance on real edits (never on LLM self-report).
+        the ground-truth input for diff-grounded Dream commit messages.
         """
         if not self._git.is_initialized():
             return ""
@@ -633,10 +675,18 @@ class MemoryStore:
         return tools
 
     @staticmethod
-    def dream_run_completed(resp: object | None) -> bool:
-        """Return True only when an ephemeral Dream agent turn completed cleanly."""
+    def dream_run_completed(
+        resp: object | None,
+        *,
+        had_tool_errors: bool = False,
+    ) -> bool:
+        """Return True only when a Dream turn completed without tool failures."""
         metadata = getattr(resp, "metadata", None)
-        return isinstance(metadata, dict) and metadata.get("_stop_reason") == "completed"
+        return (
+            not had_tool_errors
+            and isinstance(metadata, dict)
+            and metadata.get("_stop_reason") == "completed"
+        )
 
     # -- message formatting utility ------------------------------------------
 
@@ -882,7 +932,7 @@ class Consolidator:
     ) -> tuple[int, str]:
         """Estimate prompt size from the full unconsolidated session tail."""
         history = self._full_unconsolidated_history(session)
-        channel, chat_id = (session.key.split(":", 1) if ":" in session.key else (None, None))
+        channel = session.key.split(":", 1)[0] if ":" in session.key else None
         # Include archived summary in estimation so the budget accounts for it.
         meta = session.metadata.get("_last_summary")
         summary = meta.get("text") if isinstance(meta, dict) else (meta if isinstance(meta, str) else None)
@@ -890,10 +940,7 @@ class Consolidator:
             history=history,
             current_message="[token-probe]",
             channel=channel,
-            chat_id=chat_id,
-            sender_id=None,
             session_summary=summary,
-            session_metadata=session.metadata,
             session_key=session.key,
             unified_session=self.unified_session,
         )

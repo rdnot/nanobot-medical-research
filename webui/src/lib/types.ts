@@ -68,6 +68,8 @@ export interface UIMessage {
   reasoningStreaming?: boolean;
   /** End-to-end wall time for this assistant turn (persisted ``latency_ms`` / ``turn_end``). */
   latencyMs?: number;
+  /** Client epoch milliseconds when the definitive ``turn_end`` was received. */
+  completedAt?: number;
   /** Lightweight provenance for proactive assistant messages. */
   source?: UIMessageSource;
   /** Stable protocol metadata for grouping all activity emitted by one user turn. */
@@ -1116,6 +1118,8 @@ export type InboundEvent =
       text?: string;
       /** This answer segment ended, but the active agent turn will continue. */
       resuming?: boolean;
+      /** The next answer segment continues this same assistant message. */
+      merge_next?: boolean;
     } & InboundTurnMetadata)
   | ({
       event: "reasoning_delta";

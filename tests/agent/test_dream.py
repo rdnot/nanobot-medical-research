@@ -3,6 +3,7 @@
 import pytest
 
 from nanobot.agent.memory import MemoryStore
+from nanobot.config.schema import ModelPresetConfig
 from nanobot.providers.base import LLMResponse
 from nanobot.security.workspace_access import (
     bind_workspace_scope,
@@ -385,6 +386,21 @@ class TestEphemeralDirect:
 
         return loop, store
 
+    def test_dream_runtime_uses_preset_without_changing_default(self, _make_loop):
+        loop, _ = _make_loop
+        loop.runtime_resolver._model_presets = {
+            "dream": ModelPresetConfig(model="dream-model"),
+        }
+        loop.dream_model_preset = "dream"
+
+        runtime = loop.dream_runtime()
+
+        assert runtime is not None
+        assert runtime.model == "dream-model"
+        assert runtime.model_preset == "dream"
+        assert loop.model == "test-model"
+        assert loop.model_preset is None
+
     async def test_ephemeral_skips_raw_archive(self, tmp_path, _make_loop):
         """When ephemeral=True, raw_archive must not be called."""
         from unittest.mock import patch
@@ -414,13 +430,13 @@ class TestEphemeralDirect:
 
         captured = {}
 
-        original_save = loop._state_save
+        original_save = loop._persist_turn
 
         async def patched_save(ctx):
             captured["ephemeral"] = ctx.ephemeral
             return await original_save(ctx)
 
-        with patch.object(loop, "_state_save", side_effect=patched_save):
+        with patch.object(loop, "_persist_turn", side_effect=patched_save):
             await loop.process_direct(
                 "test", session_key="dream:check", ephemeral=True,
             )
@@ -435,13 +451,13 @@ class TestEphemeralDirect:
 
         captured = {}
 
-        original_save = loop._state_save
+        original_save = loop._persist_turn
 
         async def patched_save(ctx):
             captured["ephemeral"] = ctx.ephemeral
             return await original_save(ctx)
 
-        with patch.object(loop, "_state_save", side_effect=patched_save):
+        with patch.object(loop, "_persist_turn", side_effect=patched_save):
             await loop.process_direct("test", session_key="cli:normal")
 
         assert captured.get("ephemeral") is False

@@ -1569,6 +1569,33 @@ describe("useNanobotStream", () => {
     expect(result.current.messages[0].turnPhase).toBe("user");
   });
 
+  it("returns the submitted turn identity used by the optimistic row and wire frame", () => {
+    const fake = fakeClient();
+    const { result } = renderHook(
+      () => useNanobotStream("chat-submitted-turn", EMPTY_MESSAGES),
+      { wrapper: wrap(fake.client) },
+    );
+
+    let submitted: ReturnType<typeof result.current.send> = null;
+    act(() => {
+      submitted = result.current.send("bind the camera");
+    });
+
+    expect(submitted).not.toBeNull();
+    expect(submitted?.sideChannel).toBe(false);
+    expect(result.current.messages[0]).toMatchObject({
+      id: submitted?.userMessageId,
+      turnId: submitted?.turnId,
+      role: "user",
+    });
+    expect(fake.client.sendMessage).toHaveBeenCalledWith(
+      "chat-submitted-turn",
+      "bind the camera",
+      undefined,
+      expect.objectContaining({ turnId: submitted?.turnId }),
+    );
+  });
+
   it("adds optimistic user file attachments as media", () => {
     const fake = fakeClient();
     const { result } = renderHook(() => useNanobotStream("chat-file-send", EMPTY_MESSAGES), {
@@ -1982,6 +2009,79 @@ describe("useNanobotStream", () => {
     expect(result.current.messages.every((message) => !message.isStreaming)).toBe(true);
   });
 
+  it("keeps length-recovery segments in one assistant message", async () => {
+    const fake = fakeClient();
+    const { result } = renderHook(() => useNanobotStream("chat-length", EMPTY_MESSAGES), {
+      wrapper: wrap(fake.client),
+    });
+
+    act(() => {
+      result.current.send("give a long answer");
+    });
+    const activeTurnId = fake.client.sendMessage.mock.calls.at(-1)![3]?.turnId;
+
+    act(() => {
+      fake.emit("chat-length", {
+        event: "delta",
+        chat_id: "chat-length",
+        text: "first ",
+        turn_id: activeTurnId,
+      });
+    });
+    await flushStreamFrame();
+    const assistantId = result.current.messages[1].id;
+
+    act(() => {
+      fake.emit("chat-length", {
+        event: "stream_end",
+        chat_id: "chat-length",
+        text: "first ",
+        resuming: true,
+        merge_next: true,
+        turn_id: activeTurnId,
+      });
+    });
+
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[1]).toMatchObject({
+      id: assistantId,
+      content: "first ",
+      isStreaming: true,
+    });
+
+    act(() => {
+      fake.emit("chat-length", {
+        event: "delta",
+        chat_id: "chat-length",
+        text: "second",
+        turn_id: activeTurnId,
+      });
+    });
+    await flushStreamFrame();
+
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[1]).toMatchObject({
+      id: assistantId,
+      content: "first second",
+      isStreaming: true,
+    });
+
+    act(() => {
+      fake.emit("chat-length", {
+        event: "turn_end",
+        chat_id: "chat-length",
+        turn_id: activeTurnId,
+      });
+    });
+
+    expect(result.current.messages).toHaveLength(2);
+    expect(result.current.messages[1]).toMatchObject({
+      id: assistantId,
+      content: "first second",
+      isStreaming: false,
+    });
+  });
+
   it("keeps streaming alive across stream_end when tool activity follows", async () => {
     const fake = fakeClient();
     const onTurnEnd = vi.fn();
@@ -2097,30 +2197,39 @@ describe("useNanobotStream", () => {
     });
   });
 
-  it("stamps latency on the last assistant bubble from turn_end", () => {
-    const fake = fakeClient();
-    const { result } = renderHook(() => useNanobotStream("chat-lat", EMPTY_MESSAGES), {
-      wrapper: wrap(fake.client),
-    });
-
-    act(() => {
-      fake.emit("chat-lat", {
-        event: "delta",
-        chat_id: "chat-lat",
-        text: "Hi",
+  it("stamps completion time and latency on the last assistant bubble from turn_end", () => {
+    const completedAt = Date.UTC(2026, 6, 25, 12, 34, 56);
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(completedAt);
+    try {
+      const fake = fakeClient();
+      const { result } = renderHook(() => useNanobotStream("chat-lat", EMPTY_MESSAGES), {
+        wrapper: wrap(fake.client),
       });
-    });
 
-    act(() => {
-      fake.emit("chat-lat", {
-        event: "turn_end",
-        chat_id: "chat-lat",
-        latency_ms: 2400,
+      act(() => {
+        fake.emit("chat-lat", {
+          event: "delta",
+          chat_id: "chat-lat",
+          text: "Hi",
+        });
       });
-    });
 
-    const lastAssistant = [...result.current.messages].reverse().find((m) => m.role === "assistant");
-    expect(lastAssistant?.latencyMs).toBe(2400);
+      act(() => {
+        fake.emit("chat-lat", {
+          event: "turn_end",
+          chat_id: "chat-lat",
+          latency_ms: 2400,
+        });
+      });
+
+      const lastAssistant = [...result.current.messages]
+        .reverse()
+        .find((m) => m.role === "assistant");
+      expect(lastAssistant?.latencyMs).toBe(2400);
+      expect(lastAssistant?.completedAt).toBe(completedAt);
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it("tracks goal_status running and clears on idle", () => {
@@ -2130,6 +2239,7 @@ describe("useNanobotStream", () => {
     });
 
     expect(result.current.runStartedAt).toBeNull();
+    expect(result.current.isStreaming).toBe(false);
 
     act(() => {
       fake.emit("chat-g", {
@@ -2140,6 +2250,7 @@ describe("useNanobotStream", () => {
       });
     });
     expect(result.current.runStartedAt).toBe(1700);
+    expect(result.current.isStreaming).toBe(true);
 
     act(() => {
       fake.emit("chat-g", {
@@ -2149,6 +2260,7 @@ describe("useNanobotStream", () => {
       });
     });
     expect(result.current.runStartedAt).toBeNull();
+    expect(result.current.isStreaming).toBe(false);
   });
 
   it("clears runStartedAt on turn_end even without idle", () => {
@@ -2166,6 +2278,7 @@ describe("useNanobotStream", () => {
       });
     });
     expect(result.current.runStartedAt).toBe(1700);
+    expect(result.current.isStreaming).toBe(true);
 
     act(() => {
       fake.emit("chat-g", {
@@ -2174,6 +2287,7 @@ describe("useNanobotStream", () => {
       });
     });
     expect(result.current.runStartedAt).toBeNull();
+    expect(result.current.isStreaming).toBe(false);
   });
 
   it("restores runStartedAt after switching away and back when goal_status was recorded without a subscriber", () => {
@@ -2195,9 +2309,11 @@ describe("useNanobotStream", () => {
       });
     });
     expect(result.current.runStartedAt).toBe(4242);
+    expect(result.current.isStreaming).toBe(true);
 
     rerender({ chatId: "chat-b" });
     expect(result.current.runStartedAt).toBeNull();
+    expect(result.current.isStreaming).toBe(false);
 
     act(() => {
       fake.emit("chat-a", {
@@ -2210,6 +2326,7 @@ describe("useNanobotStream", () => {
 
     rerender({ chatId: "chat-a" });
     expect(result.current.runStartedAt).toBe(9001);
+    expect(result.current.isStreaming).toBe(true);
   });
 
   it("tracks goal_state per chat and restores after switching sessions", () => {

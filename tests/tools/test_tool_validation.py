@@ -60,7 +60,7 @@ class SampleTool(Tool):
 @tool_parameters(
     tool_parameters_schema(
         query=StringSchema(min_length=2),
-        count=IntegerSchema(2, minimum=1, maximum=10),
+        count=IntegerSchema(minimum=1, maximum=10),
         required=["query", "count"],
     )
 )
@@ -81,12 +81,12 @@ def test_schema_validate_value_matches_tool_validate_params() -> None:
     """ObjectSchema.validate_value 与 validate_json_schema_value、Tool.validate_params 一致。"""
     root = tool_parameters_schema(
         query=StringSchema(min_length=2),
-        count=IntegerSchema(2, minimum=1, maximum=10),
+        count=IntegerSchema(minimum=1, maximum=10),
         required=["query", "count"],
     )
     obj = ObjectSchema(
         query=StringSchema(min_length=2),
-        count=IntegerSchema(2, minimum=1, maximum=10),
+        count=IntegerSchema(minimum=1, maximum=10),
         required=["query", "count"],
     )
     params = {"query": "h", "count": 2}
@@ -110,14 +110,14 @@ def test_schema_validate_value_matches_tool_validate_params() -> None:
     expected = _Mini().validate_params(params)
     assert Schema.validate_json_schema_value(params, root, "") == expected
     assert obj.validate_value(params, "") == expected
-    assert IntegerSchema(0, minimum=1).validate_value(0, "n") == ["n must be >= 1"]
+    assert IntegerSchema(minimum=1).validate_value(0, "n") == ["n must be >= 1"]
 
 
 def test_schema_classes_equivalent_to_sample_tool_parameters() -> None:
     """Schema 类生成的 JSON Schema 应与手写 dict 一致，便于校验行为一致。"""
     built = tool_parameters_schema(
         query=StringSchema(min_length=2),
-        count=IntegerSchema(2, minimum=1, maximum=10),
+        count=IntegerSchema(minimum=1, maximum=10),
         mode=StringSchema("", enum=["fast", "full"]),
         meta=ObjectSchema(
             tag=StringSchema(""),
@@ -712,6 +712,22 @@ def test_exec_config_timeout_uncapped_and_zero() -> None:
     assert ExecToolConfig(timeout=3600).timeout == 3600
     with pytest.raises(ValidationError):
         ExecToolConfig(timeout=-1)
+
+
+def test_exec_config_accepts_bwrap_bind_aliases() -> None:
+    cfg = ExecToolConfig.model_validate(
+        {
+            "sandboxRoBinds": ["/home/user/.local/bin"],
+            "sandboxRwBinds": ["/home/user/.cache/uv"],
+        }
+    )
+
+    dumped = cfg.model_dump(by_alias=True)
+
+    assert cfg.sandbox_ro_binds == ["/home/user/.local/bin"]
+    assert cfg.sandbox_rw_binds == ["/home/user/.cache/uv"]
+    assert dumped["sandboxRoBinds"] == ["/home/user/.local/bin"]
+    assert dumped["sandboxRwBinds"] == ["/home/user/.cache/uv"]
 
 
 def test_resolve_timeout_config_uncapped_and_unlimited() -> None:

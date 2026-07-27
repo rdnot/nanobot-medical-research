@@ -269,8 +269,11 @@ def test_channels_config_has_no_per_channel_fields():
     cfg = ChannelsConfig()
     assert not hasattr(cfg, "telegram")
     assert cfg.send_progress is True
-    assert cfg.send_tool_hints is False
+    assert cfg.send_tool_hints is True
     assert cfg.extract_document_text is True
+
+    opted_out = ChannelsConfig.model_validate({"sendToolHints": False})
+    assert opted_out.send_tool_hints is False
 
 
 def test_channels_config_extract_document_text_accepts_camel_alias():
@@ -783,35 +786,6 @@ def test_discover_plugins_skips_names_outside_enabled_set():
 
     assert result == {}
     assert loaded == []
-
-
-def test_discover_plugins_warns_once_for_legacy_entry_points():
-    from nanobot.channels.registry import _warn_legacy_channel_entry_points, discover_plugins
-
-    legacy_entry_points = [SimpleNamespace(name="z-old"), SimpleNamespace(name="a-old")]
-    _warn_legacy_channel_entry_points.cache_clear()
-    try:
-        with (
-            patch(
-                "nanobot.channels.registry.entry_points",
-                return_value=legacy_entry_points,
-            ) as metadata_entry_points,
-            patch("nanobot.channels.registry._channel_package_names", return_value=[]),
-            patch("nanobot.channels.registry.logger.warning") as warning,
-        ):
-            discover_plugins()
-            discover_plugins()
-    finally:
-        _warn_legacy_channel_entry_points.cache_clear()
-
-    metadata_entry_points.assert_called_once_with(group="nanobot.channels")
-    warning.assert_called_once_with(
-        "Legacy channel entry points were detected but will not be loaded: {}. "
-        "The '{}' entry-point group is no longer supported; use a built-in channel or "
-        "migrate it into nanobot/channels/<channel>/.",
-        "a-old, z-old",
-        "nanobot.channels",
-    )
 
 
 def test_channel_manifest_rejects_invalid_dependency_metadata():
@@ -2815,7 +2789,7 @@ async def test_send_with_retry_no_retry_when_max_is_zero():
 @pytest.mark.asyncio
 async def test_send_with_retry_calls_send_delta():
     """_send_with_retry should call send_delta for stream delta events."""
-    calls: list[tuple[str, str, str | None, bool, bool]] = []
+    calls: list[tuple[str, str, str | None, bool, bool, bool]] = []
 
     class _StreamingChannel(BaseChannel):
         name = "streaming"
@@ -2839,8 +2813,9 @@ async def test_send_with_retry_calls_send_delta():
             stream_id: str | None = None,
             stream_end: bool = False,
             resuming: bool = False,
+            merge_next: bool = False,
         ) -> None:
-            calls.append((chat_id, delta, stream_id, stream_end, resuming))
+            calls.append((chat_id, delta, stream_id, stream_end, resuming, merge_next))
 
     fake_config = SimpleNamespace(
         channels=ChannelsConfig(send_max_retries=3),
@@ -2862,13 +2837,18 @@ async def test_send_with_retry_calls_send_delta():
     end = outbound_message_for_event(
         channel="streaming",
         chat_id="123",
-        event=StreamEndEvent(content="", stream_id="s1", resuming=True),
+        event=StreamEndEvent(
+            content="",
+            stream_id="s1",
+            resuming=True,
+            merge_next=True,
+        ),
     )
     await mgr._send_with_retry(mgr.channels["streaming"], end)
 
     assert calls == [
-        ("123", "test delta", "s1", False, False),
-        ("123", "", "s1", True, True),
+        ("123", "test delta", "s1", False, False, False),
+        ("123", "", "s1", True, True, True),
     ]
 
 
