@@ -229,7 +229,7 @@ def _builtin_skill_read_path(path: str) -> Path | None:
             minimum=1,
         ),
         limit=IntegerSchema(
-            8000,  # FORK: increased from 2000
+            # FORK: default is _DEFAULT_LIMIT=8000 (was 2000); IntegerSchema no longer takes positional default
             description="Maximum number of lines to read (default 8000), minimum 200",
             minimum=1,
         ),
