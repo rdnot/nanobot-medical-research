@@ -29,6 +29,7 @@ class RequestContext:
     sender_id: str | None = None
     turn_id: str | None = None
     workspace: Path | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable

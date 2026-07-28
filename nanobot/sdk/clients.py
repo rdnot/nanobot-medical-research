@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from nanobot.runtime_context import RUNTIME_CONTEXT_HISTORY_META
+from nanobot.bus.runtime_events import SessionTurnPersisted
+from nanobot.runtime_context import RUNTIME_CONTEXT_HISTORY_META, RuntimeContextProvider
 from nanobot.sdk.types import (
     SessionInfo,
     SessionSnapshot,
@@ -192,6 +193,20 @@ class RuntimeClient:
     def workspace(self) -> Path:
         """Current runtime workspace."""
         return self._loop.workspace
+
+    def add_context_provider(
+        self,
+        provider: RuntimeContextProvider,
+    ) -> Callable[[], None]:
+        """Register per-turn model context and return an unsubscribe callback."""
+        return self._loop.register_runtime_context_provider(provider)
+
+    def on_session_turn_persisted(
+        self,
+        handler: Callable[[SessionTurnPersisted], Awaitable[None] | None],
+    ) -> Callable[[], None]:
+        """Register a persisted-turn callback and return an unsubscribe callback."""
+        return self._loop.runtime_events.subscribe(handler, SessionTurnPersisted)
 
     async def compact_session(self, session_key: str) -> SessionSnapshot:
         """Run token/replay-window consolidation for one session."""
