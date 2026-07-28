@@ -145,7 +145,8 @@ async def test_pending_document_attachment_keeps_body_out_of_prompt(
         )
     )
 
-    final_content, _, _, _, had_injections = await loop._run_agent_loop(
+    # FORK: _run_agent_loop returns 6-tuple (tool_calls_log is 5th, had_injections is 6th)
+    final_content, _, _, _, _, had_injections = await loop._run_agent_loop(
         [{"role": "user", "content": "hello"}],
         runtime=loop.llm_runtime(),
         channel="cli",
