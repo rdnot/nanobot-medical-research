@@ -772,7 +772,7 @@ def _html_to_text(raw_html: str, extract_mode: str = "markdown", url: str = "") 
             with_metadata=False,
             url=url or None,  # helps trafilatura with relative URLs
         )
-        result: Any = trafilatura.extract(raw_html, **common_kwargs)  # pyright: ignore[reportUnknownMemberType,reportCallIssue]
+        result: Any = trafilatura.extract(raw_html, **common_kwargs)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType,reportCallIssue]
 
         # BBC (and some other news sites) get rejected by trafilatura's default
         # paywall/quality heuristic. Re-extract with favor_recall=True which
@@ -781,7 +781,7 @@ def _html_to_text(raw_html: str, extract_mode: str = "markdown", url: str = "") 
             result = trafilatura.extract(raw_html, favor_recall=True, **common_kwargs)  # pyright: ignore[reportUnknownMemberType,reportCallIssue]
 
         if result and len(result.strip()) > 50:  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
-            return result, "trafilatura"
+            return result, "trafilatura"  # pyright: ignore[reportUnknownVariableType]
     except ImportError:
         logger.debug("trafilatura not installed – pip install trafilatura")
     except Exception as e:
