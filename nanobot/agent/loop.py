@@ -140,7 +140,7 @@ class _ForkProgressHook(AgentProgressHook):
         self._loop = agent_loop
         self._force_final_threshold = force_final_threshold  # FORK
         # FORK: Track all tool calls for tools summary
-        self.all_tool_calls_log: list[dict] = []
+        self.all_tool_calls_log: list[dict[str, Any]] = []
 
     async def before_iteration(self, context: AgentHookContext) -> None:
         await super().before_iteration(context)
@@ -172,12 +172,12 @@ class _ForkProgressHook(AgentProgressHook):
 
         class _PatchedTC:
             __slots__ = ("_tc", "name", "arguments")
-            def __init__(self, tc, name_override: str) -> None:
-                self._tc = tc
-                self.name = name_override
-                self.arguments = tc.arguments
+            def __init__(self, tc: Any, name_override: str) -> None:
+                self._tc: Any = tc
+                self.name: str = name_override
+                self.arguments: Any = tc.arguments
 
-        patched = []
+        patched: list[Any] = []
         for tc in tool_calls:
             if tc.name == "web_search":
                 patched.append(_PatchedTC(tc, "web_search"))
@@ -729,7 +729,7 @@ class AgentLoop:
 
         return _unsubscribe
 
-    def _tool_hint(self, tool_calls: list) -> str:
+    def _tool_hint(self, tool_calls: list[Any]) -> str:
         """Format tool calls as concise hints with smart abbreviation.
 
         FORK: web_search and web_fetch get custom display labels (search/fetch).
@@ -742,12 +742,12 @@ class AgentLoop:
         class _PatchedTC:
             """Thin wrapper that overrides .name for display purposes only."""
             __slots__ = ("_tc", "name", "arguments")
-            def __init__(self, tc, name_override: str) -> None:
-                self._tc = tc
-                self.name = name_override
-                self.arguments = tc.arguments
+            def __init__(self, tc: Any, name_override: str) -> None:
+                self._tc: Any = tc
+                self.name: str = name_override
+                self.arguments: Any = tc.arguments
 
-        patched = []
+        patched: list[Any] = []
         for tc in tool_calls:
             if tc.name == "web_search":
                 patched.append(_PatchedTC(tc, "web_search"))  # kept as-is; format_tool_hints knows it
@@ -758,12 +758,12 @@ class AgentLoop:
         return format_tool_hints(patched, max_length=self.tool_hint_max_length)
 
     @staticmethod
-    def _build_tools_summary(all_tool_calls: list[dict]) -> str:
+    def _build_tools_summary(all_tool_calls: list[dict[str, Any]]) -> str:
         """FORK: Build a tools summary message showing all tools used in the conversation."""
         if not all_tool_calls:
             return ""
 
-        def _shorten_path(path: str) -> str:
+        def _shorten_path(path: Any) -> str:
             if not path or not isinstance(path, str):
                 return str(path) if path else ""
             if "\\.nanobot\\" in path or "/.nanobot/" in path:
@@ -777,7 +777,7 @@ class AgentLoop:
                         return f"~\\.nanobot\\{after_nanobot}"
             return path
 
-        def _to_single_line(text: str, max_len: int = 60) -> str:
+        def _to_single_line(text: Any, max_len: int = 60) -> str:
             if not isinstance(text, str):
                 text = str(text) if text is not None else ""
             single = " ".join(text.split())
@@ -785,46 +785,48 @@ class AgentLoop:
 
         lines = ["**Tools used:**"]
         for item in all_tool_calls:
-            name = item.get("name", "")
-            args = item.get("arguments", {})
+            name: Any = item.get("name", "")
+            args: Any = item.get("arguments", {})
+            args_dict = cast(dict[str, Any], args) if isinstance(args, dict) else cast(dict[str, Any], {})
+            args_str = str(cast(object, args))[:60]
             if name == "web_search":
-                query = args.get("query", "") if isinstance(args, dict) else ""
+                query = args_dict.get("query", "")
                 lines.append(f"- search({query})")
             elif name in ("web_fetch", "fetch"):
-                url = args.get("url", "") if isinstance(args, dict) else ""
+                url = args_dict.get("url", "")
                 lines.append(f'- fetch("{url}")')
             elif name in ("read_file",):
-                path = args.get("path", "***") if isinstance(args, dict) else str(args)[:60]
+                path = args_dict.get("path", "***") if args_dict else args_str
                 path = _shorten_path(path)
                 lines.append(f"- read_file({path})")
             elif name in ("write_file",):
-                if isinstance(args, dict):
-                    path = _shorten_path(args.get("path", ""))
-                    content = args.get("file_text", "")
+                if args_dict:
+                    path = _shorten_path(args_dict.get("path", ""))
+                    content = args_dict.get("file_text", "")
                     first_line = _to_single_line(content, 60)
                     lines.append(f"- write_file({path}: {first_line})")
                 else:
                     lines.append("- write_file(...)")
             elif name in ("edit_file",):
-                if isinstance(args, dict):
-                    path = _shorten_path(args.get("path", ""))
-                    old_str = args.get("old_str", "")
+                if args_dict:
+                    path = _shorten_path(args_dict.get("path", ""))
+                    old_str = args_dict.get("old_str", "")
                     first_line = _to_single_line(old_str, 60)
                     lines.append(f"- edit_file({path}: {first_line})")
                 else:
                     lines.append("- edit_file(...)")
             elif name in ("message",):
-                if isinstance(args, dict):
-                    content = args.get("content", "")
+                if args_dict:
+                    content = args_dict.get("content", "")
                     first_line = _to_single_line(content, 60)
                     lines.append(f"- message({first_line})")
                 else:
                     lines.append("- message(...)")
             else:
-                if isinstance(args, dict):
-                    val = next(iter(args.values()), "") if args else ""
+                if args_dict:
+                    val: Any = next(iter(args_dict.values()), "")
                 else:
-                    val = str(args)[:60]
+                    val = args_str
                 if isinstance(val, str):
                     val = val[:60] + "…" if len(val) > 60 else val
                     lines.append(f"- {name}({val})")
@@ -1044,7 +1046,7 @@ class AgentLoop:
         turn_scopes: list[AbstractContextManager[Any]] | None = None,
         tools: ToolRegistry | None = None,
         request_context: RequestContext | None = None,
-    ) -> tuple[str | None, list[str], list[dict[str, Any]], str, list[dict], bool]:
+    ) -> tuple[str | None, list[str], list[dict[str, Any]], str, list[dict[str, Any]], bool]:
         """Run the agent iteration loop.
 
         *on_stream*: called with each content delta during streaming.
@@ -1938,11 +1940,11 @@ class AgentLoop:
             request_context=ctx.request_context,
         )
         # FORK: 6-tuple — tool_calls_log (5th, FORK), had_injections (6th, UPSTREAM)
-        final_content, tools_used, all_msgs, stop_reason, tool_calls_log, had_injections = result
+        final_content, _tools_used, all_msgs, stop_reason, tool_calls_log, had_injections = result
         ctx.final_content = final_content
         ctx.all_messages = all_msgs
         ctx.stop_reason = stop_reason
-        ctx.tool_calls_log = tool_calls_log  # FORK
+        ctx.tool_calls_log = tool_calls_log  # FORK  # pyright: ignore[reportAttributeAccessIssue]
         ctx.had_injections = had_injections
         if ctx.kind is TurnKind.USER:
             await turn_continuation.maybe_continue_turn(ctx)
@@ -2004,7 +2006,7 @@ class AgentLoop:
             return
 
         # FORK: Send tools summary message before final response
-        tool_calls_log = getattr(ctx, "tool_calls_log", None)
+        tool_calls_log: list[dict[str, Any]] | None = getattr(ctx, "tool_calls_log", None)
         if tool_calls_log:
             tools_summary = self._build_tools_summary(tool_calls_log)
             await self.bus.publish_outbound(OutboundMessage(
