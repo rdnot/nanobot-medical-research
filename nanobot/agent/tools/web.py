@@ -354,7 +354,7 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict[st
     """
     # --- Primary: curl_cffi (bypasses Cloudflare, TLS fingerprinting) ---
     try:
-        from curl_cffi.requests import AsyncSession  # pyright: ignore[reportMissingImports]
+        from curl_cffi.requests import AsyncSession  # noqa: I001  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
         logger.debug("curl_cffi fetch: {}", "proxy enabled" if proxy else "direct connection")
         async with AsyncSession() as session:  # pyright: ignore[reportUnknownVariableType]
             r: Any = await session.get(  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
@@ -398,8 +398,8 @@ def _html_to_text(raw_html: str, extract_mode: str = "markdown") -> tuple[str, s
     """
     # --- Primary: trafilatura ---
     try:
-        import trafilatura  # pyright: ignore[reportMissingImports]
-        result: str | None = trafilatura.extract(  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+        import trafilatura  # pyright: ignore[reportMissingImports,reportMissingTypeStubs]
+        result = trafilatura.extract(  # pyright: ignore[reportUnknownMemberType]
             raw_html,
             include_tables=True,
             include_images=False,
@@ -416,9 +416,7 @@ def _html_to_text(raw_html: str, extract_mode: str = "markdown") -> tuple[str, s
 
     # --- Fallback: readability ---
     try:
-        from readability import (
-            Document as _RDoc,  # type: ignore[import-untyped]  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
-        )
+        from readability import Document as _RDoc  # noqa: I001  # type: ignore[import-untyped]  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
         doc = cast(Any, _RDoc)(raw_html)
         summary = cast(str, doc.summary())
         if extract_mode == "markdown":
@@ -439,9 +437,7 @@ def _readability_to_markdown(raw_html: str) -> str:
     """Convert readability HTML output to markdown."""
     # Try markdownify first
     try:
-        from markdownify import (
-            markdownify as md,  # pyright: ignore[reportMissingImports,reportUnknownVariableType]
-        )
+        from markdownify import markdownify as md  # noqa: I001  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
         return _normalize(cast(str, md(raw_html, heading_style="ATX", strip=[])))
     except ImportError:
         logger.debug("markdownify not installed  \u2013  pip install markdownify")
@@ -1495,9 +1491,7 @@ class WebFetchTool(Tool):
             return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
 
     def _extract_readable_html(self, html_content: str, extract_mode: str) -> str:
-        from readability import (
-            Document as _RDoc,  # type: ignore[import-untyped]  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
-        )
+        from readability import Document as _RDoc  # noqa: I001  # type: ignore[import-untyped]  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
 
         doc = cast(Any, _RDoc)(html_content)
         summary = cast(str, doc.summary())
