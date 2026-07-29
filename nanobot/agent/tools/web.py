@@ -399,7 +399,7 @@ def _html_to_text(raw_html: str, extract_mode: str = "markdown") -> tuple[str, s
     # --- Primary: trafilatura ---
     try:
         import trafilatura  # pyright: ignore[reportMissingImports,reportMissingTypeStubs]
-        result = trafilatura.extract(  # pyright: ignore[reportUnknownMemberType]
+        result: Any = trafilatura.extract(  # pyright: ignore[reportUnknownMemberType]
             raw_html,
             include_tables=True,
             include_images=False,
@@ -407,7 +407,7 @@ def _html_to_text(raw_html: str, extract_mode: str = "markdown") -> tuple[str, s
             output_format="markdown" if extract_mode == "markdown" else "txt",
             with_metadata=False,
         )
-        if result and len(result.strip()) > 200:
+        if result and len(result.strip()) > 200:  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
             return result, "trafilatura"
     except ImportError:
         logger.debug("trafilatura not installed \u2013 pip install trafilatura")
