@@ -47,27 +47,27 @@ def _markdown_to_whatsapp(text: str) -> str:
 
     # 0. Protect backslash-escaped characters before any formatting
     escaped_chars: list[str] = []
-    def save_escaped(m: re.Match) -> str:
+    def save_escaped(m: re.Match[str]) -> str:
         escaped_chars.append(m.group(1))
         return f"\x02ESC{len(escaped_chars) - 1}\x02"
     text = re.sub(r'\\([*_~`#|\\])', save_escaped, text)
 
     # 1. Protect code blocks first
     code_blocks: list[str] = []
-    def save_code_block(m: re.Match) -> str:
+    def save_code_block(m: re.Match[str]) -> str:
         code_blocks.append(m.group(1))
         return f"{_PH_CODE_BLOCK}{len(code_blocks) - 1}\x02"
     text = re.sub(r'```[\w]*\n?([\s\S]*?)```', save_code_block, text)
 
     # 2. Protect inline code
     inline_codes: list[str] = []
-    def save_inline_code(m: re.Match) -> str:
+    def save_inline_code(m: re.Match[str]) -> str:
         inline_codes.append(m.group(1))
         return f"{_PH_INLINE_CODE}{len(inline_codes) - 1}\x02"
     text = re.sub(r'`([^`]+)`', save_inline_code, text)
 
     # 3. Convert headers to bold (WhatsApp doesn't support # headers)
-    def convert_header(m: re.Match) -> str:
+    def convert_header(m: re.Match[str]) -> str:
         return f"{_PH_BOLD_START}{m.group(1).strip().upper()}{_PH_BOLD_END}"
     text = re.sub(r'^#{1,6}\s+(.+)$', convert_header, text, flags=re.MULTILINE)
 
