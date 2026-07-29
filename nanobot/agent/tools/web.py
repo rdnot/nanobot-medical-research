@@ -143,12 +143,12 @@ def _smart_truncate(text: str, max_chars: int) -> str:
 def _extract_pdf_text(pdf_data: bytes) -> str:
     """Extract text from PDF using PyMuPDF."""
     try:
-        import fitz  # PyMuPDF
+        import fitz  # PyMuPDF  # pyright: ignore[reportMissingTypeStubs]
         doc = fitz.open(stream=pdf_data, filetype="pdf")
-        text_lines = []
+        text_lines: list[str] = []
         for page_num in range(len(doc)):
-            page = doc[page_num]
-            text = page.get_text()
+            page = cast(Any, doc[page_num])
+            text = cast(str, page.get_text())
             text_lines.append(f"--- Page {page_num + 1} ---\n{text}")
         doc.close()
         return "\n".join(text_lines)
@@ -409,7 +409,7 @@ async def _get_with_safe_redirects(
     return None, f"Too many redirects: exceeded limit of {MAX_REDIRECTS}"
 
 
-async def _stream_with_safe_redirects(
+async def _stream_with_safe_redirects(  # pyright: ignore[reportUnusedFunction]
     client: httpx.AsyncClient,
     url: str,
     headers: dict[str, str] | None = None,
@@ -480,7 +480,7 @@ def _normalize_volcengine_auth_level(value: Any) -> int | None:
     return auth_level
 
 
-async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, int, str]:
+async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict[str, Any], int, str]:
     """
     Fetch URL bytes with tiered fallback strategy:
       1. curl_cffi           — Chrome TLS impersonation, fast, no browser
@@ -503,10 +503,10 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, i
     # Skipped for PubMed/PMC: reCAPTCHA Enterprise challenge page (HTTP 200)
     if not is_reddit and not is_pubmed:
         try:
-            from curl_cffi.requests import AsyncSession
+            from curl_cffi.requests import AsyncSession  # pyright: ignore[reportMissingImports]
             logger.debug("curl_cffi fetch: {}", "proxy enabled" if proxy else "direct connection")
-            async with AsyncSession() as session:
-                r = await session.get(
+            async with AsyncSession() as session:  # pyright: ignore[reportUnknownVariableType]
+                r: Any = await session.get(  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
                     url,
                     impersonate="chrome",
                     allow_redirects=True,
@@ -515,10 +515,15 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict, i
                     headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
                     proxy=proxy,
                 )
-                curl_cffi_status = r.status_code
-                curl_cffi_content = r.content
-                if r.status_code < 400 and _is_content_sufficient(r.content, url):
-                    return r.content, dict(r.headers), r.status_code, "curl_cffi"
+                curl_cffi_status = cast(int | None, r.status_code)
+                curl_cffi_content = cast(bytes | None, r.content)
+                if curl_cffi_status is not None and curl_cffi_content is not None and curl_cffi_status < 400 and _is_content_sufficient(curl_cffi_content, url):
+                    return (
+                        curl_cffi_content,
+                        cast(dict[str, Any], dict(r.headers)),
+                        curl_cffi_status,
+                        "curl_cffi",
+                    )
                 # status >= 400 or JS shell → fall through to browser tier
         except ImportError:
             logger.warning("curl_cffi not installed → skipping to next fetcher. Run: pip install curl_cffi")
@@ -758,7 +763,7 @@ def _html_to_text(raw_html: str, extract_mode: str = "markdown", url: str = "") 
 
     # --- Primary: trafilatura ---
     try:
-        import trafilatura
+        import trafilatura  # pyright: ignore[reportMissingImports]
         common_kwargs = dict(
             include_tables=True,
             include_images=False,
@@ -767,31 +772,33 @@ def _html_to_text(raw_html: str, extract_mode: str = "markdown", url: str = "") 
             with_metadata=False,
             url=url or None,  # helps trafilatura with relative URLs
         )
-        result = trafilatura.extract(raw_html, **common_kwargs)
+        result: str | None = trafilatura.extract(raw_html, **common_kwargs)  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportCallIssue]
 
         # BBC (and some other news sites) get rejected by trafilatura's default
         # paywall/quality heuristic. Re-extract with favor_recall=True which
         # disables content-length and quality filters.
         if (not result or len(result.strip()) < 200):
-            result = trafilatura.extract(raw_html, favor_recall=True, **common_kwargs)
+            result = trafilatura.extract(raw_html, favor_recall=True, **common_kwargs)  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType,reportCallIssue]
 
         if result and len(result.strip()) > 50:
             return result, "trafilatura"
     except ImportError:
-        logger.debug("trafilatura not installed \u2013 pip install trafilatura")
+        logger.debug("trafilatura not installed – pip install trafilatura")
     except Exception as e:
         logger.debug("trafilatura extraction failed: {}", e)
 
     # --- Fallback: readability ---
     try:
-        from readability import Document
-        doc = Document(raw_html)
-        summary = doc.summary()
+        from readability import (
+            Document as _RDoc,  # type: ignore[import-untyped]  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
+        )
+        doc = cast(Any, _RDoc)(raw_html)
+        summary = cast(str, doc.summary())
         if extract_mode == "markdown":
             content = _readability_to_markdown(summary)
         else:
             content = _strip_tags(summary)
-        title = doc.title() or ""
+        title = cast(str, doc.title() or "")
         text = f"# {title}\n\n{content}" if title else content
         return text, "readability"
     except Exception as e:
@@ -805,8 +812,10 @@ def _readability_to_markdown(raw_html: str) -> str:
     """Convert readability HTML output to markdown."""
     # Try markdownify first
     try:
-        from markdownify import markdownify as md
-        return _normalize(md(raw_html, heading_style="ATX", strip=[]))
+        from markdownify import (
+            markdownify as md,  # pyright: ignore[reportMissingImports,reportUnknownVariableType]
+        )
+        return _normalize(cast(str, md(raw_html, heading_style="ATX", strip=[])))
     except ImportError:
         logger.debug("markdownify not installed  \u2013  pip install markdownify")
     except Exception as e:
@@ -2039,7 +2048,7 @@ class WebFetchTool(Tool):
                 jina_result = await self._fetch_jina(url, max_chars or self.max_chars)
                 if jina_result is not None:
                     return jina_result
-            ctype = headers.get("content-type", "").lower()
+            ctype = str(headers.get("content-type", "")).lower()
 
             # --- Image ---
             if ctype.startswith("image/") or re.search(r'\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|$)', url, re.I):
@@ -2068,6 +2077,7 @@ class WebFetchTool(Tool):
                     if p_match:
                         content_str = html.unescape(p_match.group(1).strip())
 
+                raw: Any
                 try:
                     raw = json.loads(content_str)
                 except json.JSONDecodeError as e:
@@ -2090,44 +2100,48 @@ class WebFetchTool(Tool):
                         "untrusted": True, "text": text
                     }, ensure_ascii=False)
                 else:
-                    # Reddit thread: extract post + nested comments (your original beautiful parser)
+                    # Reddit thread: extract post + nested comments instead of dumping raw JSON
+                    raw_list = cast(list[Any], raw) if isinstance(raw, list) else []
                     if (
                         "reddit.com" in url
-                        and isinstance(raw, list) and len(raw) == 2
-                        and raw[0].get("kind") == "Listing"
+                        and len(raw_list) == 2
+                        and cast(dict[str, Any], raw_list[0]).get("kind") == "Listing"
                     ):
-                        parts = []
-                        post = raw[0]["data"]["children"][0]["data"]
+                        parts: list[str] = []
+                        post = cast(dict[str, Any], raw[0]["data"]["children"][0]["data"])
                         parts.append(f"[POST] r/{post.get('subreddit')} | {post.get('author')} | score:{post.get('score')}")
                         parts.append(f"Title: {post.get('title', '')}")
                         if post.get('selftext'):
-                            body = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', post['selftext'])
+                            # expand markdown links [text](url) -> text (url)
+                            body = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', cast(str, post['selftext']))
                             parts.append(f"Body: {body}")
                         if not post.get('is_self') and post.get('url_overridden_by_dest'):
-                            parts.append(f"Link: {post['url_overridden_by_dest']}")
-                        # extract gallery images
+                            parts.append(f"Link: {cast(str, post['url_overridden_by_dest'])}")
+                        # extract gallery images as i.redd.it direct links
                         if post.get('media_metadata'):
-                            for media_id, media in post['media_metadata'].items():
-                                if media.get('status') == 'valid':
+                            media_metadata = cast(dict[str, Any], post['media_metadata'])
+                            for media_id, media in media_metadata.items():
+                                media_dict = cast(dict[str, Any], media)
+                                if media_dict.get('status') == 'valid':
                                     parts.append(f"Image: https://i.redd.it/{media_id}.png")
                         parts.append("---")
-                        def _walk(children: list, depth: int = 0) -> None:
+                        def _walk(children: list[dict[str, Any]], depth: int = 0) -> None:
                             for child in children:
                                 if child.get("kind") == "more":
                                     continue
-                                d = child.get("data", {})
-                                body = d.get("body", "")
+                                d = cast(dict[str, Any], child.get("data", {}))
+                                body = cast(str, d.get("body", ""))
                                 if body in ("[deleted]", "[removed]", ""):
                                     replies = d.get("replies")
                                     if isinstance(replies, dict):
-                                        _walk(replies["data"]["children"], depth)
+                                        _walk(cast(list[dict[str, Any]], replies["data"]["children"]), depth)
                                     continue
                                 indent = "  " * depth
                                 parts.append(f"{indent}[{d.get('author','?')} | score:{d.get('score',0)}] {body}")
                                 replies = d.get("replies")
                                 if isinstance(replies, dict):
-                                    _walk(replies["data"]["children"], depth + 1)
-                        _walk(raw[1]["data"]["children"])
+                                    _walk(cast(list[dict[str, Any]], replies["data"]["children"]), depth + 1)
+                        _walk(cast(list[dict[str, Any]], raw[1]["data"]["children"]))
                         text = f"{_UNTRUSTED_BANNER}\n\n" + "\n\n".join(parts)
                     else:
                         text = json.dumps(raw, indent=2, ensure_ascii=False)
@@ -2282,12 +2296,15 @@ class WebFetchTool(Tool):
             return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
 
     def _extract_readable_html(self, html_content: str, extract_mode: str) -> str:
-        from readability import Document  # pyright: ignore[reportMissingTypeStubs]
+        from readability import (
+            Document as _RDoc,  # type: ignore[import-untyped]  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
+        )
 
-        doc = Document(html_content)
+        doc = cast(Any, _RDoc)(html_content)
         summary = cast(str, doc.summary())
         content = self._to_markdown(summary) if extract_mode == "markdown" else _strip_tags(summary)
-        return f"# {doc.title()}\n\n{content}" if doc.title() else content
+        doc_title = cast(str | None, doc.title())
+        return f"# {doc_title}\n\n{content}" if doc_title else content
 
     def _to_markdown(self, html_content: str) -> str:
         """UPSTREAM: Convert HTML to markdown."""
