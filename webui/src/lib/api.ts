@@ -61,6 +61,7 @@ function isSlashCommandLifecycle(value: unknown): value is SlashCommandLifecycle
 const CHANNEL_VALUES_HEADER = "X-Nanobot-Channel-Values";
 const API_SERVICE_VALUES_HEADER = "X-Nanobot-API-Service-Values";
 const OAUTH_CODE_HEADER = "X-Nanobot-OAuth-Code";
+const OAUTH_CALLBACK_HEADER = "X-Nanobot-OAuth-Callback";
 const PROVIDER_VALUES_HEADER = "X-Nanobot-Provider-Values";
 
 export class ApiError extends Error {
@@ -171,6 +172,7 @@ export interface FetchWebuiThreadOptions {
   limit?: number;
   direction?: "latest";
   before?: string | null;
+  signal?: AbortSignal;
 }
 
 export async function fetchWebuiThread(
@@ -192,6 +194,7 @@ export async function fetchWebuiThread(
     headers: { Authorization: `Bearer ${token}` },
     credentials: "same-origin",
     cache: "no-store",
+    signal: options?.signal,
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`);
@@ -990,9 +993,11 @@ export async function loginProviderOAuth(
   token: string,
   provider: string,
   base: string = "",
+  remoteBrowserAccess: boolean = false,
 ): Promise<ProviderOAuthLoginResult> {
   const query = new URLSearchParams();
   query.set("provider", provider);
+  if (remoteBrowserAccess) query.set("remote_browser", "true");
   return request<ProviderOAuthLoginResult>(
     `${base}/api/settings/provider/oauth-login?${query}`,
     token,
@@ -1004,13 +1009,18 @@ export async function completeProviderOAuth(
   token: string,
   provider: string,
   flowId: string,
-  authorizationCode?: string,
+  authorizationResponse?: string,
   base: string = "",
 ): Promise<ProviderOAuthCompletionResult> {
   const query = new URLSearchParams();
   query.set("provider", provider);
   query.set("flow_id", flowId);
-  const headers = authorizationCode ? { [OAUTH_CODE_HEADER]: authorizationCode } : undefined;
+  const responseHeader = provider === "openai_codex"
+    ? OAUTH_CALLBACK_HEADER
+    : OAUTH_CODE_HEADER;
+  const headers = authorizationResponse
+    ? { [responseHeader]: authorizationResponse }
+    : undefined;
   return request<ProviderOAuthCompletionResult>(
     `${base}/api/settings/provider/oauth-login/complete?${query}`,
     token,
