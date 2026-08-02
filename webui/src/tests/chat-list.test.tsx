@@ -44,6 +44,7 @@ function rect({
 describe("ChatList", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("orders chats by latest session activity by default", () => {
@@ -220,8 +221,20 @@ describe("ChatList", () => {
     expect(within(chatsSection).queryByText("Project chat")).not.toBeInTheDocument();
   });
 
-  it("floats a borderless highlight in, then slides it between selected topics", () => {
+  it("positions one background highlight and resets it across hidden targets", () => {
     let revealFrame: FrameRequestCallback | null = null;
+    let resizeObserverCallback: ResizeObserverCallback | null = null;
+    let activeTargetVisible = true;
+    class MockResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeObserverCallback = callback;
+      }
+
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
       revealFrame = callback;
       return 1;
@@ -232,7 +245,9 @@ describe("ChatList", () => {
           return rect({ left: 0, top: 0, width: 300, height: 200 });
         }
         if (this.getAttribute("data-chat-row") === "websocket:active") {
-          return rect({ left: 8, top: 12, width: 284, height: 32 });
+          return activeTargetVisible
+            ? rect({ left: 8, top: 12, width: 284, height: 32 })
+            : rect({ left: 0, top: 0, width: 0, height: 0 });
         }
         if (this.getAttribute("data-chat-row") === "websocket:inactive") {
           return rect({ left: 8, top: 48, width: 284, height: 40 });
@@ -255,28 +270,24 @@ describe("ChatList", () => {
     const { rerender } = render(
       <ChatList
         {...props}
-        activeKey={null}
-      />,
-    );
-
-    const highlight = screen.getByTestId("active-chat-highlight");
-    const surface = screen.getByTestId("active-chat-highlight-surface");
-    expect(surface).toHaveClass(
-      "bg-sidebar-foreground/[0.055]",
-      "transition-[opacity,transform]",
-      "motion-reduce:transition-none",
-    );
-    expect(surface).toHaveStyle("opacity: 0; transform: scale(0.97)");
-
-    rerender(
-      <ChatList
-        {...props}
         activeKey="websocket:active"
       />,
     );
 
+    const highlight = screen.getByTestId("sessions-selection-highlight");
+    expect(highlight).toHaveClass(
+      "bg-sidebar-foreground/[0.055]",
+      "transition-[transform,width,height]",
+      "motion-reduce:transition-none",
+    );
+    expect(screen.queryByTestId("sessions-selection-highlight-surface"))
+      .not.toBeInTheDocument();
+    expect(resizeObserverCallback).not.toBeNull();
+
     const activeButton = screen.getByTitle("Active topic");
     expect(activeButton).toHaveAttribute("aria-current", "page");
+    expect(activeButton.parentElement).toHaveClass("transition-[color]");
+    expect(activeButton.parentElement).not.toHaveClass("transition-colors");
     expect(activeButton.parentElement).not.toHaveClass(
       "bg-sidebar-accent",
       "shadow-[inset_0_0_0_1px_hsl(var(--sidebar-border)/0.55)]",
@@ -286,12 +297,22 @@ describe("ChatList", () => {
       "motion-reduce:transition-none",
     );
     expect(highlight).toHaveStyle(
-      "width: 284px; height: 32px; transform: translate3d(8px, 12px, 0); transition-property: none",
+      "width: 284px; height: 32px; transform: translate3d(8px, 12px, 0); opacity: 1; transition-property: none",
     );
-    expect(surface).toHaveStyle("opacity: 1; transform: scale(1)");
 
     revealFrame?.(0);
     expect(highlight.style.transitionProperty).toBe("");
+
+    activeTargetVisible = false;
+    resizeObserverCallback?.([], {} as ResizeObserver);
+    expect(highlight).toHaveStyle("opacity: 0");
+
+    activeTargetVisible = true;
+    resizeObserverCallback?.([], {} as ResizeObserver);
+    expect(highlight).toHaveStyle(
+      "width: 284px; height: 32px; transform: translate3d(8px, 12px, 0); opacity: 1; transition-property: none",
+    );
+    revealFrame?.(0);
 
     rerender(
       <ChatList
@@ -305,6 +326,9 @@ describe("ChatList", () => {
     expect(highlight).toHaveStyle(
       "width: 284px; height: 40px; transform: translate3d(8px, 48px, 0)",
     );
+
+    rerender(<ChatList {...props} activeKey={null} />);
+    expect(highlight).toHaveStyle("opacity: 0");
   });
 
   it("can collapse a project group and keeps project rename separate from chat titles", async () => {
