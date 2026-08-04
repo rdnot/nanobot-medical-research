@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
 import json
 import re
 import ssl
@@ -12,13 +13,18 @@ from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Self, TypeGuard, cast
+from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, PrivateAttr, field_validator, model_validator
 from websockets.asyncio.server import ServerConnection, serve, unix_serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request as WsRequest
 
-from nanobot.bus.events import OUTBOUND_META_AGENT_UI, OutboundMessage
+from nanobot.bus.events import (
+    INBOUND_META_SESSION_READ_SCOPE,
+    OUTBOUND_META_AGENT_UI,
+    OutboundMessage,
+)
 from nanobot.bus.outbound_events import (
     GoalStateSyncEvent,
     GoalStatusEvent,
@@ -37,6 +43,7 @@ from nanobot.config.schema import Base
 from nanobot.runtime_context import (
     RUNTIME_CONTEXT_INPUT_META,
     WEBUI_QUOTE_METADATA,
+    RuntimeContextBlock,
     webui_quote_runtime_context,
 )
 from nanobot.security.workspace_access import (
@@ -56,6 +63,9 @@ from nanobot.webui.cli_apps_api import normalize_cli_app_mentions
 from nanobot.webui.forking import handle_webui_fork_chat
 from nanobot.webui.gateway_services import GatewayServices
 from nanobot.webui.http_utils import (
+    is_trusted_proxy_authenticated_request as _is_trusted_proxy_authenticated_request,
+)
+from nanobot.webui.http_utils import (
     normalize_config_path as _normalize_config_path,
 )
 from nanobot.webui.http_utils import (
@@ -70,12 +80,86 @@ from nanobot.webui.metadata import (
     WEBUI_SYSTEM_COMMAND_TURN_PREFIX,
     WEBUI_TURN_METADATA_KEY,
 )
+from nanobot.webui.session_access import (
+    SessionAccessScope,
+    SessionMention,
+    WebuiSessionAccess,
+    session_mentions_runtime_context,
+)
 from nanobot.webui.transcript import WEBUI_TRANSCRIPT_INCOMPLETE_KEY
 from nanobot.webui.transcription_ws import webui_transcription_event
 from nanobot.webui.websocket_logging import websockets_server_logger
 
 # Plain HTTP WebUI routes also run through websockets.process_request.
 _WEBUI_HTTP_OPEN_TIMEOUT_S = 360.0
+
+
+_ROUTING_ASSERTION_HEADERS = frozenset(
+    {
+        "host",
+        "forwarded",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+        "cf-connecting-ip",
+    }
+)
+
+
+def _is_routing_assertion_header(value: str) -> bool:
+    normalized = value.casefold()
+    return normalized in _ROUTING_ASSERTION_HEADERS or normalized.startswith("x-forwarded-")
+
+
+class TrustedProxyAuthConfig(Base):
+    """Authentication assertions accepted from explicitly trusted proxy peers."""
+
+    trusted_peer_cidrs: list[str] = Field(min_length=1)
+    assertion_header: str = Field(min_length=1)
+    _trusted_peer_networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = PrivateAttr(
+        default=()
+    )
+
+    @field_validator("trusted_peer_cidrs")
+    @classmethod
+    def validate_trusted_peer_cidrs(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            value = value.strip()
+            try:
+                network = ipaddress.ip_network(value, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"invalid trusted proxy CIDR: {value!r}") from exc
+            if network.prefixlen == 0:
+                raise ValueError("universal trusted proxy CIDRs are not allowed")
+            if isinstance(network, ipaddress.IPv6Network):
+                mapped_start = ipaddress.IPv6Address("::ffff:0:0")
+                mapped_end = ipaddress.IPv6Address("::ffff:ffff:ffff")
+                if mapped_start in network and mapped_end in network:
+                    raise ValueError("trusted proxy CIDRs must not cover all IPv4-mapped addresses")
+            normalized.append(network.with_prefixlen)
+        return normalized
+
+    @field_validator("assertion_header")
+    @classmethod
+    def validate_assertion_header(cls, value: str) -> str:
+        value = value.strip()
+        if not value or any(char.isspace() or ord(char) < 0x21 for char in value):
+            raise ValueError("assertion_header must be a valid HTTP header name")
+        if _is_routing_assertion_header(value):
+            raise ValueError(
+                "assertion_header must identify a proxy-generated authentication assertion, "
+                "not a routing or client metadata header"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def compile_trusted_peer_networks(self) -> Self:
+        self._trusted_peer_networks = tuple(
+            ipaddress.ip_network(value, strict=False) for value in self.trusted_peer_cidrs
+        )
+        return self
 
 
 class WebSocketConfig(Base):
@@ -92,6 +176,8 @@ class WebSocketConfig(Base):
       blocking ``urllib`` or synchronous ``httpx`` from inside a coroutine.
     - ``token_issue_secret``: If non-empty, token requests must send ``Authorization: Bearer <secret>`` or
       ``X-Nanobot-Auth: <secret>``.
+    - ``public_ws_url``: Optional public WebSocket endpoint returned by WebUI bootstrap instead of
+      deriving one from proxy request headers. Its path must match ``path``.
     - ``websocket_requires_token``: If True, the handshake must include a valid token (static or issued and not expired).
     - Each connection has its own session: a unique ``chat_id`` maps to the agent session internally.
     - ``media`` field in outbound messages contains local filesystem paths; remote clients need a
@@ -103,9 +189,11 @@ class WebSocketConfig(Base):
     port: int = 8765
     unix_socket_path: str = ""
     path: str = "/"
+    public_ws_url: str = ""
     token: str = ""
     token_issue_path: str = ""
     token_issue_secret: str = ""
+    trusted_proxy_auth: TrustedProxyAuthConfig | None = None
     token_ttl_s: int = Field(default=300, ge=30, le=86_400)
     websocket_requires_token: bool = True
     allow_from: list[str] = Field(default_factory=lambda: ["*"])
@@ -150,6 +238,32 @@ class WebSocketConfig(Base):
             raise ValueError('token_issue_path must start with "/"')
         return _normalize_config_path(value)
 
+    @field_validator("public_ws_url")
+    @classmethod
+    def public_ws_url_format(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            return ""
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"ws", "wss"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("public_ws_url must be an absolute ws:// or wss:// URL without credentials")
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, _normalize_config_path(parsed.path or "/"), "", "")
+        )
+
+    @model_validator(mode="after")
+    def public_ws_url_matches_path(self) -> Self:
+        if self.public_ws_url and urlsplit(self.public_ws_url).path != _normalize_config_path(self.path):
+            raise ValueError("public_ws_url path must match path")
+        return self
+
     @model_validator(mode="after")
     def token_issue_path_differs_from_ws_path(self) -> Self:
         if not self.token_issue_path:
@@ -162,11 +276,11 @@ class WebSocketConfig(Base):
     def wildcard_host_requires_auth(self) -> Self:
         if self.host not in ("0.0.0.0", "::"):
             return self
-        if self.token.strip() or self.token_issue_secret.strip():
+        if self.token.strip() or self.token_issue_secret.strip() or self.trusted_proxy_auth is not None:
             return self
         raise ValueError(
-            "host is 0.0.0.0 (all interfaces) but neither token nor "
-            "token_issue_secret is set — set one to prevent unauthenticated access"
+            "host is 0.0.0.0 (all interfaces) but neither token, token_issue_secret, "
+            "nor trusted_proxy_auth is set — set one to prevent unauthenticated access"
         )
 
 
@@ -284,6 +398,11 @@ class WebSocketChannel(BaseChannel):
         self._ingress = gateway.ingress
         self._transcripts = gateway.transcripts
         self._workspaces = gateway.workspaces
+        self._session_access = (
+            WebuiSessionAccess(gateway.session_manager)
+            if gateway.session_manager is not None
+            else None
+        )
 
         self._stream_text_buffers: dict[tuple[str, str], list[str]] = {}
 
@@ -417,16 +536,16 @@ class WebSocketChannel(BaseChannel):
     async def _dispatch_http(self, connection: ServerConnection, request: WsRequest) -> Any:
         """Route an inbound HTTP request to the HTTP handler or WS upgrade."""
         got, query = _parse_request_path(request.path)
+        expected_ws = self._expected_path()
 
         # WebSocket upgrade — channel handles this itself
-        expected_ws = self._expected_path()
         if got == expected_ws and _is_websocket_upgrade(request):
             client_id = _query_first(query, "client_id") or ""
             if len(client_id) > 128:
                 client_id = client_id[:128]
             if not self.is_allowed(client_id):
                 return connection.respond(403, "Forbidden")
-            return self._authorize_websocket_handshake(connection, query)
+            return self._authorize_websocket_handshake(connection, query, request.headers)
 
         # Everything else goes to the HTTP handler
         return await self._http_router.dispatch(connection, request)
@@ -435,7 +554,12 @@ class WebSocketChannel(BaseChannel):
         self,
         connection: ServerConnection,
         query: dict[str, list[str]],
+        headers: Any = None,
     ) -> Any:
+        if _is_trusted_proxy_authenticated_request(connection, headers or {}, self.config):
+            self._webui_connections.add(connection)
+            return None
+
         supplied = _query_first(query, "token")
         static_token = self.config.token.strip()
 
@@ -796,12 +920,32 @@ class WebSocketChannel(BaseChannel):
             if envelope.get("webui") is True:
                 metadata["webui"] = True
                 metadata.update(self._transcripts.client_turn_metadata(envelope.get("turn_id")))
+            trusted_webui = metadata.get("webui") is True and connection in self._webui_connections
+            if trusted_webui:
+                metadata[INBOUND_META_SESSION_READ_SCOPE] = f"{self.name}:"
             cli_apps = normalize_cli_app_mentions(envelope.get("cli_apps"))
             if cli_apps:
                 metadata["cli_apps"] = cli_apps
             mcp_presets = normalize_mcp_preset_mentions(envelope.get("mcp_presets"))
             if mcp_presets:
                 metadata["mcp_presets"] = mcp_presets
+            session_mentions: list[SessionMention] = []
+            if (
+                trusted_webui
+                and self._session_access is not None
+            ):
+                session_mentions = await asyncio.to_thread(
+                    self._session_access.normalize_mentions,
+                    envelope.get("session_mentions"),
+                    SessionAccessScope(
+                        current_session_key=f"{self.name}:{cid}",
+                        session_key_prefix=f"{self.name}:",
+                        project_path=scope.project_path,
+                        restrict_to_workspace=scope.restrict_to_workspace,
+                    ),
+                )
+                if session_mentions:
+                    metadata["session_mentions"] = session_mentions
             metadata[WORKSPACE_SCOPE_METADATA_KEY] = scope.metadata()
             self._workspaces.persist_scope(cid, scope)
             is_webui = metadata.get("webui") is True
@@ -820,13 +964,20 @@ class WebSocketChannel(BaseChannel):
                         media_paths=media_paths or None,
                         cli_apps=cli_apps or None,
                         mcp_presets=mcp_presets or None,
+                        session_mentions=session_mentions or None,
                     )
-                if is_webui and connection in self._webui_connections:
+                if trusted_webui:
+                    context_blocks: list[RuntimeContextBlock] = []
                     quote = webui_quote_runtime_context({
                         WEBUI_QUOTE_METADATA: envelope.get("quoted_context"),
                     })
                     if quote is not None:
-                        metadata[RUNTIME_CONTEXT_INPUT_META] = [quote]
+                        context_blocks.append(quote)
+                    session_context = session_mentions_runtime_context(session_mentions)
+                    if session_context is not None:
+                        context_blocks.append(session_context)
+                    if context_blocks:
+                        metadata[RUNTIME_CONTEXT_INPUT_META] = context_blocks
                 await self._handle_message(
                     sender_id=client_id,
                     chat_id=cid,
