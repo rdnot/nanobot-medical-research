@@ -580,7 +580,7 @@ describe("webui API helpers", () => {
     await updateProviderSettings("tok", {
       provider: "xai_grok",
       proxy: "http://127.0.0.1:7890",
-      extraBody: '{"service_tier":"priority"}',
+      extraBody: '{"tools":[]}',
     });
 
     expect(fetch).toHaveBeenCalledWith(
@@ -590,7 +590,7 @@ describe("webui API helpers", () => {
           Authorization: "Bearer tok",
           "X-Nanobot-Provider-Values": encodeURIComponent(JSON.stringify({
             proxy: "http://127.0.0.1:7890",
-            extraBody: '{"service_tier":"priority"}',
+            extraBody: '{"tools":[]}',
           })),
         },
       }),

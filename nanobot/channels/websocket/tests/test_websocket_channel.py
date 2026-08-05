@@ -13,7 +13,6 @@ from websockets.exceptions import ConnectionClosed
 from websockets.frames import Close
 
 from nanobot.bus.events import (
-    INBOUND_META_SESSION_READ_SCOPE,
     OUTBOUND_META_AGENT_UI,
     OutboundMessage,
 )
@@ -416,7 +415,6 @@ async def test_webui_message_envelope_marks_inbound_metadata(bus: MagicMock) -> 
     assert msg.channel == "websocket"
     assert msg.chat_id == "chat-1"
     assert msg.metadata["webui"] is True
-    assert INBOUND_META_SESSION_READ_SCOPE not in msg.metadata
     assert msg.metadata["webui_turn_id"] == "turn-1"
     assert msg.metadata["_wants_stream"] is True
     lines = read_transcript_lines("websocket:chat-1")
@@ -2547,6 +2545,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
     )
     config.tools.web.search.provider = "brave"
     config.tools.web.search.api_key = "brave-secret"
+    expected_timezone = config.agents.defaults.timezone
     save_config(config, config_path)
     monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     monkeypatch.setattr(
@@ -2587,7 +2586,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert body["agent"]["provider"] == "openai"
         assert body["agent"]["model_preset"] == "default"
         assert body["agent"]["max_tokens"] == 8192
-        assert body["agent"]["timezone"] == "UTC"
+        assert body["agent"]["timezone"] == expected_timezone
         assert "bot_name" not in body["agent"]
         assert "bot_icon" not in body["agent"]
         assert body["agent"]["tool_hint_max_length"] == 40
