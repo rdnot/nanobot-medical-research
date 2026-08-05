@@ -733,15 +733,19 @@ def test_update_provider_settings_updates_and_clears_oauth_proxy(
         },
     )
 
-    payload = update_provider_settings(
-        {"provider": [provider_name], "proxy": [" http://127.0.0.1:7890 "]}
-    )
+    payload = update_provider_settings({
+        "provider": [provider_name],
+        "proxy": [" http://127.0.0.1:7890 "],
+        "extraBody": [json.dumps({"tools": []})],
+    })
 
     providers = {row["name"]: row for row in payload["providers"]}
     assert providers[provider_name]["proxy"] == "http://127.0.0.1:7890"
     assert getattr(load_config(config_path).providers, config_attr).proxy == (
         "http://127.0.0.1:7890"
     )
+    assert providers[provider_name]["extra_body"] == {"tools": []}
+    assert getattr(load_config(config_path).providers, config_attr).extra_body == {"tools": []}
 
     cleared = update_provider_settings({"provider": [provider_name], "proxy": ["  "]})
 
@@ -776,6 +780,26 @@ def test_update_agent_settings_accepts_context_window_options(
     assert payload["agent"]["context_window_tokens"] == 200000
     saved = load_config(config_path)
     assert saved.agents.defaults.context_window_tokens == 200000
+
+
+def test_update_agent_settings_marks_timezone_as_manual(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "nanobot.config.timezone.get_localzone_name",
+        lambda: "Asia/Shanghai",
+    )
+    config_path = tmp_path / "config.json"
+    save_config(Config(), config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_agent_settings({"timezone": ["Asia/Shanghai"]})
+
+    assert payload["requires_restart"] is False
+    saved = load_config(config_path)
+    assert saved.agents.defaults.timezone == "Asia/Shanghai"
+    assert saved.agents.defaults.timezone_mode == "manual"
 
 
 def test_update_model_configuration_preserves_custom_context_windows(

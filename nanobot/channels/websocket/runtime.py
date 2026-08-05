@@ -20,11 +20,7 @@ from websockets.asyncio.server import ServerConnection, serve, unix_serve
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request as WsRequest
 
-from nanobot.bus.events import (
-    INBOUND_META_SESSION_READ_SCOPE,
-    OUTBOUND_META_AGENT_UI,
-    OutboundMessage,
-)
+from nanobot.bus.events import OUTBOUND_META_AGENT_UI, OutboundMessage
 from nanobot.bus.outbound_events import (
     GoalStateSyncEvent,
     GoalStatusEvent,
@@ -81,7 +77,6 @@ from nanobot.webui.metadata import (
     WEBUI_TURN_METADATA_KEY,
 )
 from nanobot.webui.session_access import (
-    SessionAccessScope,
     SessionMention,
     WebuiSessionAccess,
     session_mentions_runtime_context,
@@ -921,8 +916,6 @@ class WebSocketChannel(BaseChannel):
                 metadata["webui"] = True
                 metadata.update(self._transcripts.client_turn_metadata(envelope.get("turn_id")))
             trusted_webui = metadata.get("webui") is True and connection in self._webui_connections
-            if trusted_webui:
-                metadata[INBOUND_META_SESSION_READ_SCOPE] = f"{self.name}:"
             cli_apps = normalize_cli_app_mentions(envelope.get("cli_apps"))
             if cli_apps:
                 metadata["cli_apps"] = cli_apps
@@ -937,12 +930,7 @@ class WebSocketChannel(BaseChannel):
                 session_mentions = await asyncio.to_thread(
                     self._session_access.normalize_mentions,
                     envelope.get("session_mentions"),
-                    SessionAccessScope(
-                        current_session_key=f"{self.name}:{cid}",
-                        session_key_prefix=f"{self.name}:",
-                        project_path=scope.project_path,
-                        restrict_to_workspace=scope.restrict_to_workspace,
-                    ),
+                    exclude_session_key=f"{self.name}:{cid}",
                 )
                 if session_mentions:
                     metadata["session_mentions"] = session_mentions

@@ -610,14 +610,16 @@ describe("SettingsView Apps catalog", () => {
 
     renderSettingsView({ initialSection: "apps" });
 
-    expect(await screen.findByText("Add tools to nanobot, then @ them in chat.")).toBeInTheDocument();
+    expect(await screen.findByText("AnyGen")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Add tools to nanobot, then @ them in chat."),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Ready" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: "Apps" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Integrations" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Plugins" })).not.toBeInTheDocument();
     expect(screen.queryByText("Api")).not.toBeInTheDocument();
-    expect(screen.getByText("AnyGen")).toBeInTheDocument();
-    expect(screen.getByText("0 ready")).toBeInTheDocument();
+    expect(screen.queryByText("0 ready")).not.toBeInTheDocument();
   });
 
   it("shows nanobot optional features and enables one", async () => {
@@ -787,7 +789,7 @@ describe("SettingsView Apps catalog", () => {
     renderSettingsView({ initialSection: "channels" });
 
     expect(await screen.findByRole("button", { name: "View Matrix settings" })).toBeInTheDocument();
-    expect(screen.getByText("0 running · 1 channels")).toBeInTheDocument();
+    expect(screen.queryByText("0 running · 1 channels")).not.toBeInTheDocument();
     expect(screen.getAllByText("Failed").length).toBeGreaterThan(0);
     expect(screen.queryByText("Enabled, support needs install")).not.toBeInTheDocument();
 
@@ -841,7 +843,7 @@ describe("SettingsView Apps catalog", () => {
     renderSettingsView({ initialSection: "channels" });
 
     expect(await screen.findByRole("button", { name: "View Matrix settings" })).toBeInTheDocument();
-    expect(screen.getByText("0 running · 1 channels")).toBeInTheDocument();
+    expect(screen.queryByText("0 running · 1 channels")).not.toBeInTheDocument();
     expect(screen.getAllByText("Failed").length).toBeGreaterThan(0);
     expect(screen.getByText(runtimeError)).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Matrix channel" })).toHaveAttribute(
@@ -1353,7 +1355,7 @@ describe("SettingsView Apps catalog", () => {
     renderSettingsView({ initialSection: "channels" });
 
     await screen.findByText("No assistant connected");
-    expect(screen.getByText("0 running · 1 channels")).toBeInTheDocument();
+    expect(screen.queryByText("0 running · 1 channels")).not.toBeInTheDocument();
     expect(screen.getAllByText("Failed").length).toBeGreaterThan(0);
     expect(screen.getByText(runtimeError)).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "test assistant" })).toHaveAttribute(
@@ -3097,6 +3099,200 @@ describe("SettingsView Apps catalog", () => {
         }),
       ),
     );
+  });
+
+  it("maps provider request switches to raw extraBody fields", async () => {
+    const base = settingsPayload();
+    const providers: SettingsPayload["providers"] = [
+      {
+        name: "xai_grok",
+        label: "xAI Grok",
+        configured: true,
+        auth_type: "oauth",
+        api_key_required: false,
+        oauth_account: "grok@example.com",
+        oauth_login_supported: true,
+        advanced_fields: ["extra_body", "proxy"],
+        extra_body: null,
+      },
+      {
+        name: "openai_codex",
+        label: "OpenAI Codex",
+        configured: true,
+        auth_type: "oauth",
+        api_key_required: false,
+        oauth_account: "codex@example.com",
+        oauth_login_supported: true,
+        advanced_fields: ["extra_body", "proxy"],
+        extra_body: null,
+      },
+      {
+        name: "deepseek",
+        label: "DeepSeek",
+        configured: true,
+        api_key_required: true,
+        api_key_hint: "deep••••test",
+        api_base: "https://api.deepseek.com",
+        advanced_fields: ["extra_body"],
+        extra_body: null,
+      },
+      {
+        name: "openai",
+        label: "OpenAI",
+        configured: true,
+        api_key_required: true,
+        api_key_hint: "sk-••••test",
+        api_base: "https://api.openai.com/v1",
+        api_type: "auto",
+        advanced_fields: ["api_type", "extra_body"],
+        extra_body: null,
+      },
+    ];
+    const payload: SettingsPayload = { ...base, providers };
+    const fetchMock = vi.fn(async (...args: [RequestInfo | URL, RequestInit?]) => {
+      const [input] = args;
+      const url = String(input);
+      if (url === "/api/settings") return jsonResponse(payload);
+      if (url.startsWith("/api/settings/provider/update?")) return jsonResponse(payload);
+      if (url === "/api/settings/cli-apps") {
+        return jsonResponse({ apps: [], installed_count: 0 });
+      }
+      if (url === "/api/settings/mcp-presets") {
+        return jsonResponse({ presets: [], installed_count: 0 });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSettingsView({ initialSection: "models", initialSettings: payload });
+
+    fireEvent.click(screen.getByRole("button", { name: "xAI Grok" }));
+    const xSearch = screen.getByRole("switch", { name: "X Search" });
+    expect(xSearch).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(xSearch);
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/provider/update?provider=xai_grok",
+      expect.anything(),
+    ));
+    await waitFor(() => expect(
+      screen.getByRole("button", { name: "Save provider" }),
+    ).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "xAI Grok" }));
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI Codex" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Fast mode" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/settings/provider/update?provider=openai_codex",
+      expect.anything(),
+    ));
+    await waitFor(() => expect(
+      screen.getByRole("button", { name: "Save provider" }),
+    ).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "OpenAI Codex" }));
+    fireEvent.click(screen.getByRole("button", { name: /^DeepSeek/ }));
+    expect(screen.getByText(/DeepSeek V4 Flash/)).toBeInTheDocument();
+    const deepSeekSearch = screen.getByRole("switch", { name: "DeepSeek web search" });
+    expect(deepSeekSearch).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(deepSeekSearch);
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
+    await waitFor(() => expect(
+      screen.queryByRole("switch", { name: "DeepSeek web search" }),
+    ).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /^OpenAI https:/ }));
+    fireEvent.click(screen.getByRole("switch", { name: "OpenAI web search" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
+    await waitFor(() => expect(
+      screen.queryByRole("switch", { name: "OpenAI web search" }),
+    ).not.toBeInTheDocument());
+
+    await waitFor(() => {
+      const requestUpdates = fetchMock.mock.calls
+        .filter(([input]) => String(input).startsWith("/api/settings/provider/update?"))
+        .map(([input, init]) => {
+          const provider = new URLSearchParams(String(input).split("?")[1]).get("provider");
+          const headers = init?.headers as Record<string, string>;
+          const values = JSON.parse(decodeURIComponent(
+            headers["X-Nanobot-Provider-Values"],
+          )) as { apiType?: string; extraBody?: string };
+          return [provider, {
+            ...(values.apiType ? { apiType: values.apiType } : {}),
+            extraBody: JSON.parse(values.extraBody ?? "{}"),
+          }] as const;
+        });
+      expect(requestUpdates).toEqual([
+        ["xai_grok", { extraBody: { tools: [] } }],
+        ["openai_codex", { extraBody: { service_tier: "priority" } }],
+        ["deepseek", { extraBody: { tools: [] } }],
+        ["openai", {
+          apiType: "responses",
+          extraBody: { tools: [{ type: "web_search" }] },
+        }],
+      ]);
+    });
+  });
+
+  it("recognizes and removes versioned web search tools without losing raw settings", async () => {
+    const base = settingsPayload();
+    const payload: SettingsPayload = {
+      ...base,
+      providers: [{
+        name: "openai",
+        label: "OpenAI",
+        configured: true,
+        api_key_required: true,
+        api_key_hint: "sk-••••test",
+        api_base: "https://api.openai.com/v1",
+        api_type: "auto",
+        advanced_fields: ["api_type", "extra_body"],
+        extra_body: {
+          metadata: { owner: "legacy-config" },
+          tools: [
+            { type: "web_search_preview", search_context_size: "medium" },
+            { type: "file_search", vector_store_ids: ["vs_legacy"] },
+          ],
+        },
+      }],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return jsonResponse(payload);
+      if (url.startsWith("/api/settings/provider/update?")) return jsonResponse(payload);
+      if (url === "/api/settings/cli-apps") {
+        return jsonResponse({ apps: [], installed_count: 0 });
+      }
+      if (url === "/api/settings/mcp-presets") {
+        return jsonResponse({ presets: [], installed_count: 0 });
+      }
+      return jsonResponse({});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSettingsView({ initialSection: "models", initialSettings: payload });
+
+    fireEvent.click(await screen.findByRole("button", { name: /^OpenAI https:/ }));
+    const searchSwitch = screen.getByRole("switch", { name: "OpenAI web search" });
+    expect(searchSwitch).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(searchSwitch);
+    fireEvent.click(screen.getByRole("button", { name: "Save provider" }));
+
+    await waitFor(() => {
+      const updateCall = fetchMock.mock.calls.find(
+        ([input]) => String(input).startsWith("/api/settings/provider/update?"),
+      );
+      expect(updateCall).toBeTruthy();
+      const headers = updateCall?.[1]?.headers as Record<string, string>;
+      const values = JSON.parse(decodeURIComponent(
+        headers["X-Nanobot-Provider-Values"],
+      )) as { extraBody: string };
+      expect(JSON.parse(values.extraBody)).toEqual({
+        metadata: { owner: "legacy-config" },
+        tools: [{ type: "file_search", vector_store_ids: ["vs_legacy"] }],
+      });
+    });
   });
 
   it("creates a custom provider with folded advanced request settings", async () => {
