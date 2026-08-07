@@ -187,11 +187,21 @@ class ChannelManager:
         channel = cls(section, self.bus, **kwargs)
         if runtime_name and runtime_name != channel.name:
             channel.name = runtime_name
+        # Channel-owned config models may deliberately choose safer transport
+        # defaults than the global channel policy (for example, a quota-limited
+        # platform can disable progress messages).  Preserve those defaults
+        # while still letting an explicit per-channel value win below.
+        progress_default = getattr(
+            channel.config, "send_progress", self.config.channels.send_progress,
+        )
+        tool_hints_default = getattr(
+            channel.config, "send_tool_hints", self.config.channels.send_tool_hints,
+        )
         channel.send_progress = self._resolve_bool_override(
-            section, "send_progress", self.config.channels.send_progress,
+            section, "send_progress", progress_default,
         )
         channel.send_tool_hints = self._resolve_bool_override(
-            section, "send_tool_hints", self.config.channels.send_tool_hints,
+            section, "send_tool_hints", tool_hints_default,
         )
         channel.show_reasoning = self._resolve_bool_override(
             section, "show_reasoning", self.config.channels.show_reasoning,
@@ -347,9 +357,13 @@ class ChannelManager:
             await channel.start()
         except asyncio.CancelledError:
             raise
-        except Exception:
-            errors[name] = "Channel failed to start. Check gateway logs."
-            logger.exception("Failed to start channel {}", name)
+        except Exception as exc:
+            public_error = channel.start_error_message(exc)
+            errors[name] = public_error or "Channel failed to start. Check gateway logs."
+            if public_error:
+                logger.error("Failed to start channel {}: {}", name, public_error)
+            else:
+                logger.exception("Failed to start channel {}", name)
 
     def _start_channel_task(self, name: str, channel: BaseChannel) -> asyncio.Task[None]:
         logger.info("Starting {} channel...", name)
@@ -912,6 +926,14 @@ class ChannelManager:
             except asyncio.CancelledError:
                 raise  # Propagate cancellation for graceful shutdown
             except Exception as e:
+                if not channel.should_retry_send_error(e):
+                    logger.error(
+                        "Send to {} failed with a non-retryable {}: {}",
+                        msg.channel,
+                        type(e).__name__,
+                        e,
+                    )
+                    return
                 loop = asyncio.get_running_loop()
                 exhausted = (
                     attempt >= max_attempts

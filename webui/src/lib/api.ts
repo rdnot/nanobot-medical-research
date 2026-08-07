@@ -627,9 +627,13 @@ export async function pollChannelConnect(
   channel: string,
   sessionId: string,
   base: string = "",
+  params: Readonly<Record<string, string>> = {},
 ): Promise<ChannelConnectPayload> {
   const query = new URLSearchParams();
   query.set("session_id", sessionId);
+  Object.entries(params).forEach(([key, value]) => {
+    if (key !== "session_id") query.set(key, value);
+  });
   return request<ChannelConnectPayload>(
     `${base}/api/settings/channels/${channel}/connect/poll?${query}`,
     token,
