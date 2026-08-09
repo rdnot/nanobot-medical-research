@@ -101,6 +101,14 @@ class BaseChannel(ABC):
         """
         pass
 
+    def progress_transport_defaults(self) -> tuple[bool, bool] | None:
+        """Return channel-owned defaults for progress and tool-hint messages.
+
+        ``None`` keeps the global channel policy. Channels should override this
+        only when their transport requires different defaults.
+        """
+        return None
+
     def should_retry_send_error(self, error: Exception) -> bool:
         """Return whether the channel manager may retry a failed delivery.
 
@@ -254,6 +262,7 @@ class BaseChannel(ABC):
         session_key: str | None = None,
         is_dm: bool = False,
         authorization_id: str | None = None,
+        require_existing_session: bool = False,
     ) -> None:
         """Handle a message after checking its authorization subject.
 
@@ -306,6 +315,7 @@ class BaseChannel(ABC):
             media=media or [],
             metadata=meta,
             session_key_override=session_key,
+            require_existing_session=require_existing_session,
         )
 
         await self.bus.publish_inbound(msg)
