@@ -13,7 +13,9 @@ from websockets.exceptions import ConnectionClosed
 from websockets.frames import Close
 
 from nanobot.bus.events import (
+    INBOUND_META_RUNTIME_CONTROL,
     OUTBOUND_META_AGENT_UI,
+    RUNTIME_CONTROL_SESSION_DISCARD,
     OutboundMessage,
 )
 from nanobot.bus.outbound_events import (
@@ -32,11 +34,11 @@ from nanobot.channels.websocket.runtime import (
     _is_valid_chat_id,
     _parse_envelope,
     _parse_inbound_payload,
-    publish_runtime_model_update,
 )
 from nanobot.config.loader import load_config, save_config
 from nanobot.config.schema import Config, ModelPresetConfig
 from nanobot.runtime_context import RUNTIME_CONTEXT_INPUT_META, WEBUI_QUOTE_SOURCE
+from nanobot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
 from nanobot.session import webui_turns as wth
 from nanobot.session.manager import SessionManager
 from nanobot.webui.gateway_services import GatewayServices, build_gateway_services
@@ -191,6 +193,302 @@ def isolate_webui_workspace_state(tmp_path, monkeypatch) -> None:
     wth._WEBSOCKET_TURN_WALL_STARTED_AT.clear()
     wth._WEBSOCKET_TURN_IDS.clear()
     wth._WEBSOCKET_TURN_OWNERS.clear()
+
+
+async def _new_temporary_chat(
+    channel: WebSocketChannel,
+    connection: AsyncMock,
+) -> str:
+    channel._webui_connections.add(connection)
+    await channel._dispatch_envelope(
+        connection,
+        "webui-client",
+        {"type": "new_temporary_chat"},
+    )
+    payload = json.loads(connection.send.await_args.args[0])
+    assert payload["event"] == "attached"
+    assert payload["temporary"] is True
+    connection.send.reset_mock()
+    return payload["chat_id"]
+
+
+@pytest.mark.asyncio
+async def test_temporary_chat_is_transient_and_discarded(bus, tmp_path) -> None:
+    sessions = SessionManager(tmp_path)
+    selected_project = tmp_path / "selected-project"
+    selected_project.mkdir()
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(
+            bus,
+            session_manager=sessions,
+            workspace_path=tmp_path,
+        ),
+    )
+    connection = AsyncMock()
+    connection.remote_address = ("127.0.0.1", 5000)
+    chat_id = await _new_temporary_chat(channel, connection)
+    upload = tmp_path / "temporary-upload.txt"
+    upload.write_text("private attachment", encoding="utf-8")
+    channel.gateway.media.store_inbound_attachments = MagicMock(
+        return_value=([str(upload)], None),
+    )
+
+    await channel._dispatch_envelope(
+        connection,
+        "webui-client",
+        {
+            "type": "message",
+            "chat_id": chat_id,
+            "content": "read this",
+            "media": [{"data_url": "data:text/plain;base64,cHJpdmF0ZQ=="}],
+            "cli_apps": [{"name": "drawio"}],
+            "workspace_scope": {
+                "project_path": str(selected_project),
+                "access_mode": "full",
+            },
+            "turn_id": "turn-1",
+            "webui": True,
+        },
+    )
+
+    inbound = bus.publish_inbound.await_args_list[0].args[0]
+    assert inbound.session_key == f"websocket:{chat_id}"
+    assert inbound.session_key_override == f"websocket:{chat_id}"
+    assert inbound.require_existing_session is True
+    assert inbound.metadata["cli_apps"] == [{"name": "drawio"}]
+    assert inbound.metadata[WORKSPACE_SCOPE_METADATA_KEY] == {
+        "project_path": str(tmp_path.resolve()),
+        "access_mode": "restricted",
+    }
+    session = sessions.get_cached(inbound.session_key)
+    assert session is not None
+    assert session.policy.persist is False
+    assert upload.exists()
+    assert read_transcript_lines(inbound.session_key) == []
+    assert [payload["event"] for payload in _sent_ws_payloads(connection)] == [
+        "message_accepted",
+    ]
+
+    await channel._dispatch_envelope(
+        connection,
+        "webui-client",
+        {"type": "discard_temporary_chat", "chat_id": chat_id},
+    )
+
+    control = bus.publish_inbound.await_args_list[1].args[0]
+    assert bus.publish_inbound.await_count == 2
+    assert control.session_key == inbound.session_key
+    assert control.metadata[INBOUND_META_RUNTIME_CONTROL] == (
+        RUNTIME_CONTROL_SESSION_DISCARD
+    )
+    assert sessions.get_cached(inbound.session_key) is None
+    assert chat_id not in channel._subs
+    assert chat_id not in channel._conn_chats.get(connection, set())
+    assert not upload.exists()
+    assert read_transcript_lines(inbound.session_key) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["/goal private", "/trigger later", "/dream"])
+async def test_temporary_chat_rejects_persistent_commands(bus, tmp_path, content) -> None:
+    sessions = SessionManager(tmp_path)
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(bus, session_manager=sessions, workspace_path=tmp_path),
+    )
+    connection = AsyncMock()
+    connection.remote_address = ("127.0.0.1", 5000)
+    chat_id = await _new_temporary_chat(channel, connection)
+
+    await channel._dispatch_envelope(connection, "webui-client", {
+        "type": "message",
+        "chat_id": chat_id,
+        "content": content,
+        "webui": True,
+    })
+
+    assert bus.publish_inbound.await_count == 0
+    assert sessions.get_cached(f"websocket:{chat_id}") is not None
+    assert json.loads(connection.send.await_args.args[0])["detail"] == (
+        "temporary_chat_command_rejected"
+    )
+
+
+@pytest.mark.asyncio
+async def test_disconnect_discards_temporary_chat(bus, tmp_path) -> None:
+    sessions = SessionManager(tmp_path)
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(
+            bus,
+            session_manager=sessions,
+            workspace_path=tmp_path,
+        ),
+    )
+    connection = AsyncMock()
+    chat_id = await _new_temporary_chat(channel, connection)
+
+    await channel._dispatch_envelope(
+        connection,
+        "webui-client",
+        {
+            "type": "message",
+            "chat_id": chat_id,
+            "content": "hello",
+            "webui": True,
+        },
+    )
+    await channel._cleanup_connection(connection)
+
+    session_key = f"websocket:{chat_id}"
+    control = bus.publish_inbound.await_args_list[-1].args[0]
+    assert control.session_key == session_key
+    assert control.metadata[INBOUND_META_RUNTIME_CONTROL] == (
+        RUNTIME_CONTROL_SESSION_DISCARD
+    )
+    assert sessions.get_cached(session_key) is None
+    assert chat_id not in channel._subs
+
+
+@pytest.mark.asyncio
+async def test_temporary_chat_creation_requires_authenticated_webui_connection(bus, tmp_path) -> None:
+    sessions = SessionManager(tmp_path)
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(bus, session_manager=sessions, workspace_path=tmp_path),
+    )
+    connection = AsyncMock()
+
+    await channel._dispatch_envelope(
+        connection,
+        "generic-websocket-client",
+        {"type": "new_temporary_chat"},
+    )
+
+    assert json.loads(connection.send.await_args.args[0])["detail"] == "access_denied"
+    assert sessions.list_sessions() == []
+
+
+@pytest.mark.asyncio
+async def test_temporary_chat_cannot_be_claimed_by_another_connection(bus, tmp_path) -> None:
+    sessions = SessionManager(tmp_path)
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(bus, session_manager=sessions, workspace_path=tmp_path),
+    )
+    owner = AsyncMock()
+    other = AsyncMock()
+    channel._webui_connections.add(other)
+    chat_id = await _new_temporary_chat(channel, owner)
+
+    await channel._dispatch_envelope(
+        other,
+        "other-webui-client",
+        {
+            "type": "message",
+            "chat_id": chat_id,
+            "content": "claim it",
+            "webui": True,
+        },
+    )
+
+    assert json.loads(other.send.await_args.args[0])["detail"] == (
+        "temporary_chat_unavailable"
+    )
+    assert bus.publish_inbound.await_count == 0
+    assert sessions.get_cached(f"websocket:{chat_id}") is not None
+
+
+@pytest.mark.asyncio
+async def test_temporary_chat_cannot_persist_workspace_scope(bus, tmp_path) -> None:
+    sessions = SessionManager(tmp_path)
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(bus, session_manager=sessions, workspace_path=tmp_path),
+    )
+    connection = AsyncMock()
+    chat_id = await _new_temporary_chat(channel, connection)
+
+    await channel._dispatch_envelope(
+        connection,
+        "webui-client",
+        {
+            "type": "set_workspace_scope",
+            "chat_id": chat_id,
+            "workspace_scope": {
+                "project_path": str(tmp_path),
+                "access_mode": "full",
+            },
+        },
+    )
+
+    payload = json.loads(connection.send.await_args.args[0])
+    assert payload["detail"] == "temporary_chat_workspace_rejected"
+    session = sessions.get_cached(f"websocket:{chat_id}")
+    assert session is not None
+    assert WORKSPACE_SCOPE_METADATA_KEY not in session.metadata
+    assert sessions.list_sessions() == []
+
+
+@pytest.mark.asyncio
+async def test_temporary_looking_id_does_not_define_session_policy(bus, tmp_path) -> None:
+    sessions = SessionManager(tmp_path)
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(bus, session_manager=sessions, workspace_path=tmp_path),
+    )
+    connection = AsyncMock()
+    channel._webui_connections.add(connection)
+
+    await channel._dispatch_envelope(
+        connection,
+        "webui-client",
+        {
+            "type": "message",
+            "chat_id": "temporary-looking-but-persistent",
+            "content": "/goal ordinary chat",
+            "webui": True,
+        },
+    )
+
+    inbound = bus.publish_inbound.await_args.args[0]
+    assert inbound.require_existing_session is False
+    assert inbound.session_key_override is None
+    session = sessions.get_cached("websocket:temporary-looking-but-persistent")
+    assert session is not None
+    assert session.policy.persist is True
+
+
+@pytest.mark.asyncio
+async def test_discard_temporary_chat_does_not_detach_persistent_chat(bus, tmp_path) -> None:
+    sessions = SessionManager(tmp_path)
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]},
+        bus,
+        gateway=_basic_handler(bus, session_manager=sessions, workspace_path=tmp_path),
+    )
+    connection = AsyncMock()
+    channel._attach(connection, "ordinary-chat")
+
+    await channel._dispatch_envelope(
+        connection,
+        "webui-client",
+        {"type": "discard_temporary_chat", "chat_id": "ordinary-chat"},
+    )
+
+    assert json.loads(connection.send.await_args.args[0])["detail"] == (
+        "temporary_chat_unavailable"
+    )
+    assert connection in channel._subs["ordinary-chat"]
+    assert "ordinary-chat" in channel._conn_chats[connection]
 
 
 @pytest.mark.asyncio
@@ -1105,8 +1403,14 @@ async def test_send_broadcasts_runtime_model_updates() -> None:
     mock_ws = AsyncMock()
     channel._attach(mock_ws, "chat-1")
 
-    publish_runtime_model_update(bus, "openai/gpt-4.1", "fast")
-    await channel.send(bus.outbound.get_nowait())
+    await channel.send(
+        OutboundMessage(
+            channel="websocket",
+            chat_id="*",
+            content="",
+            event=RuntimeModelUpdatedEvent(model="openai/gpt-4.1", model_preset="fast"),
+        )
+    )
 
     payload = json.loads(mock_ws.send.call_args[0][0])
     assert payload["event"] == "runtime_model_updated"
@@ -1139,26 +1443,6 @@ async def test_send_scopes_turn_model_updates_to_the_subscribed_chat() -> None:
         "model_name": "deepseek/deepseek-chat",
     }
     chat_two.send.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_runtime_model_update_publisher_uses_websocket_outbound_event() -> None:
-    bus = MessageBus()
-
-    publish_runtime_model_update(
-        bus,
-        "openai/gpt-4.1",
-        "fast",
-    )
-
-    event = bus.outbound.get_nowait()
-    assert event.channel == "websocket"
-    assert event.chat_id == "*"
-    assert event.content == ""
-    assert event.metadata == {}
-    assert isinstance(event.event, RuntimeModelUpdatedEvent)
-    assert event.event.model == "openai/gpt-4.1"
-    assert event.event.model_preset == "fast"
 
 
 @pytest.mark.asyncio
