@@ -1971,15 +1971,52 @@ Add MCP servers to your `config.json`:
 }
 ```
 
-Two transport modes are supported:
+MCP servers can run locally over stdio or connect remotely over HTTP:
 
-| Mode | Config | Example |
+| Connection | Config | Example |
 |------|--------|---------|
 | **Stdio** | `command` + `args` | Local process via `npx` / `uvx` |
-| **HTTP** | `url` + `headers` (optional) | Remote endpoint (`https://mcp.example.com/sse`) |
+| **Streamable HTTP / SSE** | `url` + `headers` (optional) | Remote endpoint (`https://mcp.example.com/mcp`) |
+
+Remote HTTP servers may use browser OAuth instead of static headers. In the
+WebUI, open **Apps → MCP → Add MCP server**, choose **Custom**, select HTTP or
+SSE, and choose **OAuth** under **Authentication**. Save the server, then choose
+**Connect**. For manual configuration, add `auth: "oauth"` and open
+**Apps → MCP** to connect. Known presets such as Xmind, Notion, and Linear add
+the config automatically on first click.
+
+```json
+{
+  "tools": {
+    "mcpServers": {
+      "notion": {
+        "type": "streamableHttp",
+        "url": "https://mcp.notion.com/mcp",
+        "auth": "oauth"
+      }
+    }
+  }
+}
+```
+
+nanobot opens the server's authorization page and handles the callback through
+the gateway. The tools become available immediately when hot reload succeeds;
+otherwise the WebUI asks for a restart. OAuth tokens and dynamic client
+registration data are stored in the nanobot data directory under
+`auth/mcp.json`; they are not written to `config.json`. Removing the MCP server
+from Apps also removes its saved OAuth credentials. Normal gateway startup never
+opens a browser or registers a new OAuth client when credentials are
+missing—interactive authorization starts only after a user clicks **Connect**.
+
+For a remotely accessed WebUI, HTTPS is recommended. Configure
+`channels.websocket.publicWsUrl` with the browser-facing `wss://` endpoint so
+nanobot can register the matching HTTPS callback and finish automatically. A
+loopback WebUI may use HTTP. When a remote WebUI is served over plain HTTP,
+nanobot instead registers a localhost callback and asks you to paste the complete
+callback URL from the browser address bar after authorization.
 
 > [!IMPORTANT]
-> HTTP/SSE MCP URLs are validated before probing or connecting, and every outgoing MCP HTTP request is validated again before redirects are followed. `localhost`, `127.0.0.1`, RFC1918/private IPs, CGNAT/Tailscale ranges, link-local addresses, and cloud metadata endpoints are blocked by default. This can break previously working local or private HTTP MCP configs until the endpoint is explicitly allowed with `tools.ssrfWhitelist`, preferably with a single-host CIDR such as `127.0.0.1/32`, `::1/128`, or `192.168.1.50/32`. Stdio MCP servers are not affected.
+> HTTP/SSE MCP URLs are validated before probing or connecting, and every outgoing MCP HTTP request—including OAuth metadata, client registration, token exchange, and redirects—is validated again. `localhost`, `127.0.0.1`, RFC1918/private IPs, CGNAT/Tailscale ranges, link-local addresses, and cloud metadata endpoints are blocked by default. This can break previously working local or private HTTP MCP configs until the endpoint is explicitly allowed with `tools.ssrfWhitelist`, preferably with a single-host CIDR such as `127.0.0.1/32`, `::1/128`, or `192.168.1.50/32`. Stdio MCP servers are not affected.
 
 Use `toolTimeout` to override the default 30s per-call timeout for slow servers:
 
