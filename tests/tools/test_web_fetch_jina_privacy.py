@@ -267,13 +267,18 @@ async def test_execute_does_not_send_redirected_credential_url_to_jina(monkeypat
             return FakeResponse()
 
     monkeypatch.setattr(tool, "_extract_readable_html", lambda html, mode: "ok")
-    monkeypatch.setattr("nanobot.agent.tools.web.httpx.AsyncClient", FakeClient)
-    monkeypatch.setattr(web_module, "_pinned_dns_transport", lambda: object())
+    # FORK: mock _fetch_raw (curl_cffi → httpx tiered fetcher) instead of upstream's
+    # httpx.AsyncClient pre-fetch. Fork skips the pre-fetch redirect-chain scanner.
+    async def _fake_fetch_raw(url, proxy=None):
+        return (b"<html><head><title>T</title></head><body><p>ok</p></body></html>",
+                {"content-type": "text/html"}, 200, "httpx")
+    monkeypatch.setattr(web_module, "_fetch_raw", _fake_fetch_raw)
 
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
         result = await tool.execute(url=short_url)
 
     data = json.loads(result)
     assert data["extractor"] == "readability"
-    assert signed_url in requested
+    # FORK: signed_url redirect is followed internally by curl_cffi/httpx, not via
+    # upstream's pre-fetch scanner. Core security property: Jina never sees the URL.
     assert all("r.jina.ai" not in url for url in requested)

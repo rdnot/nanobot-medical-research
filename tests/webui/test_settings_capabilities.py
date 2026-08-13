@@ -51,7 +51,7 @@ def test_capability_domain_updates_representative_settings() -> None:
     )
     payload = capability_settings_payload(config, oauth_status=_oauth_status)
 
-    assert (web_changed, web_restart) == (True, True)
+    assert (web_changed, web_restart) == (True, False)  # FORK: use_jina_reader defaults False — False→False = no restart
     assert image_changed is True
     assert transcription_changed is True
     assert (network_changed, access_mode) == (True, "default")
