@@ -203,8 +203,13 @@ async def test_execute_fetches_credential_urls_locally(monkeypatch) -> None:
             return FakeResponse()
 
     monkeypatch.setattr(tool, "_extract_readable_html", lambda html, mode: "ok")
-    monkeypatch.setattr("nanobot.agent.tools.web.httpx.AsyncClient", FakeClient)
-    monkeypatch.setattr(web_module, "_pinned_dns_transport", lambda: object())
+    # FORK: mock _fetch_raw (curl_cffi → httpx tiered fetcher) instead of upstream's
+    # httpx.AsyncClient pre-fetch. Fork's 2-tier fetcher handles the fetch; credential
+    # URLs are already blocked from Jina by _url_carries_credentials().
+    async def _fake_fetch_raw(url, proxy=None):
+        return (b"<html><head><title>T</title></head><body><p>ok</p></body></html>",
+                {"content-type": "text/html"}, 200, "httpx")
+    monkeypatch.setattr(web_module, "_fetch_raw", _fake_fetch_raw)
 
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
         result = await tool.execute(url="https://example.com/download?token=abc123")
