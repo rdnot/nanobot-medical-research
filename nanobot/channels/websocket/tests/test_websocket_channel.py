@@ -129,6 +129,14 @@ def _basic_handler(bus: Any, **kw: Any) -> GatewayServices:
     )
 
 
+async def _connect_when_ready(url: str) -> Any:
+    while True:
+        try:
+            return await websockets.connect(url)
+        except OSError:
+            await asyncio.sleep(0.02)
+
+
 async def _webui_mutate(
     client: Any,
     action: str,
@@ -709,7 +717,7 @@ async def test_token_issue_route_requires_secret_when_static_token_configured(bu
         bus,
         port=port,
         token="static-token",
-        tokenIssuePath="/auth/token",
+        tokenIssuePath="/custom-token",
         websocketRequiresToken=True,
     )
 
@@ -717,15 +725,16 @@ async def test_token_issue_route_requires_secret_when_static_token_configured(bu
     await asyncio.sleep(0.3)
 
     try:
-        denied = await _http_get(f"http://127.0.0.1:{port}/auth/token")
+        denied = await _http_get(f"http://127.0.0.1:{port}/custom-token")
         assert denied.status_code == 401
 
         allowed = await _http_get(
-            f"http://127.0.0.1:{port}/auth/token",
+            f"http://127.0.0.1:{port}/custom-token",
             headers={"Authorization": "Bearer static-token"},
         )
         assert allowed.status_code == 200
         assert allowed.json()["token"].startswith("nbwt_")
+        assert allowed.headers["Cache-Control"] == "no-store"
     finally:
         await channel.stop()
         await server_task
@@ -1027,6 +1036,63 @@ async def test_webui_persists_sidebar_state_larger_than_http_request_line(
         "ok": True,
         "result": saved,
     }
+
+
+@pytest.mark.asyncio
+async def test_webui_sidebar_state_update_broadcasts_workbench_to_other_devices(
+    bus: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    channel = _ch(bus)
+    source = AsyncMock()
+    source.request = SimpleNamespace(headers=Headers())
+    other_device = AsyncMock()
+    channel._webui_connections.update({source, other_device})
+    request_id = "sidebar-workbench-state"
+
+    await channel._dispatch_envelope(
+        source,
+        "webui-client",
+        {
+            "type": "webui_request",
+            "request_id": request_id,
+            "action": "sidebar.update",
+            "payload": {
+                "state": {
+                    "workbench": {
+                        "version": 1,
+                        "tabs": {
+                            "tab:websocket:a": {
+                                "explicit": True,
+                                "title": "Research",
+                                "paneKeys": ["websocket:a", "websocket:b"],
+                                "layoutPaneKeys": ["websocket:b", "websocket:a"],
+                                "layout": "columns",
+                                "splitRatios": [0.35],
+                            }
+                        },
+                    }
+                }
+            },
+        },
+    )
+    await asyncio.gather(*tuple(channel._webui_request_tasks.values()))
+
+    event = json.loads(other_device.send.await_args.args[0])
+    assert event["event"] == "sidebar_state_updated"
+    assert event["state"]["workbench"]["tabs"]["tab:websocket:a"]["paneKeys"] == [
+        "websocket:a",
+        "websocket:b",
+    ]
+    assert event["state"]["workbench"]["tabs"]["tab:websocket:a"]["layoutPaneKeys"] == [
+        "websocket:b",
+        "websocket:a",
+    ]
+    assert event["state"]["workbench"]["tabs"]["tab:websocket:a"]["splitRatios"] == [
+        0.35
+    ]
 
 
 @pytest.mark.asyncio
@@ -2865,10 +2931,13 @@ async def test_end_to_end_client_receives_ready_and_agent_sees_inbound(bus: Magi
     channel = _ch(bus, port=port)
 
     server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
 
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=tester") as client:
+        client = await asyncio.wait_for(
+            _connect_when_ready(f"ws://127.0.0.1:{port}/ws?client_id=tester"),
+            timeout=5,
+        )
+        async with client:
             ready_raw = await client.recv()
             ready = json.loads(ready_raw)
             assert ready["event"] == "ready"
@@ -3737,6 +3806,7 @@ async def test_token_issue_rejects_when_at_capacity(bus: MagicMock) -> None:
             headers={"Authorization": "Bearer s"},
         )
         assert resp.status_code == 429
+        assert resp.headers["Cache-Control"] == "no-store"
         data = resp.json()
         assert "error" in data
     finally:

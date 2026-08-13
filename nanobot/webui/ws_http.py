@@ -14,7 +14,7 @@ import json
 import mimetypes
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
@@ -121,6 +121,7 @@ from nanobot.webui.workspaces import WebUIWorkspaceController
 _SLOW_WEBUI_HTTP_LOG_MS = 1_000
 _WEBUI_MUTATION_PAYLOAD_ATTR = "_nanobot_webui_mutation_payload"
 _WEBUI_MUTATION_REQUEST_ATTR = "_nanobot_webui_mutation_request"
+_NO_STORE_HEADERS = [("Cache-Control", "no-store")]
 
 _WEBUI_MUTATION_PATHS = {
     "automation.enable": "/api/webui/automations/enable",
@@ -160,8 +161,10 @@ _WEBUI_MUTATION_PATHS = {
     "settings.pairing.approve": "/api/settings/pairing/approve",
     "settings.pairing.deny": "/api/settings/pairing/deny",
     "settings.mcp.enable": "/api/settings/mcp-presets/enable",
+    "settings.mcp.disable": "/api/settings/mcp-presets/disable",
     "settings.mcp.remove": "/api/settings/mcp-presets/remove",
     "settings.mcp.test": "/api/settings/mcp-presets/test",
+    "settings.mcp.reconnect": "/api/settings/mcp-presets/reconnect",
     "settings.mcp.custom": "/api/settings/mcp-presets/custom",
     "settings.mcp.import": "/api/settings/mcp-presets/import",
     "settings.mcp.import_cursor": "/api/settings/mcp-presets/import-cursor",
@@ -305,6 +308,8 @@ class GatewayHTTPHandler:
         local_trigger_pending_ids: Callable[[str], set[str]] | None = None,
         channel_feature_action: Callable[..., Any] | None = None,
         channel_runtime_status: Callable[[], dict[str, Any]] | None = None,
+        mcp_runtime_status: Callable[[], Mapping[str, str]] | None = None,
+        mcp_reload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         skill_state_action: Callable[[set[str]], None] | None = None,
         log: Any = logger,
     ) -> None:
@@ -347,6 +352,8 @@ class GatewayHTTPHandler:
             runtime_capabilities=self._capabilities,
             channel_feature_action=channel_feature_action,
             channel_runtime_status=channel_runtime_status,
+            mcp_runtime_status=mcp_runtime_status,
+            mcp_reload=mcp_reload,
             mcp_oauth_redirect_uri=self._mcp_oauth_redirect_uri,
         )
 
@@ -541,9 +548,16 @@ class GatewayHTTPHandler:
                 "too many outstanding issued tokens ({}), rejecting issuance",
                 len(self.tokens.issued_tokens),
             )
-            return _http_json_response({"error": "too many outstanding tokens"}, status=429)
+            return _http_json_response(
+                {"error": "too many outstanding tokens"},
+                status=429,
+                extra_headers=_NO_STORE_HEADERS,
+            )
         token_value = self.tokens.issue_token(self.config.token_ttl_s)
-        return _http_json_response(token_response_payload(token_value, self.config.token_ttl_s))
+        return _http_json_response(
+            token_response_payload(token_value, self.config.token_ttl_s),
+            extra_headers=_NO_STORE_HEADERS,
+        )
 
     # -- Bootstrap ----------------------------------------------------------
 
@@ -573,7 +587,7 @@ class GatewayHTTPHandler:
                 "runtime_surface": self._runtime_surface,
                 "runtime_capabilities": self._capabilities,
             }
-            return _http_json_response(payload)
+            return _http_json_response(payload, extra_headers=_NO_STORE_HEADERS)
 
         api_token_allowed = bool(secret) or is_local_browser
         if not self.tokens.can_issue(include_api_token=api_token_allowed):
@@ -581,6 +595,7 @@ class GatewayHTTPHandler:
                 json.dumps({"error": "too many outstanding tokens"}).encode("utf-8"),
                 status=429,
                 content_type="application/json; charset=utf-8",
+                extra_headers=_NO_STORE_HEADERS,
             )
         token = self.tokens.issue_token(self.config.token_ttl_s, audience="webui")
         api_token = (
@@ -605,7 +620,7 @@ class GatewayHTTPHandler:
         }
         if api_token is not None:
             payload["api_token"] = api_token
-        return _http_json_response(payload)
+        return _http_json_response(payload, extra_headers=_NO_STORE_HEADERS)
 
     def _bootstrap_ws_url(self, request: Any) -> str:
         headers = getattr(request, "headers", {}) or {}
