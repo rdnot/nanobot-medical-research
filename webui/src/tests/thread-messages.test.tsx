@@ -16,6 +16,54 @@ afterEach(() => {
 });
 
 describe("ThreadMessages", () => {
+  it("shows optimistic turn progress in the thread before the first agent output", () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-08-13T10:00:05.000Z").getTime();
+    vi.setSystemTime(now);
+    const prompt: UIMessage = {
+      id: "u-optimistic",
+      role: "user",
+      content: "check this",
+      turnId: "turn-optimistic",
+      turnPhase: "user",
+      deliveryStatus: "sending",
+      createdAt: now - 5_000,
+    };
+    const { rerender } = render(
+      <ThreadMessages
+        messages={[prompt]}
+        isStreaming
+        activeTurnId="turn-optimistic"
+        runStartedAt={(now - 5_000) / 1000}
+      />,
+    );
+
+    expect(screen.getByRole("status", { name: "Thinking for 5s" })).toBeInTheDocument();
+
+    rerender(
+      <ThreadMessages
+        messages={[
+          { ...prompt, deliveryStatus: "accepted" },
+          {
+            id: "t-optimistic",
+            role: "tool",
+            kind: "trace",
+            content: "web_search()",
+            traces: ["web_search()"],
+            turnId: "turn-optimistic",
+            turnPhase: "activity",
+            createdAt: now,
+          },
+        ]}
+        isStreaming
+        activeTurnId="turn-optimistic"
+        runStartedAt={(now - 5_000) / 1000}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Working for 5s" })).toBeInTheDocument();
+  });
+
   it("does not move a mounted tail answer into offscreen rendering on the next turn", () => {
     const completed: UIMessage[] = [
       { id: "u1", role: "user", content: "question", createdAt: 1 },
@@ -497,6 +545,66 @@ describe("ThreadMessages", () => {
 
     expect(screen.getByText("Working for 3m 50s")).toBeInTheDocument();
     expect(screen.queryByText("Working for 10s")).not.toBeInTheDocument();
+  });
+
+  it("keeps a guided run's timer on its original activity cluster", () => {
+    vi.useFakeTimers();
+    const startedAt = 1_700_000_000_000;
+    vi.setSystemTime(startedAt + 215_000);
+    const messages: UIMessage[] = [
+      {
+        id: "u-original",
+        role: "user",
+        content: "research this",
+        turnId: "turn-original",
+        turnPhase: "user",
+        turnSeq: 0,
+        createdAt: startedAt,
+      },
+      {
+        id: "t-original",
+        role: "tool",
+        kind: "trace",
+        content: "web_search()",
+        traces: ["web_search()"],
+        turnId: "turn-original",
+        turnPhase: "activity",
+        turnSeq: 1,
+        createdAt: startedAt + 500,
+      },
+      {
+        id: "a-original",
+        role: "assistant",
+        content: "Continuing the search.",
+        latencyMs: 1_000,
+        turnId: "turn-original",
+        turnPhase: "answer",
+        turnSeq: 2,
+        createdAt: startedAt + 1_000,
+      },
+      {
+        id: "u-guidance",
+        role: "user",
+        content: "How is it going?",
+        turnId: "turn-guidance",
+        turnPhase: "user",
+        turnSeq: 0,
+        createdAt: startedAt + 215_000,
+      },
+    ];
+
+    render(
+      <ThreadMessages
+        messages={messages}
+        isStreaming
+        activeTurnId="turn-original"
+        runStartedAt={startedAt / 1000}
+      />,
+    );
+
+    expect(screen.getByText("Working for 3m 35s")).toBeInTheDocument();
+    expect(screen.queryByText("Worked for 1s")).not.toBeInTheDocument();
+    expect(screen.queryByText("Thinking for 3m 35s")).not.toBeInTheDocument();
   });
 
   it("folds final answer reasoning into the preceding activity timeline", () => {

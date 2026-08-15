@@ -814,8 +814,11 @@ export function ThreadShell({
   const rememberedViewportTurnId = chatId
     ? activeViewportTurnByChatIdRef.current.get(chatId) ?? null
     : null;
+  const canonicalRunTurnId = chatId && messagesReady && turnActive
+    ? client.getRunTurnId(chatId)
+    : null;
   const viewportTurnId = messagesReady && turnActive
-    ? rememberedViewportTurnId ?? restoredViewportTurnId
+    ? canonicalRunTurnId ?? rememberedViewportTurnId ?? restoredViewportTurnId
     : null;
   const activeTurnStartedHere =
     viewportTurnId !== null && viewportTurnId === submittedViewportTurnId;
@@ -1313,7 +1316,12 @@ export function ThreadShell({
     (content: string, images?: SendAttachment[], options?: SendOptions) => {
       setFallbackModelName(null);
       const submitted = send(content, images, withWorkspaceScope(options));
-      if (chatId && submitted && !submitted.sideChannel) {
+      if (
+        chatId
+        && submitted
+        && !submitted.sideChannel
+        && options?.continueActiveTurn !== true
+      ) {
         activeViewportTurnByChatIdRef.current.set(chatId, submitted.turnId);
         setSubmittedViewportTurnId(submitted.turnId);
       }
@@ -1458,7 +1466,6 @@ export function ThreadShell({
           skills={skills}
           onStop={stop}
           onTranscribeAudio={transcribeAudio}
-          runStartedAt={currentRunStartedAt}
           goalState={currentGoalState}
           workspaceScope={workspaceScope}
           workspaceControlsHidden={temporary}
@@ -1505,7 +1512,6 @@ export function ThreadShell({
           sessions={mentionSessions}
           skills={skills}
           surfaceRef={composerSurfaceRef}
-          runStartedAt={currentRunStartedAt}
           onTranscribeAudio={transcribeAudio}
           goalState={currentGoalState}
           workspaceScope={workspaceScope}
@@ -1579,6 +1585,7 @@ export function ThreadShell({
             messages={displayMessages}
             temporary={temporary}
             isStreaming={turnActive}
+            runStartedAt={currentRunStartedAt}
             emptyState={emptyState}
             composer={composerPortalTarget === undefined ? composer : null}
             activeTurnId={viewportTurnId}

@@ -554,7 +554,7 @@ describe("ThreadComposer", () => {
     expect(input.className).toContain("min-h-[50px]");
     expect(input.className).toContain("text-[16px]");
     expect(input.parentElement?.parentElement?.className).toContain("max-w-[49.5rem]");
-    expect(input.parentElement?.parentElement?.className).toContain("rounded-[22px]");
+    expect(input.parentElement?.parentElement?.className).toContain("rounded-panel");
     expect(input.parentElement?.parentElement?.className).not.toContain("shadow-");
     expect(screen.getByRole("button", { name: "Attach files" }).className).toContain("bg-card");
     expect(screen.getByRole("button", { name: "Send message" }).className).toContain("bg-foreground");
@@ -1326,54 +1326,21 @@ describe("ThreadComposer", () => {
     expect(screen.getByLabelText("Paste path")).toBeInTheDocument();
   });
 
-  it("shows turn run timer when runStartedAt is set", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date((1_000 + 125) * 1000));
-
-    render(
-      <ThreadComposer
-        onSend={vi.fn()}
-        placeholder="Type your message..."
-        runStartedAt={1000}
-      />,
-    );
-
-    const status = screen.getByRole("status");
-    expect(status).toHaveTextContent(/Running/);
-    expect(status).toHaveTextContent(/2:05/);
-    expect(status).toHaveClass("composer-status-drawer-content");
-    expect(status.closest("[data-composer-status-drawer]")).toHaveAttribute(
-      "data-state",
-      "open",
-    );
-    expect(status.querySelector(".run-pulse-icon")).not.toBeNull();
-
-    vi.useRealTimers();
-  });
-
-  it("opens and closes the run timer through one persistent drawer", () => {
+  it("closes the sustained goal through its existing drawer", () => {
     const { container, rerender } = render(
       <ThreadComposer
         onSend={vi.fn()}
         placeholder="Type your message..."
-        runStartedAt={null}
+        goalState={{
+          active: true,
+          objective: "Ship the release",
+          ui_summary: "Preparing release",
+        }}
       />,
     );
 
     const drawer = container.querySelector("[data-composer-status-drawer]");
     expect(drawer).not.toBeNull();
-    expect(drawer).toHaveAttribute("data-state", "closed");
-    expect(drawer).toHaveAttribute("aria-hidden", "true");
-
-    rerender(
-      <ThreadComposer
-        onSend={vi.fn()}
-        placeholder="Type your message..."
-        runStartedAt={Math.floor(Date.now() / 1000)}
-      />,
-    );
-
-    expect(container.querySelector("[data-composer-status-drawer]")).toBe(drawer);
     expect(drawer).toHaveAttribute("data-state", "open");
     expect(drawer).not.toHaveAttribute("aria-hidden");
     const status = screen.getByRole("status");
@@ -1383,7 +1350,7 @@ describe("ThreadComposer", () => {
       <ThreadComposer
         onSend={vi.fn()}
         placeholder="Type your message..."
-        runStartedAt={null}
+        goalState={{ active: false }}
       />,
     );
 
@@ -1392,6 +1359,9 @@ describe("ThreadComposer", () => {
     expect(drawer).toHaveAttribute("aria-hidden", "true");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
     expect(drawer?.querySelector('[role="status"]')).toBe(status);
+
+    fireEvent.transitionEnd(drawer as Element, { propertyName: "grid-template-rows" });
+    expect(container.querySelector("[data-composer-status-drawer]")).toBeNull();
   });
 
   it("opens an upward anchored goal panel with markdown content when expand is clicked", async () => {
@@ -1837,7 +1807,7 @@ describe("ThreadComposer", () => {
     });
   });
 
-  it("rejects session drops that are unavailable to the composer", () => {
+  it("rejects self-session drops that are unavailable to the composer", () => {
     render(
       <ThreadComposer
         onSend={vi.fn()}
