@@ -1843,6 +1843,7 @@ async def test_turn_usage_is_persisted_with_the_saved_session(tmp_path: Path) ->
             [],
             [*initial_messages, {"role": "assistant", "content": "done"}],
             "stop",
+            [],
             False,
         )
 
