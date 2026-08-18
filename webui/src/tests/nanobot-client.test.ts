@@ -71,6 +71,35 @@ afterEach(() => {
 });
 
 describe("NanobotClient", () => {
+  it("reconciles simultaneous client submissions to the gateway-owned turn", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    const socket = lastSocket();
+    socket.fakeOpen();
+
+    client.sendMessage("shared-chat", "from terminal B", undefined, {
+      turnId: "turn-b",
+    });
+    expect(client.getRunTurnId("shared-chat")).toBe("turn-b");
+
+    socket.fakeMessage({
+      event: "message_accepted",
+      chat_id: "shared-chat",
+      turn_id: "turn-b",
+      active_turn_id: "turn-a",
+      starts_turn: false,
+      started_at: 1_700_000_000,
+    });
+
+    expect(client.getRunTurnId("shared-chat")).toBe("turn-a");
+    expect(client.getRunStartedAt("shared-chat")).toBe(1_700_000_000);
+    expect(client.hasUnsettledRun("shared-chat")).toBe(true);
+  });
+
   it("correlates successful WebUI mutation replies by request id", async () => {
     const client = new NanobotClient({
       url: "ws://test",
@@ -170,6 +199,64 @@ describe("NanobotClient", () => {
       status: 503,
       message: "Socket closed before WebUI response",
     });
+  });
+
+  it("replays the exact serialized mutation frame after reconnect", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: true,
+      maxBackoffMs: 10,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    const firstSocket = lastSocket();
+    firstSocket.fakeOpen();
+
+    const payload = { id: "daily-summary", options: { force: false } };
+    const pending = client.requestMutation<{ ran: boolean }>("automation.run", payload);
+    const frame = firstSocket.sent.at(-1) as string;
+    const requestId = JSON.parse(frame).request_id;
+    payload.id = "weekly-summary";
+    payload.options.force = true;
+    const settled = expect(pending).resolves.toEqual({ ran: true });
+    firstSocket.fakeCloseWithCode(1006);
+
+    await vi.advanceTimersByTimeAsync(20);
+    const retrySocket = lastSocket();
+    retrySocket.fakeOpen();
+    expect(retrySocket.sent).toEqual([frame]);
+    retrySocket.fakeMessage({
+      event: "webui_response",
+      request_id: requestId,
+      ok: true,
+      result: { ran: true },
+    });
+
+    await settled;
+  });
+
+  it("does not retry a WebUI mutation after its timeout expires", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: true,
+      maxBackoffMs: 1_000,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    const firstSocket = lastSocket();
+    firstSocket.fakeOpen();
+
+    const pending = expect(
+      client.requestMutation("skill.install", { skill: "docs" }, 25),
+    ).rejects.toMatchObject({ status: 504 });
+    firstSocket.fakeCloseWithCode(1006);
+    await vi.advanceTimersByTimeAsync(25);
+    await pending;
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const retrySocket = lastSocket();
+    retrySocket.fakeOpen();
+    expect(retrySocket.sent).toEqual([]);
   });
 
   it("does not queue WebUI mutations before the authenticated socket opens", async () => {
