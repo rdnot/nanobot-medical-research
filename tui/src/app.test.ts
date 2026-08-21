@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { CliRenderEvents, TextareaRenderable, TextRenderable } from "@opentui/core"
+import { BoxRenderable, CliRenderEvents, TextareaRenderable, TextRenderable } from "@opentui/core"
 import {
   MockTreeSitterClient,
   createTestRenderer,
@@ -1279,9 +1279,9 @@ describe("NanobotTui layout", () => {
       expect(setup.renderer.width).toBe(width)
       expect(setup.renderer.height).toBe(height)
       expect(frame).not.toContain("undefined")
-      expect(occurrences(frame, "Ask nanobot anything")).toBeLessThanOrEqual(1)
+      expect(occurrences(frame, "Steer this turn…")).toBeLessThanOrEqual(1)
       if (width >= 30 && height >= 9) {
-        expect(occurrences(frame, "Ask nanobot anything")).toBe(1)
+        expect(occurrences(frame, "Steer this turn…")).toBe(1)
       }
       expect(occurrences(frame, "nanobot  ·  test/model")).toBe(height >= 14 ? 1 : 0)
     }
@@ -1529,8 +1529,7 @@ describe("NanobotTui layout", () => {
     const footer = setup.captureCharFrame().split("\n").find((line) => line.includes("Ready · 1.7s")) || ""
     expect(footer).toContain("Ready · 1.7s")
     expect(footer).toContain("50 tok/s")
-    expect(footer).toContain("1.2K in · 80 out")
-    expect(footer).toContain("75% cached")
+    expect(footer).toContain("1.2K in (75% cached) · 80 out")
     expect(footer).not.toContain("TTFT")
     expect(footer).not.toContain("enter send")
 
@@ -1774,13 +1773,18 @@ describe("NanobotTui layout", () => {
     expect(frame).toMatch(/Thinking\s+0s/u)
     expect(frame).not.toMatch(/[◐◓◑◒⠋⠙⠹⠸]/u)
     expect(frame).not.toContain("hidden reasoning")
-    const status = (app as unknown as {
+    const ui = app as unknown as {
       status: {
         content: { chunks: Array<{ fg?: { toInts(): number[] } }> }
         plainText: string
       }
-    }).status
+      composer: TextareaRenderable
+      composerFrame: BoxRenderable
+    }
+    const status = ui.status
     expect(status.plainText).toMatch(/^Thinking\s+0s/u)
+    expect(ui.composer.placeholder).toBe("Steer this turn…")
+    expect(ui.composerFrame.height).toBe(3)
     const shimmerColors = new Set(
       status.content.chunks
         .slice(0, "Thinking".length)
@@ -1803,7 +1807,11 @@ describe("NanobotTui layout", () => {
     expect(frame).toMatch(/Working\s+0s/u)
     expect(frame).not.toMatch(/[◐◓◑◒⠋⠙⠹⠸]/u)
     expect(frame).toContain("› Running  pwd")
+    expect(occurrences(frame, "pwd")).toBe(1)
+    expect(status.plainText).not.toContain("pwd")
     app.accept({ event: "turn_end", chat_id: "chat" })
+    await setup.flush()
+    expect(ui.composer.placeholder).toBe("Ask nanobot anything")
   })
 
   test("folds long tool traces without discarding their details", async () => {
@@ -1823,8 +1831,9 @@ describe("NanobotTui layout", () => {
     await setup.renderOnce()
     let frame = setup.captureCharFrame()
 
-    expect(frame).toContain("5 earlier steps · Ctrl+O expand")
+    expect(frame).toContain("7 earlier steps · Ctrl+O expand")
     expect(frame).not.toContain("tool_0")
+    expect(frame).toContain("tool_7")
     expect(frame).toContain("tool_9")
 
     setup.mockInput.pressKey("O", { ctrl: true })
@@ -1858,6 +1867,37 @@ describe("NanobotTui layout", () => {
     await setup.renderOnce()
     expect(activities.map((activity) => activity.expanded)).toEqual([true, false])
     app.accept({ event: "turn_end", chat_id: "chat" })
+  })
+
+  test("groups consecutive file activity only in the collapsed preview", async () => {
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    const app = mount(setup)
+    app.accept({
+      event: "message",
+      chat_id: "chat",
+      text: "file progress",
+      kind: "tool_hint",
+      tool_events: Array.from({ length: 6 }, (_, index) => ({
+        phase: "end" as const,
+        call_id: `read-${index}`,
+        name: "read_file",
+        arguments: { path: `/tmp/nanobot-workspace/src/file-${index}.ts` },
+      })),
+    })
+    await setup.renderOnce()
+    let frame = setup.captureCharFrame()
+
+    expect(frame).toContain("6 steps · Ctrl+O expand")
+    expect(frame).toContain("✓ Read 6 files")
+    expect(frame).not.toContain("src/file-0.ts")
+
+    setup.mockInput.pressKey("O", { ctrl: true })
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+
+    expect(frame).not.toContain("Read 6 files")
+    expect(frame).toContain("src/file-0.ts")
+    expect(frame).toContain("src/file-5.ts")
   })
 
   test("supports keyboard transcript navigation without rebuilding the layout", async () => {
@@ -2153,6 +2193,65 @@ describe("NanobotTui layout", () => {
     expect(sent).toEqual([])
     expect(setup.renderer.isDestroyed).toBe(true)
   })
+
+  test("detaches without sending a message or reporting a normal exit", async () => {
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    const sent: string[] = []
+    const detached: string[] = []
+    const exited: string[] = []
+    let closed = false
+    const transport = client(sent)
+    transport.close = () => { closed = true }
+    const app = NanobotTui.mount(
+      setup.renderer,
+      {
+        ...options,
+        onDetach: (chatId) => { if (chatId) detached.push(chatId) },
+        onExit: (chatId) => { exited.push(chatId) },
+      },
+      transport,
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+    )
+    const ui = app as unknown as {
+      composer: TextareaRenderable
+      commandMenu: { visible: boolean }
+    }
+
+    await setup.mockInput.typeText("/detach")
+    await setup.flush()
+    expect(ui.commandMenu.visible).toBe(true)
+    expect(setup.captureCharFrame()).toContain("/detach")
+
+    ui.composer.submit()
+    await waitUntil(() => closed)
+
+    expect(sent).toEqual([])
+    expect(detached).toEqual(["chat"])
+    expect(exited).toEqual([])
+    expect(setup.renderer.isDestroyed).toBe(true)
+  })
+
+  test("detaches before the gateway assigns a chat ID", async () => {
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    let detached = false
+    const transport = { ...client(), activeChatId: "" }
+    const app = NanobotTui.mount(
+      setup.renderer,
+      { ...options, onDetach: (chatId) => {
+        expect(chatId).toBeUndefined()
+        detached = true
+      } },
+      transport,
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+    )
+    const composer = (app as unknown as { composer: TextareaRenderable }).composer
+
+    composer.setText("/detach")
+    composer.submit()
+    await waitUntil(() => detached)
+
+    expect(setup.renderer.isDestroyed).toBe(true)
+  })
 })
 
 describe("NanobotTui in a Herdr pane", () => {
@@ -2176,6 +2275,10 @@ describe("NanobotTui in a Herdr pane", () => {
       new MockTreeSitterClient({ autoResolveTimeout: 0 }),
       host,
     )
+    const ui = app as unknown as {
+      composer: TextareaRenderable
+      composerFrame: BoxRenderable
+    }
 
     await setup.mockInput.typeText("/")
     await setup.flush()
@@ -2184,6 +2287,7 @@ describe("NanobotTui in a Herdr pane", () => {
     expect(commandFrame).toContain("/new-chat")
     expect(commandFrame).toContain("/branch")
     setup.mockInput.pressEscape()
+    ui.composer.setText("")
 
     app.accept({ event: "attached", chat_id: "chat" })
     app.accept({
@@ -2200,6 +2304,12 @@ describe("NanobotTui in a Herdr pane", () => {
       kind: "tool_hint",
       tool_events: [{ phase: "end", call_id: "read", name: "read_file", arguments: { path: "app.ts" } }],
     })
+    await setup.flush()
+    const activeFrame = setup.captureCharFrame()
+    expect(occurrences(activeFrame, "› Ship the Herdr integration")).toBe(1)
+    expect(occurrences(activeFrame, "app.ts")).toBe(1)
+    expect(ui.composer.placeholder).toBe("Steer this turn…")
+    expect(ui.composerFrame.height).toBe(3)
     app.accept({
       event: "turn_end",
       chat_id: "chat",
@@ -2214,7 +2324,7 @@ describe("NanobotTui in a Herdr pane", () => {
     const frame = setup.captureCharFrame()
 
     expect(sessions).toEqual(["chat"])
-    expect(frame).toContain("› Ship the Herdr integration")
+    expect(occurrences(frame, "› Ship the Herdr integration")).toBe(1)
     expect(frame).not.toContain(">_  nanobot")
     expect(frame).not.toContain("test/model")
     expect(states.some(({ state }) => state === "working")).toBe(true)

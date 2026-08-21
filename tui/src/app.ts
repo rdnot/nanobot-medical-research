@@ -94,6 +94,7 @@ interface AppOptions {
   version: string
   access: string
   theme: "auto" | ThemeMode
+  onDetach?: (chatId?: string) => void
   onExit?: (chatId: string) => void
 }
 
@@ -159,6 +160,7 @@ const LIGHT: Palette = {
 }
 
 const COMPOSER_PLACEHOLDER = "Ask nanobot anything"
+const ACTIVE_COMPOSER_PLACEHOLDER = "Steer this turn…"
 const SHIMMER_PAUSE = 16
 const SHIMMER_BAND = 4
 const SHIMMER_INTERVAL_MS = 80
@@ -192,6 +194,12 @@ const LOCAL_COMMANDS: TuiCommand[] = [
     title: "Branch from reply",
     description: "Continue from an earlier completed reply",
     action: "branch",
+  },
+  {
+    command: "/detach",
+    title: "Detach",
+    description: "Close this terminal UI and keep the agent running",
+    action: "detach",
   },
   {
     command: "/exit",
@@ -469,6 +477,7 @@ export class NanobotTui {
       treeSitterClient,
       (state) => this.handleTranscriptNavigation(state),
       !host.hosted,
+      options.workspace,
     )
     this.commandMenu = new CommandMenu(renderer, commandMenuTheme(this.palette))
     this.commandMenu.setCommands([], LOCAL_COMMANDS)
@@ -712,7 +721,7 @@ export class NanobotTui {
     this.shell.add(this.branchMenu.root)
     this.shell.add(this.contextPanel.root)
     this.shell.add(this.runtimeControls.menuRoot)
-    this.shell.add(this.title)
+    if (!host.hosted) this.shell.add(this.title)
     this.shell.add(this.queuePreview.root)
     this.shell.add(this.composerFrame)
     this.shell.add(statusRow)
@@ -835,6 +844,7 @@ export class NanobotTui {
       else if (command.command.action === "context") void this.openContext()
       else if (command.command.action === "diff") this.openDiff()
       else if (command.command.action === "branch") void this.openBranch()
+      else if (command.command.action === "detach") this.quit(true)
       else if (command.command.action === "exit") this.quit()
       else this.startNewChat()
       return
@@ -1254,6 +1264,7 @@ export class NanobotTui {
     }
     this.activeTurn = active
     this.updateMeta()
+    this.syncComposerPlaceholder()
     if (active) {
       this.activeStartedAt = startedAt ?? Date.now()
       this.shimmerFrame = 0
@@ -1272,14 +1283,11 @@ export class NanobotTui {
 
   private renderActiveStatus(): void {
     const elapsed = formatElapsed(Date.now() - this.activeStartedAt)
-    const progress = this.lastProgress
-      ? ` · ${this.lastProgress.replace(/^\s*[·›✓×]\s*/u, "")}`
-      : ""
     const navigation = this.transcriptNavigation.awayFromBottom ? " · Ctrl+End latest" : ""
     const queued = this.promptQueue.length ? ` · ${this.promptQueue.length} queued` : ""
     this.status.content = shimmerStatus(
       this.activeLabel,
-      `  ${elapsed}${progress}${queued}${navigation}`,
+      `  ${elapsed}${queued}${navigation}`,
       this.shimmerFrame,
       this.palette,
     )
@@ -1651,11 +1659,6 @@ export class NanobotTui {
 
   private updateTitle(): void {
     if (this.host.hosted) {
-      this.titleText.maxWidth = Math.max(8, this.renderer.width - 4)
-      this.titleText.content = this.currentTask ? `› ${this.currentTask}` : ""
-      // In a hosted pane this is the resume anchor, not decorative chrome.
-      // Keep it visible even when Herdr temporarily makes the pane very short.
-      this.title.visible = Boolean(this.currentTask)
       this.syncHostMetadata()
       return
     }
@@ -1766,12 +1769,14 @@ export class NanobotTui {
       ? null
       : this.sessionMenu.visible
         ? "Search sessions"
-        : this.branchMenu.visible ? "Search branch points" : COMPOSER_PLACEHOLDER
+        : this.branchMenu.visible
+          ? "Search branch points"
+          : this.activeTurn ? ACTIVE_COMPOSER_PLACEHOLDER : COMPOSER_PLACEHOLDER
     if (this.composer.placeholder !== placeholder) this.composer.placeholder = placeholder
   }
 
   private syncCommandMenu(): void {
-    const limit = this.renderer.height >= 20 ? 6 : 3
+    const limit = this.renderer.height >= 20 ? 7 : 3
     this.commandMenu.update(this.composer.plainText, limit)
     this.updateMeta()
   }
@@ -2310,7 +2315,7 @@ export class NanobotTui {
     }
   }
 
-  private quit(): void {
+  private quit(detach = false): void {
     if (this.quitting) return
     this.quitting = true
     this.submitGeneration += 1
@@ -2319,7 +2324,8 @@ export class NanobotTui {
     this.client.close()
     this.renderer.destroy()
     const chatId = this.client.activeChatId || this.options.chatId
-    if (chatId) this.options.onExit?.(chatId)
+    if (detach) this.options.onDetach?.(chatId)
+    else if (chatId) this.options.onExit?.(chatId)
   }
 
   private handleDestroy = (): void => {

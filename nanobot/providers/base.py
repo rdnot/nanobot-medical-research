@@ -25,6 +25,8 @@ DEFAULT_STREAM_IDLE_TIMEOUT_S = 90.0
 MAX_STREAM_IDLE_TIMEOUT_S = 3600.0
 RETRY_AFTER_BUFFER = 1
 
+RetryEventCallback = Callable[[str], Awaitable[None]]
+
 
 def resolve_stream_idle_timeout_s(
     *,
@@ -872,8 +874,9 @@ class LLMProvider(ABC):
         on_tool_call_delta: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         on_stream_recover: Callable[[], Awaitable[None]] | None = None,
         retry_mode: str = "standard",
-        on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
+        on_retry_wait: RetryEventCallback | None = None,
         provider_context: ProviderCallContext | None = None,
+        on_retry_exhausted: RetryEventCallback | None = None,
     ) -> LLMResponse:
         """Call chat_stream() with retry on transient provider failures."""
         if max_tokens is self._SENTINEL or max_tokens is None:
@@ -910,12 +913,13 @@ class LLMProvider(ABC):
             kw["provider_context"] = provider_context
         if on_stream_recover and getattr(self, "supports_stream_recover_callback", False):
             kw["on_stream_recover"] = _recover_stream
-        return await self._run_with_retry(
-            self._safe_chat_stream,
+        return await self._run_chat_with_retry(
             kw,
             messages,
+            stream=True,
             retry_mode=retry_mode,
             on_retry_wait=on_retry_wait,
+            on_retry_exhausted=on_retry_exhausted or on_retry_wait,
             should_retry_guard=lambda: not has_streamed_content,
             on_stream_recover=_recover_stream if on_stream_recover else None,
         )
@@ -930,8 +934,9 @@ class LLMProvider(ABC):
         reasoning_effort: object = _SENTINEL,
         tool_choice: str | dict[str, Any] | None = None,
         retry_mode: str = "standard",
-        on_retry_wait: Callable[[str], Awaitable[None]] | None = None,
+        on_retry_wait: RetryEventCallback | None = None,
         provider_context: ProviderCallContext | None = None,
+        on_retry_exhausted: RetryEventCallback | None = None,
     ) -> LLMResponse:
         """Call chat() with retry on transient provider failures.
 
@@ -956,12 +961,38 @@ class LLMProvider(ABC):
         )
         if provider_context is not None:
             kw["provider_context"] = provider_context
-        return await self._run_with_retry(
-            self._safe_chat,
+        return await self._run_chat_with_retry(
             kw,
             messages,
+            stream=False,
             retry_mode=retry_mode,
             on_retry_wait=on_retry_wait,
+            on_retry_exhausted=on_retry_exhausted or on_retry_wait,
+        )
+
+    async def _run_chat_with_retry(
+        self,
+        kw: dict[str, Any],
+        original_messages: list[dict[str, Any]],
+        *,
+        stream: bool,
+        retry_mode: str,
+        on_retry_wait: RetryEventCallback | None,
+        on_retry_exhausted: RetryEventCallback | None,
+        should_retry_guard: Callable[[], bool] | None = None,
+        on_stream_recover: Callable[[], Awaitable[None]] | None = None,
+    ) -> LLMResponse:
+        """Run one chat entry point through this provider's retry policy."""
+        call = self._safe_chat_stream if stream else self._safe_chat
+        return await self._run_with_retry(
+            call,
+            kw,
+            original_messages,
+            retry_mode=retry_mode,
+            on_retry_wait=on_retry_wait,
+            on_retry_exhausted=on_retry_exhausted,
+            should_retry_guard=should_retry_guard,
+            on_stream_recover=on_stream_recover,
         )
 
     @classmethod
@@ -1066,7 +1097,8 @@ class LLMProvider(ABC):
         original_messages: list[dict[str, Any]],
         *,
         retry_mode: str,
-        on_retry_wait: Callable[[str], Awaitable[None]] | None,
+        on_retry_wait: RetryEventCallback | None,
+        on_retry_exhausted: RetryEventCallback | None,
         should_retry_guard: Callable[[], bool] | None = None,
         on_stream_recover: Callable[[], Awaitable[None]] | None = None,
     ) -> LLMResponse:
@@ -1154,21 +1186,21 @@ class LLMProvider(ABC):
                     identical_error_count,
                     (response.content or "")[:120].lower(),
                 )
-                if on_retry_wait:
-                    await on_retry_wait(
+                if on_retry_exhausted:
+                    await on_retry_exhausted(
                         f"Persistent retry stopped after {identical_error_count} identical errors."
                     )
                 return response
 
             if not persistent and attempt > len(delays):
                 logger.warning(
-                    "LLM request failed after {} retries, giving up: {}",
+                    "LLM request failed after {} attempts, giving up: {}",
                     attempt,
                     (response.content or "")[:120].lower(),
                 )
-                if on_retry_wait:
-                    await on_retry_wait(
-                        f"Model request failed after {attempt} retries, giving up."
+                if on_retry_exhausted:
+                    await on_retry_exhausted(
+                        f"Model request failed after {attempt} attempts, giving up."
                     )
                 break
 

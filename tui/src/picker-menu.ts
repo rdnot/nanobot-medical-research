@@ -137,7 +137,7 @@ export class PickerMenu<T> {
           ? { backgroundColor: RGBA.fromHex(this.theme.selectedBackground) }
           : {}),
         attributes: selected ? TextAttributes.BOLD : 0,
-        onMouseOver: () => {
+        onMouseMove: () => {
           if (this.selected === index) return
           this.selected = index
           this.render()
