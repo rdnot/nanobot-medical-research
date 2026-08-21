@@ -21,12 +21,15 @@ import {
 import {
   NanobotClient,
   fetchHistory,
+  fetchGatewayConnection,
   fetchMentionCandidates,
   fetchSessionContext,
   fetchSessions,
   fetchSlashCommands,
+  type ApiReauthenticator,
   type ConnectionStatus,
   type FileEditEvent,
+  type GatewayApiConnection,
   type HistoryMessage,
   type InboundEvent,
   type MentionCandidate,
@@ -56,7 +59,6 @@ import {
   type TranscriptNavigation,
   type TranscriptTheme,
 } from "./transcript"
-import { rememberChat } from "./session-state"
 import { ComposerDraft } from "./composer-draft"
 import { BranchMenu, branchPoints } from "./branch-menu"
 import {
@@ -78,7 +80,9 @@ import {
 import { createTuiHost, currentGitBranch, type TuiHost } from "./host"
 
 interface AppOptions {
-  wsUrl: string
+  wsUrl?: string
+  bootstrapUrl?: string
+  bootstrapSecret?: string
   apiUrl: string
   apiToken: string
   chatId?: string
@@ -90,7 +94,7 @@ interface AppOptions {
   version: string
   access: string
   theme: "auto" | ThemeMode
-  statePath?: string
+  onExit?: (chatId: string) => void
 }
 
 interface ChatClient {
@@ -189,6 +193,12 @@ const LOCAL_COMMANDS: TuiCommand[] = [
     description: "Continue from an earlier completed reply",
     action: "branch",
   },
+  {
+    command: "/exit",
+    title: "Exit",
+    description: "Close this terminal UI",
+    action: "exit",
+  },
 ]
 
 function syntaxStyle(palette: Palette): SyntaxStyle {
@@ -249,7 +259,6 @@ function runtimeControlsTheme(palette: Palette) {
 function contextPanelTheme(palette: Palette): ContextPanelTheme {
   return {
     text: palette.text,
-    muted: palette.muted,
     border: palette.border,
     accent: palette.accent,
   }
@@ -328,6 +337,11 @@ function singleLine(value: string, limit = 120): string {
   return value.replace(/\s+/gu, " ").trim().slice(0, limit)
 }
 
+export function sessionExitMessage(chatId: string): string {
+  const sessionId = `websocket:${chatId}`
+  return `Resume with: nanobot agent --session ${sessionId}\n`
+}
+
 async function copyWithSystemClipboard(text: string): Promise<void> {
   const commands = process.platform === "darwin"
     ? [["pbcopy"]]
@@ -367,7 +381,6 @@ export class NanobotTui {
   private readonly status: TextRenderable
   private readonly meta: TextRenderable
   private readonly host: TuiHost
-  private readonly localCommands: TuiCommand[]
   private readonly draft = new ComposerDraft()
   private readonly promptQueue = new PromptQueue()
   private palette: Palette
@@ -425,6 +438,8 @@ export class NanobotTui {
   private hostBlocked = false
   private hostWorkspace: string
   private hostBranch: string
+  private readonly apiReauthenticator: ApiReauthenticator | undefined
+  private apiRefreshPromise: Promise<GatewayApiConnection> | null = null
 
   private constructor(
     renderer: CliRenderer,
@@ -440,14 +455,14 @@ export class NanobotTui {
     this.modelPreset = options.modelPreset
     this.hostWorkspace = options.hostWorkspace || options.workspace
     this.hostBranch = options.branch || ""
+    this.apiReauthenticator = options.bootstrapUrl
+      ? (rejectedApiToken) => this.refreshApiConnection(rejectedApiToken)
+      : undefined
     this.sessionModelPreset = options.chatId ? undefined : null
     this.backgroundKnown = options.theme !== "auto" || renderer.themeMode !== null
     this.activeThemeMode = this.resolveThemeMode(renderer.themeMode)
     this.palette = this.activeThemeMode === "light" ? LIGHT : DARK
     this.host = host
-    this.localCommands = host.hosted
-      ? LOCAL_COMMANDS.filter(({ command }) => command === "/context" || command === "/diff")
-      : LOCAL_COMMANDS
     this.transcript = new Transcript(
       renderer,
       transcriptTheme(this.palette, this.backgroundKnown),
@@ -456,7 +471,7 @@ export class NanobotTui {
       !host.hosted,
     )
     this.commandMenu = new CommandMenu(renderer, commandMenuTheme(this.palette))
-    this.commandMenu.setCommands([], this.localCommands)
+    this.commandMenu.setCommands([], LOCAL_COMMANDS)
     this.sessionMenu = new SessionMenu(
       renderer,
       commandMenuTheme(this.palette),
@@ -472,8 +487,28 @@ export class NanobotTui {
     )
     this.queuePreview = new QueuePreview(renderer, queuePreviewTheme(this.palette))
     this.client = client || new NanobotClient({
-      url: options.wsUrl,
+      ...(options.bootstrapUrl
+        ? {
+            resolveConnection: () => fetchGatewayConnection(
+              options.bootstrapUrl || "",
+              options.bootstrapSecret || "",
+              options.apiUrl,
+              `tui-${process.pid}`,
+            ),
+            onConnection: (connection) => this.useGatewayConnection(
+              connection.apiUrl,
+              connection.apiToken,
+            ),
+            connectionRetryLabel: "Starting local gateway",
+            reconnectDelayMs: 100,
+            startupRetryMaxDelayMs: 250,
+          }
+        : { url: options.wsUrl }),
       chatId: options.chatId,
+      initialWorkspaceScope: {
+        project_path: options.workspace,
+        access_mode: options.access.toLocaleLowerCase().includes("full") ? "full" : "restricted",
+      },
       onEvent: (event) => this.accept(event),
       onStatus: (status, detail) => this.handleStatus(status, detail),
     })
@@ -492,6 +527,13 @@ export class NanobotTui {
       backgroundColor: RGBA.defaultBackground(),
       onMouseDown: (event) => {
         if (event.button !== 0) return
+        if (!this.diffViewer.visible) {
+          // OpenTUI applies automatic focus after mouse handlers run. Prevent
+          // a focusable transcript ancestor from stealing text focus back
+          // after the composer has been restored here.
+          event.preventDefault()
+          this.composer.focus()
+        }
         // Runtime pickers are transient popovers. A primary click anywhere
         // outside their trigger or body dismisses them; hide() restores the
         // composer focus through the shared visibility callback.
@@ -550,6 +592,7 @@ export class NanobotTui {
         modelPreset: this.modelPreset,
         workspace: options.workspace,
         access: options.access,
+        reauthenticateApi: this.apiReauthenticator,
         // Runtime settings are session state. Changing them during a turn is
         // safe and takes effect when the next provider call starts.
         available: () => this.ready,
@@ -583,7 +626,8 @@ export class NanobotTui {
       width: "100%",
       minHeight: 1,
       flexShrink: 0,
-      border: false,
+      border: ["left"],
+      borderColor: this.palette.accent,
       paddingLeft: 1,
       paddingRight: 1,
       backgroundColor: composerSurface,
@@ -595,7 +639,7 @@ export class NanobotTui {
       maxHeight: 8,
       wrapMode: "word",
       placeholder: COMPOSER_PLACEHOLDER,
-      placeholderColor: this.palette.faint,
+      placeholderColor: this.palette.muted,
       textColor: this.palette.text,
       focusedTextColor: this.palette.text,
       backgroundColor: composerSurface,
@@ -719,16 +763,15 @@ export class NanobotTui {
     void this.loadCommands()
     void this.loadMentions()
     this.runtimeControls.preload()
+    this.renderer.start()
     // OpenTUI learns the real terminal background through OSC 10/11. Wait for
-    // that bounded probe before first paint, as OpenCode does, so a light
-    // terminal does not briefly render the dark palette. The app already owns
-    // the renderer here, so a signal during the probe can still restore it.
+    // that bounded probe after first paint. The neutral terminal background is
+    // safe to render immediately, and the detected palette can be applied later.
     if (this.options.theme === "auto") await this.renderer.waitForThemeMode(1_000)
     if (this.quitting) return
     if (this.options.theme === "auto" && this.renderer.themeMode) {
       this.applyTheme(this.renderer.themeMode)
     }
-    this.renderer.start()
   }
 
   stop(): void {
@@ -775,6 +818,10 @@ export class NanobotTui {
       return
     }
     if (!visibleContent) return
+    if (["exit", "quit", "/quit", ":q"].includes(visibleContent.toLowerCase())) {
+      this.quit()
+      return
+    }
     const completion = this.commandMenu.completion(visibleContent)
     if (completion) {
       this.setComposer(completion)
@@ -788,6 +835,7 @@ export class NanobotTui {
       else if (command.command.action === "context") void this.openContext()
       else if (command.command.action === "diff") this.openDiff()
       else if (command.command.action === "branch") void this.openBranch()
+      else if (command.command.action === "exit") this.quit()
       else this.startNewChat()
       return
     }
@@ -802,10 +850,6 @@ export class NanobotTui {
     }
     if (!this.ready) {
       this.status.content = "Preparing chat…"
-      return
-    }
-    if (["exit", "quit", "/exit", "/quit", ":q"].includes(visibleContent.toLowerCase())) {
-      this.quit()
       return
     }
     const prompt = { content, options: mentionOptions(content, this.availableMentions()) }
@@ -871,7 +915,6 @@ export class NanobotTui {
 
   accept(event: InboundEvent): void {
     if (event.event === "attached") {
-      void rememberChat(this.options.statePath, event.chat_id)
       this.host.reportSession(event.chat_id)
       if (event.usage) this.lastUsage = event.usage
       if (event.model_preset !== undefined) {
@@ -1097,7 +1140,13 @@ export class NanobotTui {
       }
       if (restoring || (!this.historyLoaded && this.options.chatId)) {
         this.historyLoaded = true
-        const history = await fetchHistory(this.options.apiUrl, this.options.apiToken, chatId)
+        const history = await fetchHistory(
+          this.options.apiUrl,
+          this.options.apiToken,
+          chatId,
+          undefined,
+          this.apiReauthenticator,
+        )
         if (hydrationId !== this.hydrationId) return
         this.historyBeforeCursor = history.beforeCursor
         this.historyHasMore = history.hasMoreBefore
@@ -1132,6 +1181,42 @@ export class NanobotTui {
     for (const event of events || []) this.accept(event)
   }
 
+  private updateGatewayApiConnection(apiUrl: string, apiToken: string): void {
+    this.options.apiUrl = apiUrl
+    this.options.apiToken = apiToken
+    this.runtimeControls.useApiConnection(apiUrl, apiToken)
+  }
+
+  private useGatewayConnection(apiUrl: string, apiToken: string): void {
+    this.updateGatewayApiConnection(apiUrl, apiToken)
+    void this.loadCommands()
+    void this.loadMentions()
+  }
+
+  private async refreshApiConnection(
+    rejectedApiToken: string,
+  ): Promise<GatewayApiConnection> {
+    if (this.options.apiToken && rejectedApiToken !== this.options.apiToken) {
+      return { apiUrl: this.options.apiUrl, apiToken: this.options.apiToken }
+    }
+    if (this.apiRefreshPromise) return this.apiRefreshPromise
+    const refresh = fetchGatewayConnection(
+      this.options.bootstrapUrl || "",
+      this.options.bootstrapSecret || "",
+      this.options.apiUrl,
+      `tui-${process.pid}`,
+    ).then((connection) => {
+      this.updateGatewayApiConnection(connection.apiUrl, connection.apiToken)
+      return connection
+    })
+    this.apiRefreshPromise = refresh
+    try {
+      return await refresh
+    } finally {
+      if (this.apiRefreshPromise === refresh) this.apiRefreshPromise = null
+    }
+  }
+
   private handleStatus(status: ConnectionStatus, detail?: string): void {
     if (status === "connected") {
       this.ready = false
@@ -1141,9 +1226,12 @@ export class NanobotTui {
     }
     if (status === "connecting") {
       this.ready = false
-      this.host.reportState("unknown", detail ? "Reconnecting" : "Connecting")
+      const label = detail === "Starting local gateway"
+        ? detail
+        : detail ? "Reconnecting" : "Connecting"
+      this.host.reportState("unknown", label)
       if (detail) this.setActive(false)
-      this.status.content = detail ? "Reconnecting…" : "Connecting…"
+      this.status.content = `${label}…`
       return
     }
     if (status === "error") {
@@ -1664,8 +1752,10 @@ export class NanobotTui {
   private updateComposerAppearance(): void {
     const surface = this.composerSurface()
     this.composerFrame.backgroundColor = surface
+    this.composerFrame.borderColor = this.palette.accent
     this.composer.backgroundColor = surface
     this.composer.focusedBackgroundColor = surface
+    this.composer.placeholderColor = this.palette.muted
   }
 
   private syncComposerPlaceholder(): void {
@@ -1751,12 +1841,13 @@ export class NanobotTui {
       discovered = await fetchSlashCommands(
         this.options.apiUrl,
         this.options.apiToken,
+        this.apiReauthenticator,
       )
     } catch {
       // Local navigation remains available against older gateways.
     }
     const commands = new Map(discovered.map((command) => [command.command, command]))
-    this.commandMenu.setCommands([...commands.values()], this.localCommands)
+    this.commandMenu.setCommands([...commands.values()], LOCAL_COMMANDS)
     this.syncCommandMenu()
   }
 
@@ -1789,6 +1880,7 @@ export class NanobotTui {
       this.mentionCandidates = await fetchMentionCandidates(
         this.options.apiUrl,
         this.options.apiToken,
+        this.apiReauthenticator,
       )
       if (this.activeMentionQuery) this.syncComposerMenus()
     } catch {
@@ -1825,6 +1917,8 @@ export class NanobotTui {
         this.options.apiUrl,
         this.options.apiToken,
         chatId,
+        undefined,
+        this.apiReauthenticator,
       )
       if (chatId !== this.client.activeChatId) return
       const points = branchPoints(history.messages)
@@ -1890,7 +1984,11 @@ export class NanobotTui {
     const loadId = ++this.sessionLoadId
     this.status.content = "Loading sessions…"
     try {
-      const sessions = await fetchSessions(this.options.apiUrl, this.options.apiToken)
+      const sessions = await fetchSessions(
+        this.options.apiUrl,
+        this.options.apiToken,
+        this.apiReauthenticator,
+      )
       if (this.quitting || loadId !== this.sessionLoadId) return
       this.sessionLoading = false
       const current = sessions.find((session) => session.chatId === this.client.activeChatId)
@@ -2091,6 +2189,7 @@ export class NanobotTui {
         this.options.apiUrl,
         this.options.apiToken,
         this.client.activeChatId,
+        this.apiReauthenticator,
       )
       if (!context) {
         this.status.content = "Context unavailable · new session or older gateway"
@@ -2111,7 +2210,11 @@ export class NanobotTui {
     if (!this.options.apiUrl || !this.options.apiToken) return
     const requestId = ++this.sessionMetadataId
     try {
-      const sessions = await fetchSessions(this.options.apiUrl, this.options.apiToken)
+      const sessions = await fetchSessions(
+        this.options.apiUrl,
+        this.options.apiToken,
+        this.apiReauthenticator,
+      )
       if (
         requestId !== this.sessionMetadataId
         || chatId !== this.client.activeChatId
@@ -2133,6 +2236,7 @@ export class NanobotTui {
         this.options.apiUrl,
         this.options.apiToken,
         chatId,
+        this.apiReauthenticator,
       )
       if (!context || chatId !== this.client.activeChatId) return
       this.contextTokens = context.estimatedSessionTokens
@@ -2177,6 +2281,7 @@ export class NanobotTui {
         this.options.apiToken,
         chatId,
         this.historyBeforeCursor,
+        this.apiReauthenticator,
       )
       if (hydrationId !== this.hydrationId || chatId !== this.client.activeChatId) return
       await this.transcript.prependHistory(history.messages)
@@ -2213,6 +2318,8 @@ export class NanobotTui {
     this.host.release()
     this.client.close()
     this.renderer.destroy()
+    const chatId = this.client.activeChatId || this.options.chatId
+    if (chatId) this.options.onExit?.(chatId)
   }
 
   private handleDestroy = (): void => {

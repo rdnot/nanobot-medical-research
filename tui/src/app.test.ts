@@ -6,7 +6,7 @@ import {
   type TestRendererSetup,
 } from "@opentui/core/testing"
 
-import { NanobotTui, type AppOptions } from "./app"
+import { NanobotTui, sessionExitMessage, type AppOptions } from "./app"
 import type { MessageOptions, SlashCommand, WorkspaceScopePayload } from "./protocol"
 import type { HostAgentState, HostMetadata, TuiHost } from "./host"
 
@@ -37,6 +37,12 @@ interface HiddenScrollBox {
 function occurrences(frame: string, value: string): number {
   return frame.split(value).length - 1
 }
+
+test("formats a reusable session ID after exit", () => {
+  expect(sessionExitMessage("resume-chat")).toBe(
+    "Resume with: nanobot agent --session websocket:resume-chat\n",
+  )
+})
 
 function contrastRatio(foreground: string, background: string): number {
   const luminance = (color: string) => {
@@ -549,6 +555,68 @@ describe("NanobotTui layout", () => {
     }
   })
 
+  test("refreshes expired API credentials before opening sessions", async () => {
+    setup = await createRenderer({ width: 80, height: 24, screenMode: "alternate-screen" })
+    const original = globalThis.fetch
+    let bootstrapRequests = 0
+    const sessionAuthorizations: Array<string | null> = []
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      const authorization = new Headers(init?.headers).get("Authorization")
+      if (url.endsWith("/webui/bootstrap")) {
+        bootstrapRequests += 1
+        return new Response(JSON.stringify({
+          ws_url: "ws://nanobot.test/ws",
+          token: "fresh-websocket-token",
+          api_token: "fresh-api-token",
+        }))
+      }
+      if (authorization === "Bearer expired-api-token") {
+        return new Response("Unauthorized", { status: 401 })
+      }
+      if (url.endsWith("/api/sessions")) {
+        sessionAuthorizations.push(authorization)
+        return new Response(JSON.stringify({
+          sessions: [{ key: "websocket:chat", title: "Current chat" }],
+        }))
+      }
+      return new Response("{}")
+    }) as typeof fetch
+    const app = NanobotTui.mount(
+      setup.renderer,
+      {
+        ...options,
+        bootstrapUrl: "http://nanobot.test/webui/bootstrap",
+        bootstrapSecret: "bootstrap-secret",
+        apiUrl: "http://nanobot.test",
+        apiToken: "expired-api-token",
+      },
+      client(),
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+    )
+    app.accept({ event: "attached", chat_id: "chat" })
+    const ui = app as unknown as {
+      ready: boolean
+      composer: TextareaRenderable
+      sessionMenu: { visible: boolean }
+      status: { plainText: string }
+    }
+
+    try {
+      await waitUntil(() => ui.ready)
+      ui.composer.setText("/sessions")
+      ui.composer.submit()
+
+      await waitUntil(() => bootstrapRequests >= 1)
+      await waitUntil(() => ui.sessionMenu.visible)
+      expect(bootstrapRequests).toBe(1)
+      expect(sessionAuthorizations.at(-1)).toBe("Bearer fresh-api-token")
+      expect(ui.status.plainText).not.toContain("HTTP 401")
+    } finally {
+      globalThis.fetch = original
+    }
+  })
+
   test("tracks canonical presets without overwriting a session override", async () => {
     setup = await createRenderer({ width: 96, height: 20, screenMode: "alternate-screen" })
     const app = mount(setup)
@@ -980,7 +1048,7 @@ describe("NanobotTui layout", () => {
     }
   })
 
-  test("explains the session-owned agent context without exposing private reasoning", async () => {
+  test("shows compact session context without exposing private reasoning", async () => {
     setup = await createRenderer({ width: 96, height: 26, screenMode: "alternate-screen" })
     const original = globalThis.fetch
     globalThis.fetch = ((input: string | URL | Request) => {
@@ -1017,15 +1085,16 @@ describe("NanobotTui layout", () => {
       expect(ui.runtimeControls.contextText.plainText).toContain("~2.2k ctx")
       const frame = setup.captureCharFrame()
 
-      expect(frame).toContain("Agent context")
-      expect(frame).toContain("~2.2k session tokens · 10 replay messages · 16 archived · summary active")
+      expect(frame).toContain("~2.2k tokens · 10 replay · 16 archived")
       expect(frame).toContain("The earlier turns agreed on a release plan.")
-      expect(frame).toContain("memory, instructions, and skills are added separately")
+      expect(frame).not.toContain("Agent context")
+      expect(frame).not.toContain("summary active")
+      expect(frame).not.toContain("memory, instructions, and skills are added separately")
 
       setup.resize(40, 10)
       await setup.renderOnce()
       const compact = setup.captureCharFrame()
-      expect(occurrences(compact, "Agent context")).toBe(1)
+      expect(occurrences(compact, "Agent context")).toBe(0)
       expect(occurrences(compact, "Ask nanobot anything")).toBe(1)
 
       setup.mockInput.pressEscape()
@@ -1350,7 +1419,7 @@ describe("NanobotTui layout", () => {
     expect(markdown?.syntaxStyle).not.toBe(darkSyntax)
   })
 
-  test("uses a quiet surface instead of a boxed composer", async () => {
+  test("distinguishes the composer with a quiet focus edge", async () => {
     setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
     const app = NanobotTui.mount(
       setup.renderer,
@@ -1362,14 +1431,20 @@ describe("NanobotTui layout", () => {
       ready: boolean
       composerFrame: {
         border: boolean | string[]
+        borderColor: { toInts(): number[] }
         backgroundColor: { toInts(): number[] }
       }
-      composer: { backgroundColor: { toInts(): number[] } }
+      composer: {
+        backgroundColor: { toInts(): number[] }
+        placeholderColor: { toInts(): number[] }
+      }
     }
 
-    expect(internals.composerFrame.border).toBeFalse()
+    expect(internals.composerFrame.border).toEqual(["left"])
+    expect(internals.composerFrame.borderColor.toInts().slice(0, 3)).toEqual([185, 77, 11])
     expect(internals.composerFrame.backgroundColor.toInts().slice(0, 3)).toEqual([240, 240, 240])
     expect(internals.composer.backgroundColor.toInts().slice(0, 3)).toEqual([240, 240, 240])
+    expect(internals.composer.placeholderColor.toInts().slice(0, 3)).toEqual([111, 111, 120])
 
     app.accept({ event: "attached", chat_id: "chat" })
     await waitUntil(() => internals.ready)
@@ -1377,7 +1452,9 @@ describe("NanobotTui layout", () => {
 
     const composerLine = setup.captureCharFrame().split("\n")
       .find((line) => line.includes("Ask nanobot anything")) || ""
-    expect(composerLine).not.toContain("│")
+    expect(composerLine).toContain("│")
+    expect(composerLine).not.toContain("┌")
+    expect(composerLine).not.toContain("┐")
   })
 
   test("uses asymmetric roles instead of chat bubbles", async () => {
@@ -1488,7 +1565,9 @@ describe("NanobotTui layout", () => {
   test("overlaps automatic terminal detection with connection startup", async () => {
     setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
     let connected = false
+    let rendered = false
     let resolveMode: (mode: "light") => void = () => undefined
+    setup.renderer.start = () => { rendered = true }
     setup.renderer.waitForThemeMode = () => new Promise((resolve) => {
       resolveMode = resolve
     })
@@ -1505,6 +1584,7 @@ describe("NanobotTui layout", () => {
     const starting = app.start()
     await Bun.sleep(1)
     expect(connected).toBe(true)
+    expect(rendered).toBe(true)
 
     resolveMode("light")
     await starting
@@ -1661,6 +1741,25 @@ describe("NanobotTui layout", () => {
 
     await setup.mockMouse.click(status.x, status.y)
     expect(setup.renderer.getSelection()).toBeNull()
+  })
+
+  test("keeps text input focus when the focusable transcript is clicked", async () => {
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    const app = mount(setup)
+    const ui = app as unknown as {
+      composer: TextareaRenderable
+      transcript: {
+        root: { x: number; y: number; focused: boolean }
+      }
+    }
+    app.accept({ event: "delta", chat_id: "chat", text: "clickable answer" })
+    app.accept({ event: "stream_end", chat_id: "chat" })
+    await setup.flush()
+
+    await setup.mockMouse.click(ui.transcript.root.x + 1, ui.transcript.root.y + 1)
+
+    expect(ui.composer.focused).toBe(true)
+    expect(ui.transcript.root.focused).toBe(false)
   })
 
   test("animates one stable status line while the agent works", async () => {
@@ -1962,19 +2061,29 @@ describe("NanobotTui layout", () => {
   test("destroys the renderer and transport together", async () => {
     setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
     let closed = false
+    const exited: string[] = []
     const transport = client()
     transport.close = () => { closed = true }
     const app = NanobotTui.mount(
       setup.renderer,
-      options,
+      {
+        ...options,
+        chatId: "original-chat",
+        onExit: (chatId) => {
+          expect(setup?.renderer.isDestroyed).toBe(true)
+          exited.push(chatId)
+        },
+      },
       transport,
       new MockTreeSitterClient({ autoResolveTimeout: 0 }),
     )
 
     app.stop()
+    app.stop()
 
     expect(closed).toBe(true)
     expect(setup.renderer.isDestroyed).toBe(true)
+    expect(exited).toEqual(["chat"])
   })
 
   test("exits immediately when Ctrl+C is pressed on an idle empty composer", async () => {
@@ -1994,10 +2103,60 @@ describe("NanobotTui layout", () => {
     expect(closed).toBe(true)
     expect(setup.renderer.isDestroyed).toBe(true)
   })
+
+  test("accepts the exit command before the gateway connection is ready", async () => {
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    let closed = false
+    const transport = client()
+    transport.close = () => { closed = true }
+    const app = NanobotTui.mount(
+      setup.renderer,
+      options,
+      transport,
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+    )
+    const composer = (app as unknown as { composer: TextareaRenderable }).composer
+
+    composer.setText("exit")
+    composer.submit()
+    await waitUntil(() => closed)
+
+    expect(setup.renderer.isDestroyed).toBe(true)
+  })
+
+  test("discovers and runs the local /exit command", async () => {
+    setup = await createRenderer({ width: 72, height: 20, screenMode: "alternate-screen" })
+    const sent: string[] = []
+    let closed = false
+    const transport = client(sent)
+    transport.close = () => { closed = true }
+    const app = NanobotTui.mount(
+      setup.renderer,
+      options,
+      transport,
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+    )
+    const ui = app as unknown as {
+      composer: TextareaRenderable
+      commandMenu: { visible: boolean }
+    }
+
+    await setup.mockInput.typeText("/exit")
+    await setup.flush()
+    expect(ui.commandMenu.visible).toBe(true)
+    expect(setup.captureCharFrame()).toContain("/exit")
+
+    expect(ui.composer.plainText).toBe("/exit")
+    ui.composer.submit()
+    await waitUntil(() => closed)
+
+    expect(sent).toEqual([])
+    expect(setup.renderer.isDestroyed).toBe(true)
+  })
 })
 
 describe("NanobotTui in a Herdr pane", () => {
-  test("stays quiet while reporting task, session, lifecycle, and metadata", async () => {
+  test("keeps local navigation while reporting task, session, lifecycle, and metadata", async () => {
     const setup = await createTestRenderer({ width: 80, height: 22, screenMode: "main-screen" })
     const states: Array<{ state: HostAgentState; message?: string }> = []
     const metadata: HostMetadata[] = []
@@ -2017,6 +2176,14 @@ describe("NanobotTui in a Herdr pane", () => {
       new MockTreeSitterClient({ autoResolveTimeout: 0 }),
       host,
     )
+
+    await setup.mockInput.typeText("/")
+    await setup.flush()
+    const commandFrame = setup.captureCharFrame()
+    expect(commandFrame).toContain("/sessions")
+    expect(commandFrame).toContain("/new-chat")
+    expect(commandFrame).toContain("/branch")
+    setup.mockInput.pressEscape()
 
     app.accept({ event: "attached", chat_id: "chat" })
     app.accept({
@@ -2093,6 +2260,7 @@ if (process.platform !== "win32") {
         NANOBOT_TUI_WS_URL: "ws://127.0.0.1:9/ws",
         NANOBOT_TUI_API_URL: "",
         NANOBOT_TUI_API_TOKEN: "",
+        NANOBOT_TUI_CHAT_ID: "resume-chat",
         NANOBOT_TUI_MODEL: "test/model",
         NANOBOT_TUI_WORKSPACE: "/tmp/nanobot-test",
         NANOBOT_TUI_VERSION: "test",
@@ -2127,5 +2295,9 @@ if (process.platform !== "win32") {
     expect(error).toBe("")
     expect(output).toContain("\x1b[?1049h")
     expect(output).toContain("\x1b[?1049l")
+    expect(output.indexOf("\x1b[?1049l")).toBeLessThan(output.indexOf("Resume with:"))
+    expect(output).toContain(
+      "Resume with: nanobot agent --session websocket:resume-chat\n",
+    )
   })
 }

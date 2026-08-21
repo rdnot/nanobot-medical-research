@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 from collections import OrderedDict
 from contextlib import contextmanager, suppress
@@ -38,11 +39,8 @@ from nanobot.utils.helpers import (
 )
 from nanobot.utils.subagent_channel_display import scrub_subagent_announce_body
 
-FILE_MAX_MESSAGES = 2000
 SESSION_CACHE_MAX_SIZE = 128
-MIN_REPLAY_MAX_MESSAGES = 120
 MIN_COMPACTED_REPLAY_MESSAGES = 8
-REPLAY_TOKENS_PER_MESSAGE = 100
 _MESSAGE_TIME_PREFIX_RE = re.compile(r"^\[Message Time: [^\]]+\]\n?")
 _LOCAL_IMAGE_BREADCRUMB_RE = re.compile(r"^\[image: (?:/|~)[^\]]+\]\s*$")
 _TOOL_CALL_ECHO_RE = re.compile(r'^\s*(?:generate_image|message)\([^)]*\)\s*$')
@@ -58,6 +56,7 @@ _FORK_VOLATILE_METADATA_KEYS = {
     "goal_state",
     "pending_user_turn",
     "runtime_checkpoint",
+    "session_handle",
     "thread_goal",
     "title",
     "title_user_edited",
@@ -80,15 +79,6 @@ def _json_object(value: object) -> dict[str, Any]:
 def _is_provider_state_record_line(line: str) -> bool:
     """Recognize the canonical private record without decoding its opaque payload."""
     return _PROVIDER_STATE_RECORD_PREFIX_RE.match(line) is not None
-
-
-def replay_max_messages_for_context(context_window_tokens: int | None) -> int:
-    if not context_window_tokens or context_window_tokens <= 0:
-        return FILE_MAX_MESSAGES
-    return min(
-        FILE_MAX_MESSAGES,
-        max(MIN_REPLAY_MAX_MESSAGES, context_window_tokens // REPLAY_TOKENS_PER_MESSAGE),
-    )
 
 
 def _sanitize_assistant_replay_text(content: str) -> str:
@@ -207,7 +197,7 @@ class Session:
 
     def get_history(
         self,
-        max_messages: int = FILE_MAX_MESSAGES,
+        max_messages: int = 0,
         *,
         max_tokens: int = 0,
         extend_to_user: bool = False,
@@ -215,8 +205,8 @@ class Session:
     ) -> list[dict[str, Any]]:
         """Return recent replayable messages for LLM input.
 
-        History is sliced by message count first (``max_messages``), then by
-        token budget from the tail (``max_tokens``) when provided.
+        A positive ``max_messages`` applies an explicit caller-owned count
+        limit. The normal model path relies on ``max_tokens`` instead.
         """
         replay_start = self.last_consolidated
         if replay_start:
@@ -231,18 +221,20 @@ class Session:
             replay_start = min(replay_start, recent_start)
 
         replayable = self.messages[replay_start:]
-        max_messages = max_messages if max_messages > 0 else FILE_MAX_MESSAGES
-        unarchived_count = len(self.messages) - self.last_consolidated
-        if replay_start < self.last_consolidated and unarchived_count < max_messages:
-            # The archived replay suffix can exceed the nominal count when one
-            # tool-heavy turn spans the boundary. Preserve that complete turn.
+        if max_messages <= 0:
             start_idx = 0
         else:
-            start_idx = recent_message_start_index(
-                replayable,
-                max_messages,
-                extend_to_user=extend_to_user,
-            )
+            unarchived_count = len(self.messages) - self.last_consolidated
+            if replay_start < self.last_consolidated and unarchived_count < max_messages:
+                # The archived replay suffix can exceed the nominal count when one
+                # tool-heavy turn spans the boundary. Preserve that complete turn.
+                start_idx = 0
+            else:
+                start_idx = recent_message_start_index(
+                    replayable,
+                    max_messages,
+                    extend_to_user=extend_to_user,
+                )
         sliced = replayable[start_idx:]
 
         # Avoid starting mid-turn when possible, except for proactive
@@ -465,46 +457,6 @@ class Session:
             already_consolidated_count=already_consolidated,
         )
 
-    def enforce_file_cap(
-        self,
-        on_archive: Callable[[list[dict[str, Any]]], None] | None = None,
-        limit: int = FILE_MAX_MESSAGES,
-    ) -> None:
-        """Bound session message growth by archiving and trimming old prefixes."""
-        if limit <= 0 or len(self.messages) <= limit:
-            return
-
-        original_messages = self.messages
-        original_last_consolidated = self.last_consolidated
-        original_provider_state = self.provider_state
-        original_updated_at = self.updated_at
-        result = self.retain_recent_legal_suffix(limit)
-        if not result.dropped:
-            return
-
-        archive_chunk = result.dropped[result.already_consolidated_count:]
-        if archive_chunk and on_archive:
-            try:
-                on_archive(archive_chunk)
-            except BaseException:
-                # Retention runs before the archive callback so the callback can
-                # receive the exact dropped prefix. Restore the in-memory session
-                # if archival fails; otherwise a later save would persist the
-                # trimmed state and make that prefix impossible to retry.
-                self.messages = original_messages
-                self.last_consolidated = original_last_consolidated
-                self.provider_state = original_provider_state
-                self.updated_at = original_updated_at
-                raise
-        logger.info(
-            "Session file cap hit for {}: dropped {}, raw-archived {}, kept {}",
-            self.key,
-            len(result.dropped),
-            len(archive_chunk),
-            len(self.messages),
-        )
-
-
 class SessionPayload(TypedDict):
     key: str
     created_at: str | None
@@ -556,6 +508,14 @@ class SessionStore(Protocol):
     def read(self, key: str) -> SessionPayload | None: ...
 
     def read_metadata(self, key: str) -> SessionMetadataPayload | None: ...
+
+    def update_metadata(
+        self,
+        key: str,
+        updates: dict[str, Any],
+        *,
+        fsync: bool = False,
+    ) -> bool: ...
 
     def list_sessions(self) -> list[SessionInfo]: ...
 
@@ -1268,6 +1228,49 @@ class JsonlSessionStore:
         finally:
             tmp_path.unlink(missing_ok=True)
 
+    def update_metadata(
+        self,
+        key: str,
+        updates: dict[str, Any],
+        *,
+        fsync: bool = False,
+    ) -> bool:
+        """Atomically replace only a session file's metadata record."""
+        with self._session_files_lock:
+            path = self.get_session_path(key)
+            if not path.exists():
+                return False
+            tmp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+            try:
+                with open(path, encoding="utf-8") as source:
+                    first_line = source.readline()
+                    data = _json_object(json.loads(first_line))
+                    if data.get("_type") != "metadata":
+                        return False
+                    raw_metadata = cast(object, data.get("metadata", {}))
+                    metadata = (
+                        dict(cast(dict[str, Any], raw_metadata))
+                        if isinstance(raw_metadata, dict)
+                        else {}
+                    )
+                    metadata.update(deepcopy(updates))
+                    data["metadata"] = metadata
+                    with open(tmp_path, "x", encoding="utf-8") as target:
+                        target.write(json.dumps(data, ensure_ascii=False) + "\n")
+                        shutil.copyfileobj(source, target)
+                        if fsync:
+                            target.flush()
+                            os.fsync(target.fileno())
+                os.replace(tmp_path, path)
+                if fsync:
+                    self._fsync_directory(path.parent)
+                return True
+            except _SESSION_DATA_ERRORS as exc:
+                logger.warning("Failed to update session metadata {}: {}", key, exc)
+                return False
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
     def delete(self, key: str) -> bool:
         with self._session_files_lock:
             return self._delete_unlocked(key)
@@ -1523,7 +1526,6 @@ class SessionManager:
         # Preserve identity for sessions held by active callers without retaining idle ones.
         self._overflow_cache: WeakValueDictionary[str, Session] = WeakValueDictionary()
         self._max_cached_sessions = SESSION_CACHE_MAX_SIZE
-        self._file_cap_archiver: Callable[..., None] | None = None
         self._delete_observer: Callable[[str], None] | None = None
 
     def _remember(self, session: Session) -> None:
@@ -1549,10 +1551,6 @@ class SessionManager:
     def get_cached(self, key: str) -> Session | None:
         """Return a cached session without creating or loading one from disk."""
         return self._cached(key)
-
-    def set_file_cap_archiver(self, archiver: Callable[..., None]) -> None:
-        """Archive unconsolidated overflow whenever a session is persisted."""
-        self._file_cap_archiver = archiver
 
     def set_delete_observer(self, observer: Callable[[str], None]) -> None:
         """Observe explicit session deletion for process-local state cleanup."""
@@ -1651,15 +1649,6 @@ class SessionManager:
         """Persist a session and retain it in the cache."""
         if not session.policy.persist:
             return
-
-        archiver = self._file_cap_archiver
-        if archiver is not None:
-            session.enforce_file_cap(
-                on_archive=lambda messages: archiver(
-                    messages,
-                    session_key=session.key,
-                )
-            )
 
         self._store.save(session, fsync=fsync)
         self._remember(session)
@@ -1807,6 +1796,19 @@ class SessionManager:
     def read_session_metadata(self, key: str) -> dict[str, Any] | None:
         """Read session metadata without loading the transcript."""
         return cast(dict[str, Any] | None, self._store.read_metadata(key))
+
+    def update_session_metadata(
+        self,
+        key: str,
+        updates: dict[str, Any],
+        *,
+        fsync: bool = False,
+    ) -> bool:
+        """Atomically update metadata without replacing session history."""
+        updated = self._store.update_metadata(key, updates, fsync=fsync)
+        if updated and (session := self.get_cached(key)) is not None:
+            session.metadata.update(deepcopy(updates))
+        return updated
 
     def list_sessions(self) -> list[dict[str, Any]]:
         return cast(list[dict[str, Any]], self._store.list_sessions())
