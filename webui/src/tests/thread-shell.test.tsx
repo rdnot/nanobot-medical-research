@@ -3930,7 +3930,7 @@ describe("ThreadShell", () => {
     );
   });
 
-  it("offers only same-project sessions in restricted mode", async () => {
+  it("offers sessions across projects in restricted mode", async () => {
     const client = makeClient();
     const currentScope = {
       project_path: "/projects/current",
@@ -3940,6 +3940,10 @@ describe("ThreadShell", () => {
       ...session("same-project"),
       title: "Same project",
       workspaceScope: currentScope,
+      handle: {
+        id: "handle_11111111111111111111111111111111",
+        name: "same-1111111111",
+      },
     };
     const otherProject = {
       ...session("other-project"),
@@ -3947,6 +3951,10 @@ describe("ThreadShell", () => {
       workspaceScope: {
         project_path: "/projects/other",
         access_mode: "restricted" as const,
+      },
+      handle: {
+        id: "handle_22222222222222222222222222222222",
+        name: "other-2222222222",
       },
     };
 
@@ -3965,6 +3973,7 @@ describe("ThreadShell", () => {
     fireEvent.change(input, { target: { value: "@", selectionStart: 1 } });
 
     expect(screen.getByRole("option", { name: /Same project/i })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: /Other project/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Other project/i })).toBeInTheDocument();
   });
+
 });
