@@ -781,9 +781,10 @@ class TestRetryBeforeFailover:
 
     @pytest.mark.asyncio
     async def test_primary_exhausts_before_fallback_without_terminal_event(self) -> None:
+        # FORK: 5 retries = 6 attempts (upstream: 3 retries = 4 attempts)
         primary = _FakeProvider(
             "primary",
-            responses=[_retryable_error(f"attempt {attempt}") for attempt in range(4)],
+            responses=[_retryable_error(f"attempt {attempt}") for attempt in range(6)],
         )
         fallback = _FakeProvider("fallback", _make_response("fallback ok"))
         factory = MagicMock(return_value=fallback)
@@ -797,7 +798,7 @@ class TestRetryBeforeFailover:
             )
 
         assert result.content == "fallback ok"
-        assert len(primary.chat_calls) == 4
+        assert len(primary.chat_calls) == 6
         assert not any("giving up" in call.args[0] for call in retry_events.await_args_list)
         factory.assert_called_once_with(_fallback("fallback-a"))
 
@@ -821,10 +822,10 @@ class TestRetryBeforeFailover:
             )
 
         assert result.finish_reason == "error"
-        assert len(primary.chat_calls) == len(fallback.chat_calls) == 4
+        assert len(primary.chat_calls) == len(fallback.chat_calls) == 6
         assert not any("giving up" in call.args[0] for call in retry_events.await_args_list)
         terminal_event.assert_awaited_once_with(
-            "Model request failed after 4 attempts, giving up."
+            "Model request failed after 6 attempts, giving up."
         )
 
     @pytest.mark.asyncio
@@ -852,8 +853,8 @@ class TestRetryBeforeFailover:
             )
 
         assert result.finish_reason == "error"
-        assert len(primary.chat_calls) == 8
-        assert len(fallback.chat_calls) == (0 if factory_fails else 8)
+        assert len(primary.chat_calls) == 12
+        assert len(fallback.chat_calls) == (0 if factory_fails else 12)
         assert factory.call_count == 2
         terminal_event.assert_awaited_once_with(
             "Persistent retry stopped after 2 identical errors."
@@ -922,7 +923,7 @@ class TestRetryBeforeFailover:
             "primary",
             responses=[
                 _make_response("partial", finish_reason="error", error_kind="timeout"),
-                *[_retryable_error() for _ in range(3)],
+                *[_retryable_error() for _ in range(5)],
             ],
         )
         fallback = _FakeProvider("fallback", _make_response("fallback ok"))
@@ -939,16 +940,17 @@ class TestRetryBeforeFailover:
             )
 
         assert result.content == "fallback ok"
-        assert len(primary.chat_stream_calls) == 4
+        assert len(primary.chat_stream_calls) == 6
         assert [call.args[0] for call in streamed.await_args_list] == ["partial", "fallback ok"]
         recovered.assert_awaited_once_with()
         factory.assert_called_once_with(_fallback("fallback-a"))
 
     @pytest.mark.asyncio
     async def test_stream_without_delta_callback_retries_before_fallback(self) -> None:
+        # FORK: 5 retries = 6 attempts (upstream: 3 retries = 4 attempts)
         primary = _FakeProvider(
             "primary",
-            responses=[_retryable_error(f"attempt {attempt}") for attempt in range(4)],
+            responses=[_retryable_error(f"attempt {attempt}") for attempt in range(6)],
         )
         fallback = _FakeProvider("fallback", _make_response("fallback ok"))
         factory = MagicMock(return_value=fallback)
@@ -960,17 +962,17 @@ class TestRetryBeforeFailover:
             )
 
         assert result.content == "fallback ok"
-        assert len(primary.chat_stream_calls) == 4
+        assert len(primary.chat_stream_calls) == 6
         factory.assert_called_once_with(_fallback("fallback-a"))
 
     @pytest.mark.asyncio
     async def test_unrecovered_stream_keeps_non_timeout_fallback_blocked(self) -> None:
+        # FORK: 5 retries = 6 attempts; 1 timeout + 5 retryable exhausts the primary
         primary = _FakeProvider(
             "primary",
             responses=[
                 _make_response("partial", finish_reason="error", error_kind="timeout"),
-                _retryable_error(),
-                _retryable_error(),
+                *[_retryable_error() for _ in range(4)],
                 _retryable_error("last error"),
             ],
         )
