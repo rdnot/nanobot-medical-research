@@ -20,6 +20,7 @@ from nanobot import __version__
 from nanobot.cli.runtime_config import _model_display
 from nanobot.cli.webui_support import (
     _gateway_health_ready,
+    _gateway_instance_command,
     _host_for_local_browser,
     _webui_endpoint_reachable,
 )
@@ -59,6 +60,8 @@ _TUI_RELEASE_LIMITS = {
     "nanobot-tui-source.tar.gz": 20 * 1024 * 1024,
     "MANIFEST.sha256": 64 * 1024,
 }
+# Keep in sync with TUI_DETACH_EXIT_CODE in tui/src/index.ts.
+_TUI_DETACH_EXIT_CODE = 90
 
 
 @dataclass(frozen=True)
@@ -98,6 +101,11 @@ def launch_tui(
                     "workspace access" if config.tools.restrict_to_workspace else "full access"
                 ),
                 "NANOBOT_TUI_THEME": theme,
+                "NANOBOT_TUI_GATEWAY_STOP_COMMAND": _gateway_instance_command(
+                    "stop",
+                    config_path=config_path,
+                    workspace=workspace_override,
+                ),
             }
         )
         if bootstrap_secret:
@@ -118,7 +126,13 @@ def launch_tui(
             workspace_override=workspace_override,
             wait_until_ready=False,
         )
-        return process.wait()
+        exit_code = process.wait()
+        if exit_code == _TUI_DETACH_EXIT_CODE:
+            lease = gateway.lease
+            if lease is not None:
+                lease.mark_persistent()
+            return 0
+        return exit_code
     except BaseException:
         if process is not None and process.poll() is None:
             process.terminate()

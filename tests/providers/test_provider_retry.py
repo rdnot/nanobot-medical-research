@@ -133,7 +133,42 @@ async def test_chat_with_retry_emits_terminal_progress_when_standard_retries_exh
     )
 
     assert response.content == "503 final server error"
-    assert progress[-1] == "Model request failed after 6 retries, giving up."
+    assert progress[-1] == "Model request failed after 6 attempts, giving up."
+
+
+@pytest.mark.asyncio
+async def test_chat_with_retry_routes_terminal_progress_to_explicit_callback(monkeypatch) -> None:
+    provider = ScriptedProvider([
+        LLMResponse(content="429 rate limit a", finish_reason="error"),
+        LLMResponse(content="429 rate limit b", finish_reason="error"),
+        LLMResponse(content="429 rate limit c", finish_reason="error"),
+        LLMResponse(content="429 rate limit d", finish_reason="error"),
+        LLMResponse(content="429 rate limit e", finish_reason="error"),
+        LLMResponse(content="503 final server error", finish_reason="error"),
+    ])
+    retry_progress: list[str] = []
+    terminal_progress: list[str] = []
+
+    async def _fake_sleep(delay: int) -> None:
+        return None
+
+    async def _retry_progress(msg: str) -> None:
+        retry_progress.append(msg)
+
+    async def _terminal_progress(msg: str) -> None:
+        terminal_progress.append(msg)
+
+    monkeypatch.setattr("nanobot.providers.base.asyncio.sleep", _fake_sleep)
+
+    response = await provider.chat_with_retry(
+        messages=[{"role": "user", "content": "hello"}],
+        on_retry_wait=_retry_progress,
+        on_retry_exhausted=_terminal_progress,
+    )
+
+    assert response.content == "503 final server error"
+    assert not any("giving up" in message for message in retry_progress)
+    assert terminal_progress == ["Model request failed after 6 attempts, giving up."]
 
 
 @pytest.mark.asyncio

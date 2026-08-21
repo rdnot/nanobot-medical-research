@@ -609,8 +609,12 @@ describe("ThreadShell", () => {
       ),
     );
 
-    expect(await screen.findByTitle("fast · gpt-5.5 · OpenAI Codex")).toBeInTheDocument();
-    expect(screen.queryByTitle("Default · deepseek-v4-pro · DeepSeek")).not.toBeInTheDocument();
+    const badge = await screen.findByLabelText("fast");
+    expect(badge).not.toHaveAttribute("title");
+    fireEvent.focus(badge);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "fast · gpt-5.5 · OpenAI Codex",
+    );
   });
 
   it("switches through every named preset while preserving call-order priority", async () => {
@@ -692,11 +696,15 @@ describe("ThreadShell", () => {
       ),
     );
 
-    expect(await screen.findByTitle("fast · gpt-4 · Company Proxy")).toBeInTheDocument();
+    const badge = await screen.findByLabelText("fast");
+    fireEvent.focus(badge);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "fast · gpt-4 · Company Proxy",
+    );
     expect(screen.queryByRole("button", { name: "Model not configured" })).not.toBeInTheDocument();
   });
 
-  it("highlights the configured model badge without replacing the preset label", async () => {
+  it("only highlights fallback model updates without replacing the preset label", async () => {
     const client = makeClient();
     render(wrap(
       client,
@@ -719,6 +727,16 @@ describe("ThreadShell", () => {
       client._emitChat("fallback-model", {
         event: "turn_model_updated",
         chat_id: "fallback-model",
+        model_name: "openai-codex/gpt-5.5",
+      });
+    });
+
+    expect(configuredBadge).not.toHaveAttribute("data-fallback");
+
+    act(() => {
+      client._emitChat("fallback-model", {
+        event: "turn_model_updated",
+        chat_id: "fallback-model",
         model_name: "deepseek/deepseek-chat",
       });
     });
@@ -730,11 +748,11 @@ describe("ThreadShell", () => {
     expect(screen.getByText("Default")).toBeInTheDocument();
     expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
     expect(badge).toHaveAttribute("data-fallback", "true");
-    expect(badge).toHaveAttribute(
-      "title",
-      "deepseek/deepseek-chat",
-    );
+    expect(badge).not.toHaveAttribute("title");
     expect(logo).not.toHaveAttribute("data-fallback");
+    const trigger = screen.getByLabelText("Default");
+    fireEvent.focus(trigger);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("deepseek/deepseek-chat");
 
     act(() => {
       client._emitChat("fallback-model", {
@@ -748,9 +766,9 @@ describe("ThreadShell", () => {
         screen.getByTestId("composer-model-logo-openai_codex").parentElement,
       ).not.toHaveAttribute("data-fallback");
     });
-    expect(
-      screen.getByTestId("composer-model-logo-openai_codex").parentElement,
-    ).toHaveAttribute("title", "Default · gpt-5.5 · OpenAI Codex");
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "Default · gpt-5.5 · OpenAI Codex",
+    );
     expect(
       screen.getByTestId("composer-model-logo-openai_codex").parentElement,
     ).toBe(badge);
