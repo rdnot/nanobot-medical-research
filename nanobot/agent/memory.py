@@ -53,25 +53,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-class DreamRunProgress:
-    """Track tool failures that make a nominally completed Dream run unsafe to advance."""
-
-    def __init__(self) -> None:
-        self.had_tool_errors = False
-
-    async def __call__(
-        self,
-        *_args: Any,
-        tool_events: list[dict[str, Any]] | None = None,
-        **_kwargs: Any,
-    ) -> None:
-        if any(
-            isinstance(cast(object, event), dict) and event.get("phase") == "error"
-            for event in tool_events or ()
-        ):
-            self.had_tool_errors = True
-
-
 class MemoryStore:
     """Pure file I/O for memory files: MEMORY.md, history.jsonl, SOUL.md, USER.md."""
 
@@ -687,14 +668,24 @@ class MemoryStore:
     @staticmethod
     def dream_run_completed(
         resp: object | None,
-        *,
-        had_tool_errors: bool = False,
     ) -> bool:
-        """Return True only when a Dream turn completed without tool failures."""
+        """Return True when the Dream agent reached a normal terminal response."""
         metadata = getattr(resp, "metadata", None)
-        if had_tool_errors or not isinstance(metadata, dict):
+        if not isinstance(metadata, dict):
             return False
         return cast(dict[str, Any], metadata).get("_stop_reason") == "completed"
+
+    @staticmethod
+    def dream_incompletion_reason(
+        resp: object | None,
+    ) -> str:
+        """Human-readable explanation of why a Dream run cannot advance."""
+        metadata = getattr(resp, "metadata", None)
+        if isinstance(metadata, dict):
+            stop_reason = cast(dict[str, Any], metadata).get("_stop_reason", "unknown")
+        else:
+            stop_reason = "missing response metadata"
+        return f"stop_reason: {stop_reason}"
 
     # -- message formatting utility ------------------------------------------
 
