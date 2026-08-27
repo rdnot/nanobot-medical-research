@@ -30,10 +30,11 @@ def test_coding_tool_descriptions_steer_discovery() -> None:
     find_files = FindFilesTool().description.lower()
     grep = GrepTool().description.lower()
 
-    assert "text, images, pdfs, and office documents" in read_file
-    assert "line-numbered" in read_file
-    assert "targeted ranges" in read_file
-    assert len(read_file) < 160
+    # FORK: keep the longer medical-research read_file description
+    assert "text, image, or document" in read_file
+    assert "line_num|content" in read_file
+    assert "768k" in read_file
+    assert "offset" in read_file and "limit" in read_file
 
     assert "workspace paths" in find_files
     assert "relative paths" in find_files
@@ -51,7 +52,11 @@ def test_coding_tool_descriptions_steer_discovery() -> None:
 
 
 def test_exec_tool_descriptions_are_concise() -> None:
-    assert ExecTool().description == "Execute a shell command."
+    # FORK: keep the longer exec description (platform note + 90s timeout)
+    exec_desc = ExecTool().description
+    assert exec_desc.startswith("Execute a shell command")
+    assert "90s" in exec_desc
+    assert "yield_time_ms" in exec_desc
     assert ExecSessionTool().description == "Manage a session returned by exec."
     assert ListExecSessionsTool().description == "List active exec sessions."
 
