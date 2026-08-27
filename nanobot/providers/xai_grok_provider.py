@@ -18,6 +18,7 @@ from nanobot import __version__
 from nanobot.providers.base import (
     LLMProvider,
     LLMResponse,
+    LLMUsage,
     ToolCallRequest,
     resolve_stream_idle_timeout_s,
 )
@@ -62,15 +63,15 @@ def _is_named_x_search_tool(value: object) -> bool:
 class XAIGrokProvider(LLMProvider):
     """Call xAI's subscription proxy and expose supported hosted tools."""
 
-    supports_progress_deltas = True
-
     def __init__(
         self,
         default_model: str = DEFAULT_XAI_GROK_MODEL,
         proxy: str | None = None,
         extra_body: dict[str, Any] | None = None,
+        *,
+        provider_name: str = "xai_grok",
     ):
-        super().__init__(api_key=None, api_base=None)
+        super().__init__(api_key=None, api_base=None, provider_name=provider_name)
         self.default_model = default_model
         self.proxy = proxy or None
         self._extra_body = dict(extra_body or {})
@@ -436,7 +437,7 @@ async def _request_xai(
     on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     on_thinking_delta: Callable[[str], Awaitable[None]] | None = None,
     on_tool_call_delta: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
-) -> tuple[str, list[ToolCallRequest], str, dict[str, int], str | None]:
+) -> tuple[str, list[ToolCallRequest], str, LLMUsage | None, str | None]:
     async def _on_response_event(event: dict[str, Any]) -> None:
         hosted_event = _xai_hosted_tool_event(event)
         if hosted_event is not None and on_tool_call_delta is not None:

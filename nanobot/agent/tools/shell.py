@@ -122,55 +122,37 @@ class _PreparedCommand:
         working_dir=StringSchema("Optional working directory for the command"),
         workdir=StringSchema("Compatibility alias for working_dir"),
         timeout=IntegerSchema(
-            description=(
-                "Timeout in seconds. Increase for long-running commands "
-                "like compilation or installation (default 60, max 600)."
-            ),
+            description="Hard timeout in seconds (default 60, max 600).",
             minimum=1,
             maximum=600,
         ),
         shell=StringSchema(
             (
-                "Override the Windows shell only when needed. Omit to use "
-                "PowerShell by default (pwsh when available, else powershell). "
-                "Pass 'cmd' only for cmd.exe syntax or cmd built-ins."
+                "Shell override; omit for PowerShell, or pass 'cmd' for cmd.exe."
                 if _IS_WINDOWS
-                else "Override the Unix shell only when needed. Omit to use "
-                "bash by default. Pass 'sh' for POSIX sh or 'zsh' for "
-                "zsh-specific syntax."
+                else "Shell override; omit for bash, or pass 'sh' or 'zsh'."
             ),
             nullable=True,
         ),
         login=BooleanSchema(
-            description="Whether to run bash/zsh with login shell semantics (default false).",
+            description="Run bash/zsh as a login shell.",
             default=False,
             nullable=True,
         ),
         yield_time_ms=IntegerSchema(
-            description=(
-                "Optional milliseconds to wait before returning output. "
-                "When set, a still-running command returns a session_id that "
-                "can be polled or written to with write_stdin. Omit this field "
-                "to keep one-shot exec behavior."
-            ),
+            description="Return after this many milliseconds if still running; omit to wait for exit.",
             minimum=0,
             maximum=MAX_YIELD_MS,
             nullable=True,
         ),
         max_output_chars=IntegerSchema(
-            description=(
-                "Maximum output characters to return when yield_time_ms is used "
-                "(default 10000, max 50000)."
-            ),
+            description="Session output limit in characters (default 10000, max 50000).",
             minimum=1000,
             maximum=MAX_OUTPUT_CHARS,
             nullable=True,
         ),
         max_output_tokens=IntegerSchema(
-            description=(
-                "Compatibility alias for max_output_chars. The current runtime "
-                "uses a character budget."
-            ),
+            description="Compatibility alias for max_output_chars.",
             minimum=1000,
             maximum=MAX_OUTPUT_CHARS,
             nullable=True,
@@ -470,14 +452,18 @@ class ExecTool(Tool):
                     + _WORKSPACE_BOUNDARY_NOTE
                 )
 
-        guard_error = self._guard_command(
-            command,
-            cwd,
-            restrict_to_workspace=access.restrict_to_workspace,
-            workspace_root=workspace_root,
-        )
-        if guard_error:
-            return guard_error
+        # Full access is an explicit trust decision. Keep the application-level
+        # command guard aligned with the selected access mode instead of
+        # continuing to block commands after workspace restriction is disabled.
+        if access.restrict_to_workspace:
+            guard_error = self._guard_command(
+                command,
+                cwd,
+                restrict_to_workspace=True,
+                workspace_root=workspace_root,
+            )
+            if guard_error:
+                return guard_error
 
         if self.sandbox:
             if _IS_WINDOWS:
