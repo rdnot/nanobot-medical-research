@@ -152,7 +152,6 @@ class _ForkProgressHook(AgentProgressHook):
 
     async def before_iteration(self, context: AgentHookContext) -> None:
         await super().before_iteration(context)
-        self._loop._current_iteration = context.iteration
         # FORK: Force final answer after threshold iterations
         if context.iteration >= self._force_final_threshold and context.tool_calls:
             context.messages.append({
