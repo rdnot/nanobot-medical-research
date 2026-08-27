@@ -20,9 +20,16 @@ from nanobot.agent.context_governance import (
 )
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
 from nanobot.agent.tools.registry import ToolRegistry, is_tool_error_result
+from nanobot.llm_usage.context import (
+    LLMUsageSource,
+    bind_llm_usage_source,
+    reset_llm_usage_source,
+    source_from_session_key,
+)
 from nanobot.providers.base import (
     LLMProvider,
     LLMResponse,
+    LLMUsage,
     ProviderCallContext,
     ProviderConversationState,
     ToolCallRequest,
@@ -37,14 +44,13 @@ from nanobot.runtime_context import (
     reattach_runtime_context,
 )
 from nanobot.session.history_visibility import is_hidden_history_message
+from nanobot.session.recovery import PENDING_FOLLOWUP_ID_KEY
 from nanobot.utils.helpers import (
-    IncrementalThinkExtractor,
     build_assistant_message,
     estimate_message_tokens,
     estimate_prompt_tokens_chain,
     extract_reasoning,
     strip_reasoning_tags,
-    strip_think,
 )
 from nanobot.utils.llm_runtime import LLMRuntime
 from nanobot.utils.prompt_templates import render_template
@@ -52,15 +58,13 @@ from nanobot.utils.runtime import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
     build_budget_exhausted_finalization_message,
     build_finalization_retry_message,
-    build_goal_continue_message,
     build_length_recovery_message,
     is_blank_text,
     repeated_external_lookup_error,
     repeated_workspace_violation_error,
 )
 
-GoalContinueMessage = str | Callable[[], str | None]
-ProgressCallback = Callable[[str], Awaitable[None]]
+ContinuationCallback = Callable[[], str | None]
 RetryWaitCallback = Callable[[str], Awaitable[None]]
 CheckpointCallback = Callable[[dict[str, Any]], Awaitable[None]]
 InjectionCallback = Callable[..., Awaitable[Iterable[Any] | None]]
@@ -101,21 +105,19 @@ class AgentRunSpec:
     error_message: str | None = _DEFAULT_ERROR_MESSAGE
     max_iterations_message: str | None = None
     concurrent_tools: bool = False
-    fail_on_tool_error: bool = False
     workspace: Path | None = None
     session_key: str | None = None
     context_block_limit: int | None = None
     provider_retry_mode: str = "standard"
-    progress_callback: ProgressCallback | None = None
-    stream_progress_deltas: bool = True
     retry_wait_callback: RetryWaitCallback | None = None
     checkpoint_callback: CheckpointCallback | None = None
     injection_callback: InjectionCallback | None = None
+    terminal_injection_callback: InjectionCallback | None = None
     llm_timeout_s: float | None = None
-    goal_active_predicate: Callable[[], bool] | None = None
-    goal_continue_message: GoalContinueMessage | None = None
+    continuation_callback: ContinuationCallback | None = None
     finalize_on_max_iterations: bool = True
     provider_state: ProviderConversationState | None = None
+    llm_usage_source: LLMUsageSource | None = None
 
 
 @dataclass(slots=True)
@@ -125,7 +127,7 @@ class AgentRunResult:
     final_content: str | None
     messages: list[dict[str, Any]]
     tools_used: list[str] = field(default_factory=list)
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: LLMUsage | None = None
     stop_reason: str = "completed"
     error: str | None = None
     tool_events: list[dict[str, str]] = field(default_factory=list)
@@ -234,6 +236,23 @@ class AgentRunner:
                         merged.get("content"),
                         injection.get("content"),
                     )
+                followup_id = injection.get(PENDING_FOLLOWUP_ID_KEY)
+                if isinstance(followup_id, str) and followup_id:
+                    existing = cast(object, merged.get(PENDING_FOLLOWUP_ID_KEY))
+                    followup_ids = (
+                        [existing]
+                        if isinstance(existing, str)
+                        else [
+                            item
+                            for item in cast(list[object], existing)
+                            if isinstance(item, str)
+                        ]
+                        if isinstance(existing, list)
+                        else []
+                    )
+                    if followup_id not in followup_ids:
+                        followup_ids.append(followup_id)
+                    merged[PENDING_FOLLOWUP_ID_KEY] = followup_ids
                 messages[-1] = merged
                 continue
             messages.append(injection)
@@ -248,7 +267,8 @@ class AgentRunner:
         conversation_state: ProviderConversationStateController | None = None,
         phase: str = "after error",
         iteration: int | None = None,
-        allow_goal_continue: bool = False,
+        allow_continuation: bool = False,
+        wait_at_terminal: bool = False,
     ) -> tuple[bool, int]:
         """Drain pending injections. Returns (should_continue, updated_cycles).
 
@@ -262,10 +282,17 @@ class AgentRunner:
         if injection_cycles < _MAX_INJECTION_CYCLES:
             injections = await self._drain_injections(spec)
             real_injection = bool(injections)
-        if not injections and allow_goal_continue and assistant_message is not None:
-            predicate = spec.goal_active_predicate
-            if predicate is not None and predicate():
-                injections = [self._build_goal_continue_message(spec)]
+        if not injections and allow_continuation and assistant_message is not None:
+            continuation = self._build_continuation_message(spec)
+            if continuation is not None:
+                injections = [continuation]
+        if (
+            not injections
+            and wait_at_terminal
+            and injection_cycles < _MAX_INJECTION_CYCLES
+        ):
+            injections = await self._drain_injections(spec, terminal=True)
+            real_injection = bool(injections)
         if not injections:
             return False, injection_cycles
         if real_injection:
@@ -296,20 +323,29 @@ class AgentRunner:
                 len(injections), phase, injection_cycles, _MAX_INJECTION_CYCLES,
             )
         else:
-            logger.info("Injected sustained-goal continuation {}", phase)
+            logger.info("Injected caller-requested continuation {}", phase)
         return True, injection_cycles
 
-    def _build_goal_continue_message(self, spec: AgentRunSpec) -> dict[str, str]:
-        custom = spec.goal_continue_message
-        if callable(custom):
-            try:
-                custom = custom()
-            except Exception:
-                logger.exception("goal_continue_message callback failed")
-                custom = None
-        return build_goal_continue_message(custom)
+    @staticmethod
+    def _build_continuation_message(spec: AgentRunSpec) -> dict[str, str] | None:
+        callback = spec.continuation_callback
+        if callback is None:
+            return None
+        try:
+            content = callback()
+        except Exception:
+            logger.exception("continuation_callback failed")
+            return None
+        if content is None or not content.strip():
+            return None
+        return {"role": "user", "content": content}
 
-    async def _drain_injections(self, spec: AgentRunSpec) -> list[dict[str, Any]]:
+    async def _drain_injections(
+        self,
+        spec: AgentRunSpec,
+        *,
+        terminal: bool = False,
+    ) -> list[dict[str, Any]]:
         """Drain pending user messages via the injection callback.
 
         Returns normalized user messages (capped by
@@ -317,10 +353,15 @@ class AgentRunner:
         nothing to inject. Messages beyond the cap are logged so they
         are not silently lost.
         """
-        if spec.injection_callback is None:
+        callback = (
+            spec.terminal_injection_callback
+            if terminal
+            else spec.injection_callback
+        )
+        if callback is None:
             return []
         try:
-            signature = inspect.signature(spec.injection_callback)
+            signature = inspect.signature(callback)
             accepts_limit = (
                 "limit" in signature.parameters
                 or any(
@@ -329,9 +370,9 @@ class AgentRunner:
                 )
             )
             if accepts_limit:
-                items = await spec.injection_callback(limit=_MAX_INJECTIONS_PER_TURN)
+                items = await callback(limit=_MAX_INJECTIONS_PER_TURN)
             else:
-                items = await spec.injection_callback()
+                items = await callback()
         except Exception:
             logger.exception("injection_callback failed")
             return []
@@ -373,6 +414,9 @@ class AgentRunner:
         hook = spec.hook or AgentHook()
         messages = list(spec.initial_messages)
         context = AgentRunHookContext(messages=deepcopy(messages))
+        llm_usage_source_token = bind_llm_usage_source(
+            spec.llm_usage_source or source_from_session_key(spec.session_key)
+        )
 
         try:
             await hook.before_run(context)
@@ -394,7 +438,7 @@ class AgentRunner:
             context.messages = deepcopy(result.messages)
             context.final_content = result.final_content
             context.tools_used = list(result.tools_used)
-            context.usage = dict(result.usage)
+            context.usage = result.usage
             context.stop_reason = result.stop_reason
             context.error = result.error
             context.tool_events = deepcopy(result.tool_events)
@@ -405,17 +449,20 @@ class AgentRunner:
             await hook.after_run(context)
             return result
         finally:
-            context.messages = deepcopy(messages)
-            if context.exception is None:
-                await hook.on_finally(context)
-            else:
-                try:
+            try:
+                context.messages = deepcopy(messages)
+                if context.exception is None:
                     await hook.on_finally(context)
-                except Exception:
-                    logger.exception(
-                        "AgentHook.on_finally error after {}",
-                        context.stop_reason or "run exception",
-                    )
+                else:
+                    try:
+                        await hook.on_finally(context)
+                    except Exception:
+                        logger.exception(
+                            "AgentHook.on_finally error after {}",
+                            context.stop_reason or "run exception",
+                        )
+            finally:
+                reset_llm_usage_source(llm_usage_source_token)
 
     async def _run_core(
         self,
@@ -425,7 +472,7 @@ class AgentRunner:
     ) -> AgentRunResult:
         final_content: str | None = None
         tools_used: list[str] = []
-        usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0}
+        usage: LLMUsage | None = None
         error: str | None = None
         stop_reason = "completed"
         tool_events: list[dict[str, str]] = []
@@ -445,6 +492,7 @@ class AgentRunner:
             model=spec.runtime.model,
             messages=messages,
             state=spec.provider_state,
+            session_id=spec.session_key,
         )
         governance_config = ContextGovernanceConfig(
             provider=spec.runtime.provider,
@@ -501,8 +549,8 @@ class AgentRunner:
             )
             response.content = cleaned_content
             raw_usage = self._usage_or_estimate(spec, messages_for_model, response)
-            context.usage = dict(raw_usage)
-            self._accumulate_usage(usage, raw_usage)
+            context.usage = raw_usage
+            usage = self._merge_usage(usage, raw_usage)
             if reasoning_text and not context.streamed_reasoning:
                 await hook.emit_reasoning(reasoning_text)
                 await hook.emit_reasoning_end()
@@ -538,7 +586,7 @@ class AgentRunner:
 
                 await hook.before_execute_tools(context)
 
-                results, new_events, fatal_error = await self._execute_tools(
+                results, new_events = await self._execute_tools(
                     spec,
                     response.tool_calls,
                     external_lookup_counts,
@@ -569,24 +617,6 @@ class AgentRunner:
                     }
                     messages.append(tool_message)
                     completed_tool_results.append(tool_message)
-                if fatal_error is not None:
-                    error = f"Error: {type(fatal_error).__name__}: {fatal_error}"
-                    final_content = error
-                    stop_reason = "tool_error"
-                    self._append_final_message(messages, final_content)
-                    context.final_content = final_content
-                    context.error = error
-                    context.stop_reason = stop_reason
-                    await hook.after_iteration(context)
-                    should_continue, injection_cycles = await self._try_drain_injections(
-                        spec, messages, None, injection_cycles,
-                        phase="after tool error",
-                    )
-                    if should_continue:
-                        had_injections = True
-                        length_recovery_parts.clear()
-                        continue
-                    break
                 checkpoint_model_messages = (
                     self.context_governor.prepare_for_model(
                         governance_config,
@@ -665,10 +695,10 @@ class AgentRunner:
                     conversation_state=conversation_state,
                 )
                 retry_usage = self._usage_or_estimate(spec, retry_messages, response)
-                self._accumulate_usage(usage, retry_usage)
+                usage = self._merge_usage(usage, retry_usage)
                 raw_usage = self._merge_usage(raw_usage, retry_usage)
                 context.response = response
-                context.usage = dict(raw_usage)
+                context.usage = raw_usage
                 context.tool_calls = list(response.tool_calls)
                 original_content = response.content
                 clean = hook.finalize_content(context, response.content)
@@ -737,8 +767,13 @@ class AgentRunner:
                 conversation_state=conversation_state,
                 phase="after final response",
                 iteration=iteration,
-                allow_goal_continue=(
+                allow_continuation=(
                     response.finish_reason not in {"refusal", "content_filter"}
+                ),
+                wait_at_terminal=(
+                    assistant_message is not None
+                    and response.finish_reason
+                    not in {"error", "length", "refusal", "content_filter"}
                 ),
             )
             if should_continue:
@@ -841,7 +876,7 @@ class AgentRunner:
                 had_injections = True
             terminal_content = None
             if spec.finalize_on_max_iterations:
-                terminal_content = await self._try_finalize_after_max_iterations(
+                terminal_content, usage = await self._try_finalize_after_max_iterations(
                     spec,
                     hook,
                     messages,
@@ -904,18 +939,7 @@ class AgentRunner:
         conversation_state: ProviderConversationStateController,
         provider_context: ProviderCallContext | None = None,
     ) -> LLMResponse:
-        timeout_s: float | None = spec.llm_timeout_s
-        if timeout_s is None:
-            # Default to a finite timeout to avoid per-session lock starvation when an LLM
-            # request hangs indefinitely (e.g. gateway/network stall).
-            # Set NANOBOT_LLM_TIMEOUT_S=0 to disable.
-            raw = os.environ.get("NANOBOT_LLM_TIMEOUT_S", "300").strip()
-            try:
-                timeout_s = float(raw)
-            except (TypeError, ValueError):
-                timeout_s = 300.0
-        if timeout_s <= 0:
-            timeout_s = None
+        timeout_s = self._resolve_llm_timeout_s(spec)
 
         kwargs = self._build_request_kwargs(
             spec,
@@ -923,16 +947,9 @@ class AgentRunner:
             tools=spec.tools.get_definitions(),
         )
         wants_streaming = hook.wants_streaming()
-        progress_callback = spec.progress_callback
-        wants_progress_streaming = (
-            not wants_streaming
-            and spec.stream_progress_deltas
-            and progress_callback is not None
-            and getattr(spec.runtime.provider, "supports_progress_deltas", False) is True
-        )
 
-        progress_state: dict[str, bool] | None = None
         active_hosted_tools: dict[str, dict[str, Any]] = {}
+        native_reasoning_open = False
         request_started_at = 0.0
         first_output_at: float | None = None
         generation_started_at: float | None = None
@@ -955,9 +972,17 @@ class AgentRunner:
             generation_elapsed_s += max(0.0, time.perf_counter() - generation_started_at)
             generation_started_at = None
 
+        async def _close_native_reasoning() -> None:
+            nonlocal native_reasoning_open
+            if not native_reasoning_open:
+                return
+            native_reasoning_open = False
+            await hook.emit_reasoning_end()
+
         async def _provider_tool_event(event: dict[str, Any]) -> None:
             if event.get("kind") != "hosted_tool":
                 return
+            await _close_native_reasoning()
             await hook.on_provider_tool_event(context, event)
             call_id = event.get("call_id")
             if not call_id:
@@ -975,10 +1000,11 @@ class AgentRunner:
                 _generation_delta(delta)
                 if delta:
                     context.streamed_content = True
+                    await _close_native_reasoning()
                 await hook.on_stream(context, delta)
 
             async def _thinking(delta: str) -> None:
-                nonlocal thinking_buf
+                nonlocal native_reasoning_open, thinking_buf
                 if not delta:
                     return
                 _generation_delta(delta)
@@ -988,10 +1014,12 @@ class AgentRunner:
                 incremental = new_clean[len(prev_clean):]
                 if incremental:
                     context.streamed_reasoning = True
+                    native_reasoning_open = True
                     await hook.emit_reasoning(incremental)
 
             async def _stream_recover() -> None:
                 _pause_generation()
+                await _close_native_reasoning()
                 await hook.on_stream_end(context, resuming=True)
 
             coro = spec.runtime.provider.chat_stream_with_retry(
@@ -1001,40 +1029,6 @@ class AgentRunner:
                 on_thinking_delta=_thinking,
                 on_tool_call_delta=_provider_tool_event,
                 on_stream_recover=_stream_recover,
-            )
-        elif wants_progress_streaming:
-            stream_buf = ""
-            think_extractor = IncrementalThinkExtractor()
-            progress_state = {"reasoning_open": False}
-
-            async def _stream_progress(delta: str) -> None:
-                nonlocal stream_buf
-                if not delta:
-                    return
-                _generation_delta(delta)
-                prev_clean = strip_think(stream_buf)
-                stream_buf += delta
-                new_clean = strip_think(stream_buf)
-                incremental = new_clean[len(prev_clean):]
-
-                if await think_extractor.feed(stream_buf, hook.emit_reasoning):
-                    context.streamed_reasoning = True
-                    progress_state["reasoning_open"] = True
-
-                if incremental:
-                    if progress_state["reasoning_open"]:
-                        await hook.emit_reasoning_end()
-                        progress_state["reasoning_open"] = False
-                    context.streamed_content = True
-                    callback = progress_callback
-                    if callback is not None:
-                        await callback(incremental)
-
-            coro = spec.runtime.provider.chat_stream_with_retry(
-                **kwargs,
-                provider_context=provider_context,
-                on_content_delta=_stream_progress,
-                on_tool_call_delta=_provider_tool_event,
             )
         else:
             coro = spec.runtime.provider.chat_with_retry(
@@ -1047,10 +1041,9 @@ class AgentRunner:
         # very slow deltas can still run forever. Use a more generous wall-clock
         # timeout for streaming while preserving NANOBOT_LLM_TIMEOUT_S=0 as an
         # opt-out for all LLM wall-clock timeouts.
-        is_streaming_request = wants_streaming or wants_progress_streaming
         outer_timeout_s = (
             max(300.0, timeout_s * 2)
-            if is_streaming_request and timeout_s is not None
+            if wants_streaming and timeout_s is not None
             else timeout_s
         )
         request_started_at = time.perf_counter()
@@ -1073,6 +1066,7 @@ class AgentRunner:
                     error_kind="timeout",
                 )
         _pause_generation()
+        await _close_native_reasoning()
         if first_output_at is not None:
             response.ttft_ms = max(0, round((first_output_at - request_started_at) * 1000))
         if generation_elapsed_s > 0:
@@ -1088,8 +1082,6 @@ class AgentRunner:
                     "error": response.content
                     or "Model request failed before the provider-hosted tool completed.",
                 })
-        if progress_state and progress_state.get("reasoning_open"):
-            await hook.emit_reasoning_end()
         dropped, all_dropped, original_finish_reason = (
             self._drop_malformed_tool_calls(response)
         )
@@ -1229,9 +1221,9 @@ class AgentRunner:
         spec: AgentRunSpec,
         hook: AgentHook,
         messages: list[dict[str, Any]],
-        usage: dict[str, int],
+        usage: LLMUsage | None,
         conversation_state: ProviderConversationStateController,
-    ) -> str | None:
+    ) -> tuple[str | None, LLMUsage | None]:
         retry_messages = self._budget_exhausted_finalization_messages(messages)
         try:
             response = await self._request_no_tools(
@@ -1246,10 +1238,10 @@ class AgentRunner:
                 "Budget-exhausted finalization failed for {}; using fallback",
                 spec.session_key or "default",
             )
-            return None
+            return None, usage
 
         raw_usage = self._usage_or_estimate(spec, retry_messages, response)
-        self._accumulate_usage(usage, raw_usage)
+        usage = self._merge_usage(usage, raw_usage)
         if response.finish_reason == "error" or response.has_tool_calls:
             logger.warning(
                 "Budget-exhausted finalization returned finish_reason='{}' "
@@ -1258,19 +1250,19 @@ class AgentRunner:
                 len(response.tool_calls),
                 spec.session_key or "default",
             )
-            return None
+            return None, usage
 
         context = AgentHookContext(
             iteration=spec.max_iterations,
             messages=messages,
             response=response,
-            usage=dict(raw_usage),
+            usage=raw_usage,
             session_key=spec.session_key,
         )
         clean = hook.finalize_content(context, response.content)
         if is_blank_text(clean):
-            return None
-        return clean
+            return None, usage
+        return clean, usage
 
     async def _request_no_tools(
         self,
@@ -1284,10 +1276,38 @@ class AgentRunner:
             messages,
             tools=None,
         )
-        return await spec.runtime.provider.chat_with_retry(
+        coro = spec.runtime.provider.chat_with_retry(
             **kwargs,
             provider_context=provider_context,
         )
+        timeout_s = self._resolve_llm_timeout_s(spec)
+        try:
+            return (
+                await coro
+                if timeout_s is None
+                else await asyncio.wait_for(coro, timeout=timeout_s)
+            )
+        except asyncio.TimeoutError:
+            return LLMResponse(
+                content=f"Error calling LLM: timed out after {timeout_s:g}s",
+                finish_reason="error",
+                error_kind="timeout",
+            )
+
+    @staticmethod
+    def _resolve_llm_timeout_s(spec: AgentRunSpec) -> float | None:
+        """Resolve the wall-clock limit shared by every model request path."""
+        timeout_s = spec.llm_timeout_s
+        if timeout_s is None:
+            # Default to a finite timeout to avoid per-session lock starvation when an LLM
+            # request hangs indefinitely (e.g. gateway/network stall).
+            # Set NANOBOT_LLM_TIMEOUT_S=0 to disable.
+            raw = os.environ.get("NANOBOT_LLM_TIMEOUT_S", "300").strip()
+            try:
+                timeout_s = float(raw)
+            except (TypeError, ValueError):
+                timeout_s = 300.0
+        return timeout_s if timeout_s > 0 else None
 
     @staticmethod
     def _budget_exhausted_finalization_messages(
@@ -1314,31 +1334,24 @@ class AgentRunner:
         spec: AgentRunSpec,
         messages: list[dict[str, Any]],
         response: LLMResponse,
-    ) -> dict[str, int]:
-        usage = self._usage_dict(response.usage)
-        total = self._usage_total(usage)
-        if total > 0:
-            usage["total_tokens"] = total
-            usage.setdefault("provider_tokens", total)
-        elif response.finish_reason == "error":
-            return {}
-        else:
+    ) -> LLMUsage | None:
+        usage = response.usage
+        if response.finish_reason == "error":
+            if usage is None or usage.total_tokens == 0:
+                usage = LLMUsage.empty_request()
+        elif usage is None or usage.total_tokens == 0:
             usage = self._estimate_response_usage(spec, messages, response)
-        completion = usage.get("completion_tokens", 0)
-        if response.generation_ms is not None and completion > 0:
-            usage["generation_ms"] = response.generation_ms
-            usage["measured_completion_tokens"] = completion
-        if response.ttft_ms is not None:
-            usage["ttft_ms"] = response.ttft_ms
-            usage["timed_requests"] = 1
-        return usage
+        return usage.with_timing(
+            generation_ms=response.generation_ms,
+            ttft_ms=response.ttft_ms,
+        )
 
     def _estimate_response_usage(
         self,
         spec: AgentRunSpec,
         messages: list[dict[str, Any]],
         response: LLMResponse,
-    ) -> dict[str, int]:
+    ) -> LLMUsage:
         try:
             tools = spec.tools.get_definitions()
         except Exception:
@@ -1356,45 +1369,21 @@ class AgentRunner:
             thinking_blocks=response.thinking_blocks,
         )
         completion_tokens = estimate_message_tokens(assistant_message)
-        total_tokens = max(0, prompt_tokens) + max(0, completion_tokens)
-        if total_tokens <= 0:
-            return {}
-        return {
-            "prompt_tokens": max(0, prompt_tokens),
-            "completion_tokens": max(0, completion_tokens),
-            "total_tokens": total_tokens,
-            "estimated_tokens": total_tokens,
-        }
+        return LLMUsage.estimated(
+            input_tokens=max(0, prompt_tokens),
+            output_tokens=max(0, completion_tokens),
+        )
 
     @staticmethod
-    def _usage_dict(usage: dict[str, Any] | None) -> dict[str, int]:
-        if not usage:
-            return {}
-        result: dict[str, int] = {}
-        for key, value in usage.items():
-            try:
-                result[key] = int(value or 0)
-            except (TypeError, ValueError):
-                continue
-        return result
-
-    @staticmethod
-    def _usage_total(usage: dict[str, int]) -> int:
-        return max(0, usage.get("total_tokens", 0) or (
-            usage.get("prompt_tokens", 0) + usage.get("completion_tokens", 0)
-        ))
-
-    @staticmethod
-    def _accumulate_usage(target: dict[str, int], addition: dict[str, int]) -> None:
-        for key, value in addition.items():
-            target[key] = target.get(key, 0) + value
-
-    @staticmethod
-    def _merge_usage(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
-        merged = dict(left)
-        for key, value in right.items():
-            merged[key] = merged.get(key, 0) + value
-        return merged
+    def _merge_usage(
+        left: LLMUsage | None,
+        right: LLMUsage | None,
+    ) -> LLMUsage | None:
+        if left is None:
+            return right
+        if right is None:
+            return left
+        return left + right
 
     async def _execute_tools(
         self,
@@ -1404,11 +1393,11 @@ class AgentRunner:
         workspace_violation_counts: dict[str, int],
         hook: AgentHook | None = None,
         context: AgentHookContext | None = None,
-    ) -> tuple[list[Any], list[dict[str, str]], BaseException | None]:
+    ) -> tuple[list[Any], list[dict[str, str]]]:
         hook = hook or AgentHook()
         context = context or AgentHookContext(iteration=0, messages=[])
         batches = self._partition_tool_batches(spec, tool_calls)
-        tool_results: list[tuple[Any, dict[str, str], BaseException | None]] = []
+        tool_results: list[tuple[Any, dict[str, str]]] = []
         for batch in batches:
             if spec.concurrent_tools and len(batch) > 1:
                 batch_results = await asyncio.gather(*(
@@ -1424,7 +1413,7 @@ class AgentRunner:
                 ))
                 tool_results.extend(batch_results)
             else:
-                batch_results: list[tuple[Any, dict[str, str], BaseException | None]] = []
+                batch_results: list[tuple[Any, dict[str, str]]] = []
                 for tool_call in batch:
                     result = await self._run_tool(
                         spec,
@@ -1439,13 +1428,10 @@ class AgentRunner:
 
         results: list[Any] = []
         events: list[dict[str, str]] = []
-        fatal_error: BaseException | None = None
-        for result, event, error in tool_results:
+        for result, event in tool_results:
             results.append(result)
             events.append(event)
-            if error is not None and fatal_error is None:
-                fatal_error = error
-        return results, events, fatal_error
+        return results, events
 
     async def _run_tool(
         self,
@@ -1455,7 +1441,7 @@ class AgentRunner:
         workspace_violation_counts: dict[str, int],
         hook: AgentHook | None = None,
         context: AgentHookContext | None = None,
-    ) -> tuple[Any, dict[str, str], BaseException | None]:
+    ) -> tuple[Any, dict[str, str]]:
         hook = hook or AgentHook()
         context = context or AgentHookContext(iteration=0, messages=[])
         hint = "\n\n[Analyze the error above and try a different approach.]"
@@ -1470,9 +1456,7 @@ class AgentRunner:
                 "status": "error",
                 "detail": "repeated external lookup blocked",
             }
-            if spec.fail_on_tool_error:
-                return lookup_error + hint, event, RuntimeError(lookup_error)
-            return lookup_error + hint, event, None
+            return lookup_error + hint, event
         prepare_call = cast(
             Callable[[str, Any], object] | None,
             getattr(spec.tools, "prepare_call", None),
@@ -1499,9 +1483,7 @@ class AgentRunner:
             )
             if handled is not None:
                 return handled
-            return prep_error + hint, event, (
-                RuntimeError(prep_error) if spec.fail_on_tool_error else None
-            )
+            return prep_error + hint, event
         await hook.before_execute_tool(context, tool_call, tool, params)
         try:
             if tool is not None:
@@ -1528,9 +1510,7 @@ class AgentRunner:
             )
             if handled is not None:
                 return handled
-            if spec.fail_on_tool_error:
-                return payload, event, exc
-            return payload, event, None
+            return payload, event
 
         if is_tool_error_result(result):
             await hook.on_execute_tool_error(context, tool_call, tool, params, result)
@@ -1548,9 +1528,7 @@ class AgentRunner:
             )
             if handled is not None:
                 return handled
-            if spec.fail_on_tool_error:
-                return result + hint, event, RuntimeError(result)
-            return result + hint, event, None
+            return result + hint, event
 
         await hook.after_execute_tool(context, tool_call, tool, params, result)
 
@@ -1560,7 +1538,7 @@ class AgentRunner:
             detail = "(empty)"
         elif len(detail) > 120:
             detail = detail[:120] + "..."
-        return result, {"name": tool_call.name, "status": "ok", "detail": detail}, None
+        return result, {"name": tool_call.name, "status": "ok", "detail": detail}
 
     # SSRF is a hard security block at the tool boundary, but the agent turn
     # should recover conversationally instead of aborting the runtime.
@@ -1613,7 +1591,7 @@ class AgentRunner:
         event: dict[str, str],
         tool_call: ToolCallRequest,
         workspace_violation_counts: dict[str, int],
-    ) -> tuple[Any, dict[str, str], BaseException | None] | None:
+    ) -> tuple[Any, dict[str, str]] | None:
         """Classify safety-boundary failures, or return ``None`` to pass through."""
         if self._is_ssrf_violation(raw_text):
             logger.warning(
@@ -1622,7 +1600,7 @@ class AgentRunner:
                 raw_text.replace("\n", " ").strip()[:200],
             )
             event["detail"] = self._event_detail("ssrf_violation: ", raw_text)
-            return self._ssrf_soft_payload(raw_text), event, None
+            return self._ssrf_soft_payload(raw_text), event
 
         if self._is_workspace_violation(raw_text):
             escalation = repeated_workspace_violation_error(
@@ -1640,8 +1618,8 @@ class AgentRunner:
                     "workspace_violation_escalated: ",
                     raw_text,
                 )
-                return escalation, event, None
-            return soft_payload, event, None
+                return escalation, event
+            return soft_payload, event
 
         return None
 

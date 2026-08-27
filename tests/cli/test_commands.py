@@ -102,6 +102,19 @@ class _GatewayAgentContractStub:
     ) -> OutboundMessage | None:
         return None
 
+    def preserve_inflight_turns_on_shutdown(self) -> None:
+        return None
+
+
+class _EmptyGatewaySessionManager:
+    """Minimal session-manager contract for gateway assembly tests."""
+
+    def list_sessions(self) -> list[dict[str, object]]:
+        return []
+
+    def flush_all(self) -> int:
+        return 0
+
 
 def test_gateway_signal_handler_first_signal_stops_and_second_forces() -> None:
     class _FakeLoop:
@@ -2521,7 +2534,11 @@ def test_webui_yes_still_refuses_invalid_custom_model_setup(
 def test_open_webui_browser_redacts_bootstrap_secret(monkeypatch, capsys) -> None:
     opened: list[str] = []
     url = "http://127.0.0.1:8765/#/?bootstrapSecret=super-secret"
-    monkeypatch.setattr("webbrowser.open", lambda value: opened.append(value))
+    monkeypatch.setattr(
+        cli_webui_support,
+        "_launch_browser",
+        lambda value: opened.append(value) or True,
+    )
 
     cli_webui_support._open_webui_browser(url, wait=False)
 
@@ -2529,6 +2546,42 @@ def test_open_webui_browser_redacts_bootstrap_secret(monkeypatch, capsys) -> Non
     output = _strip_ansi(capsys.readouterr().out)
     assert "bootstrapSecret=<redacted>" in output
     assert "super-secret" not in output
+
+
+def test_open_webui_browser_reports_launch_failure(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli_webui_support, "_launch_browser", lambda _value: False)
+
+    cli_webui_support._open_webui_browser("http://127.0.0.1:8765/", wait=False)
+
+    assert "Could not open browser; visit http://127.0.0.1:8765/" in _strip_ansi(
+        capsys.readouterr().out
+    )
+
+
+def test_launch_browser_uses_macos_foreground_opener(monkeypatch) -> None:
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli_webui_support.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_webui_support.subprocess,
+        "run",
+        lambda command, **_kwargs: seen.append(command) or SimpleNamespace(returncode=0),
+    )
+
+    assert cli_webui_support._launch_browser("http://127.0.0.1:8765/") is True
+    assert seen == [["open", "http://127.0.0.1:8765/"]]
+
+
+def test_launch_browser_uses_default_browser_off_macos(monkeypatch) -> None:
+    opened: list[tuple[str, int, bool]] = []
+    monkeypatch.setattr(cli_webui_support.sys, "platform", "linux")
+    monkeypatch.setattr(
+        cli_webui_support.webbrowser,
+        "open",
+        lambda url, *, new, autoraise: opened.append((url, new, autoraise)) or True,
+    )
+
+    assert cli_webui_support._launch_browser("http://127.0.0.1:8765/") is True
+    assert opened == [("http://127.0.0.1:8765/", 2, True)]
 
 
 def test_webui_foreground_attaches_to_existing_managed_gateway(monkeypatch, tmp_path: Path) -> None:
@@ -2756,7 +2809,7 @@ def _patch_serve_runtime(monkeypatch, config: Config, seen: dict[str, object]) -
         monkeypatch,
         config,
         message_bus=lambda: object(),
-        session_manager=lambda _workspace: object(),
+        session_manager=lambda _workspace: _EmptyGatewaySessionManager(),
     )
     monkeypatch.setattr("nanobot.cli.commands.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.api.server.create_app", _fake_create_app)
@@ -2823,7 +2876,7 @@ def test_gateway_uses_workspace_directory_for_cron_store(monkeypatch, tmp_path: 
         monkeypatch,
         config,
         message_bus=lambda: object(),
-        session_manager=lambda _workspace: object(),
+        session_manager=lambda _workspace: _EmptyGatewaySessionManager(),
         cron_service=_StopCron,
     )
 
@@ -3329,7 +3382,7 @@ def test_gateway_workspace_override_does_not_migrate_legacy_cron(
         monkeypatch,
         config,
         message_bus=lambda: object(),
-        session_manager=lambda _workspace: object(),
+        session_manager=lambda _workspace: _EmptyGatewaySessionManager(),
         cron_service=_StopCron,
         get_cron_dir=lambda: legacy_dir,
     )
@@ -3368,7 +3421,7 @@ def test_gateway_custom_config_workspace_does_not_migrate_legacy_cron(
         monkeypatch,
         config,
         message_bus=lambda: object(),
-        session_manager=lambda _workspace: object(),
+        session_manager=lambda _workspace: _EmptyGatewaySessionManager(),
         cron_service=_StopCron,
         get_cron_dir=lambda: legacy_dir,
     )
@@ -3569,7 +3622,7 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
         monkeypatch,
         config,
         message_bus=lambda: object(),
-        session_manager=lambda _workspace: object(),
+        session_manager=lambda _workspace: _EmptyGatewaySessionManager(),
     )
     monkeypatch.setattr("nanobot.cli.gateway_runtime.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)
@@ -3605,7 +3658,12 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
     assert health_writer.closed is True
     assert "HTTP/1.0 200 OK" in health_response
     health_body = json.loads(health_response.split("\r\n\r\n", 1)[1])
-    assert health_body == {"status": "ok"}
+    assert health_body == {
+        "status": "ok",
+        "process": "alive",
+        "ready": True,
+        "websocket": "disabled",
+    }
 
     missing_response, missing_writer = _call_handler("/missing")
     assert missing_writer.closed is True
@@ -3684,6 +3742,7 @@ def test_gateway_agent_task_owns_initial_mcp_provider_close(
             return cls(**extra)
 
         def __init__(self, **_kwargs) -> None:
+            seen["hooks"] = _kwargs.get("hooks")
             self.model = "test-model"
             self.provider = object()
             self.sessions = _FakeSessionManager()
@@ -3701,6 +3760,9 @@ def test_gateway_agent_task_owns_initial_mcp_provider_close(
 
         async def aclose(self) -> None:
             seen["agent_closed"] = True
+
+        def preserve_inflight_turns_on_shutdown(self) -> None:
+            seen["inflight_turns_preserved"] = True
 
         def stop(self) -> None:
             seen["agent_stopped"] = True
@@ -3771,7 +3833,7 @@ def test_gateway_agent_task_owns_initial_mcp_provider_close(
         monkeypatch,
         config,
         message_bus=lambda: object(),
-        session_manager=lambda _workspace: object(),
+        session_manager=lambda _workspace: _EmptyGatewaySessionManager(),
     )
     monkeypatch.setattr("nanobot.cli.gateway_runtime.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.cli.gateway_runtime.MCPProvider", _FakeMCPProvider)
@@ -3783,6 +3845,7 @@ def test_gateway_agent_task_owns_initial_mcp_provider_close(
 
     assert result.exit_code == 0
     assert seen["agent_stopped"] is True
+    assert seen["inflight_turns_preserved"] is True
     assert seen["agent_closed"] is True
     assert seen["agent_task_cleaned_up"] is True
     assert seen["channels_stopped"] is True
@@ -3792,6 +3855,11 @@ def test_gateway_agent_task_owns_initial_mcp_provider_close(
     assert mcp_provider.connect_task is seen["agent_task"]
     assert mcp_provider.close_tasks[0] is mcp_provider.connect_task
     assert len(mcp_provider.close_tasks) == 2
+    hooks = seen["hooks"]
+    assert isinstance(hooks, list)
+    assert len(hooks) == 1
+    hook = hooks[0]
+    assert isinstance(hook, cli_gateway_runtime._MCPReadinessHook)
 
 
 def test_gateway_shutdown_event_exits_forever_runtime_tasks(
@@ -3894,7 +3962,7 @@ def test_gateway_shutdown_event_exits_forever_runtime_tasks(
         monkeypatch,
         config,
         message_bus=lambda: object(),
-        session_manager=lambda _workspace: object(),
+        session_manager=lambda _workspace: _EmptyGatewaySessionManager(),
     )
     monkeypatch.setattr("nanobot.cli.gateway_runtime.AgentLoop", _FakeAgentLoop)
     monkeypatch.setattr("nanobot.channels.manager.ChannelManager", _FakeChannelManager)

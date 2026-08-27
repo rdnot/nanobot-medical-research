@@ -15,7 +15,7 @@ from nanobot.providers.base import (
 
 class ScriptedProvider(LLMProvider):
     def __init__(self, responses):
-        super().__init__()
+        super().__init__(provider_name="scripted")
         self._responses = list(responses)
         self.calls = 0
         self.last_kwargs: dict = {}
@@ -437,13 +437,17 @@ async def test_image_retry_discards_provider_state_with_images(
 
     response = await provider.chat_with_retry(
         messages=messages,
-        provider_context=ProviderCallContext(conversation_state=state),
+        provider_context=ProviderCallContext(
+            conversation_state=state,
+            session_id="webui:cache-test",
+        ),
     )
 
     assert response.content == "ok, no image"
     retry_context = provider.contexts[-1]
     assert isinstance(retry_context, ProviderCallContext)
     assert retry_context.conversation_state is None
+    assert retry_context.session_id == "webui:cache-test"
     public_content = messages[0]["content"]
     if isinstance(public_content, list):
         assert all(block.get("type") != "image_url" for block in public_content)
