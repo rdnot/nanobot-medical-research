@@ -188,7 +188,7 @@ These variables are process-level switches. Set them in the same terminal, servi
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `NANOBOT_MAX_CONCURRENT_REQUESTS` | `3` | Maximum concurrently running inbound agent requests. Must be an integer; set `0` or a negative value for unlimited. |
+| `NANOBOT_MAX_CONCURRENT_REQUESTS` | Unlimited | Maximum concurrently running inbound agent requests. Set a positive integer to apply a cap; unset, `0`, or a negative value means unlimited. |
 | `NANOBOT_LLM_TIMEOUT_S` | `300` | Wall-clock timeout, in seconds. Ordinary requests use this value; streaming requests use the greater of 300 seconds or twice this value. Set `0` to disable. Sustained-goal turns bypass this wall-clock cap. |
 | `NANOBOT_STREAM_IDLE_TIMEOUT_S` | `90` | Streaming idle timeout, in seconds, used by streaming providers. Invalid or non-positive values are ignored; values above `3600` are clamped. |
 | `NANOBOT_OPENAI_COMPAT_TIMEOUT_S` | `120` | HTTP request timeout, in seconds, for OpenAI-compatible providers. Invalid or non-positive values are ignored. |
@@ -2213,7 +2213,7 @@ The notification gate runs on a built-in system prompt. Advanced users can overr
 
 ## Subagent Concurrency
 
-By default, nanobot only allows one spawned subagent at a time. When the limit is reached, the `spawn` tool returns an error so the agent can decide to wait or rearrange its work. This protects local LLM servers from loading multiple KV caches at once. If your provider can handle more parallel work, raise the limit:
+By default, nanobot allows four subagents to run at the same time. Additional subagents wait for capacity instead of being rejected. Lower the limit if a local model server cannot hold multiple KV caches, or raise it when the provider can handle more parallel work:
 
 ```json
 {
@@ -2225,22 +2225,11 @@ By default, nanobot only allows one spawned subagent at a time. When the limit i
 }
 ```
 
-Subagents also stop immediately when one of their tools returns an execution error. That default keeps failures visible to the parent agent. If your subagent workflows use tools that can fail transiently and should be retried or worked around by the model, disable hard-stop behavior:
-
-```json
-{
-  "agents": {
-    "defaults": {
-      "failOnToolError": false
-    }
-  }
-}
-```
+The deprecated `agents.defaults.failOnToolError` field is silently ignored when present in older configs.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `agents.defaults.maxConcurrentSubagents` | `1` | Maximum number of spawned subagents that may run at the same time. Attempts to spawn beyond this limit return an error. |
-| `agents.defaults.failOnToolError` | `true` | Stop a spawned subagent when a tool execution fails. Set to `false` to return tool errors to the subagent model so it can recover within the same run. |
+| `agents.defaults.maxConcurrentSubagents` | `4` | Maximum number of subagents that may run at the same time. Additional tasks wait for capacity. |
 
 
 ## Auto Compact

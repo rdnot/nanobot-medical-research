@@ -1,5 +1,6 @@
 """Tests for SubagentManager."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,7 +11,8 @@ from nanobot.agent.subagent import SubagentManager, SubagentStatus
 from nanobot.agent.tools.filesystem import FileToolsConfig
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import ToolsConfig
-from nanobot.providers.base import GenerationSettings, LLMProvider
+from nanobot.llm_usage.context import llm_usage_source
+from nanobot.providers.base import GenerationSettings, LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.security.workspace_access import build_workspace_scope
 from nanobot.utils.llm_runtime import LLMRuntime
 
@@ -166,35 +168,60 @@ async def test_subagent_keeps_project_runtime_scope_with_agent_owned_tools(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_subagent_forwards_fail_on_tool_error_to_runner(tmp_path):
+async def test_subagent_recovers_from_tool_error_in_same_run(tmp_path):
+    provider = MagicMock(spec=LLMProvider)
+    provider.get_default_model.return_value = "test"
+    provider.chat_with_retry = AsyncMock(side_effect=[
+        LLMResponse(
+            content="reading",
+            tool_calls=[
+                ToolCallRequest(
+                    id="call_1",
+                    name="read_file",
+                    arguments={"path": "missing.txt"},
+                )
+            ],
+        ),
+        LLMResponse(content="recovered without restarting", tool_calls=[]),
+    ])
+    sm = SubagentManager(
+        workspace=tmp_path,
+        bus=MessageBus(),
+        max_tool_result_chars=16_000,
+    )
+
+    result = await sm.run_inline(
+        task="recover after a missing file",
+        session_key="test:direct",
+        runtime=_runtime(provider),
+    )
+
+    assert result == "recovered without restarting"
+    assert provider.chat_with_retry.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_spawned_subagent_inherits_llm_usage_source(tmp_path):
     provider = MagicMock(spec=LLMProvider)
     provider.get_default_model.return_value = "test"
     sm = SubagentManager(
         workspace=tmp_path,
         bus=MessageBus(),
         max_tool_result_chars=16_000,
-        fail_on_tool_error=False,
     )
     sm.runner.run = AsyncMock(
         return_value=AgentRunResult(final_content="ok", messages=[], stop_reason="completed")
     )
     sm._announce_result = AsyncMock()
 
-    status = SubagentStatus(
-        task_id="t1",
-        label="label",
-        task_description="task",
-        started_at=0.0,
-    )
-
-    await sm._run_subagent(
-        "t1",
-        "task",
-        "label",
-        {"channel": "cli", "chat_id": "direct"},
-        status,
-        _runtime(provider),
-    )
+    with llm_usage_source("cron"):
+        await sm.spawn(
+            "automation task",
+            session_key="websocket:bound-automation",
+            runtime=_runtime(provider),
+        )
+    tasks = list(sm._running_tasks.values())
+    await asyncio.gather(*tasks)
 
     spec = sm.runner.run.call_args.args[0]
-    assert spec.fail_on_tool_error is False
+    assert spec.llm_usage_source == "cron"

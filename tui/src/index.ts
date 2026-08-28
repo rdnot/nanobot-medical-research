@@ -1,5 +1,4 @@
 import { NanobotTui, sessionExitMessage, type AppOptions } from "./app"
-import { currentGitBranch } from "./host"
 
 // Keep in sync with _TUI_DETACH_EXIT_CODE in nanobot/cli/tui_launcher.py.
 const TUI_DETACH_EXIT_CODE = 90
@@ -11,9 +10,9 @@ function themePreference(): AppOptions["theme"] {
 }
 
 const workspace = process.env.NANOBOT_TUI_WORKSPACE?.trim() || ""
-const hostWorkspace = process.cwd()
 const bootstrapUrl = process.env.NANOBOT_TUI_BOOTSTRAP_URL?.trim() || ""
 const wsUrl = process.env.NANOBOT_TUI_WS_URL?.trim() || ""
+const healthUrl = process.env.NANOBOT_TUI_HEALTH_URL?.trim() || ""
 const gatewayStopCommand = process.env.NANOBOT_TUI_GATEWAY_STOP_COMMAND?.trim()
   || "nanobot gateway stop"
 if (!bootstrapUrl && !wsUrl) {
@@ -24,6 +23,7 @@ const options: AppOptions = {
     ? {
         bootstrapUrl,
         bootstrapSecret: process.env.NANOBOT_TUI_BOOTSTRAP_SECRET?.trim() || "",
+        healthUrl: healthUrl || undefined,
       }
     : { wsUrl }),
   apiUrl: process.env.NANOBOT_TUI_API_URL?.trim() || "",
@@ -32,8 +32,6 @@ const options: AppOptions = {
   model: process.env.NANOBOT_TUI_MODEL?.trim() || "unknown model",
   modelPreset: process.env.NANOBOT_TUI_MODEL_PRESET?.trim() || "default",
   workspace,
-  hostWorkspace,
-  branch: currentGitBranch(hostWorkspace),
   version: process.env.NANOBOT_TUI_VERSION?.trim() || "dev",
   access: process.env.NANOBOT_TUI_ACCESS?.trim() || "workspace access",
   theme: themePreference(),

@@ -83,11 +83,11 @@ class TestToolEventProgress:
         ) -> None:
             progress.append((content, tool_hint, tool_events))
 
-        final_content, _, _, _, _, _ = await loop._run_agent_loop(
+        result = await loop._run_agent_loop(
             [], runtime=loop.llm_runtime(), on_progress=on_progress
         )
 
-        assert final_content == "Done"
+        assert result.final_content == "Done"
         assert progress == [
             ("Visible", False, None),
             (
@@ -154,11 +154,11 @@ class TestToolEventProgress:
             if file_edit_events:
                 file_events.extend(file_edit_events)
 
-        final_content, _, _, _, _, _ = await loop._run_agent_loop(
+        result = await loop._run_agent_loop(
             [], runtime=loop.llm_runtime(), on_progress=on_progress
         )
 
-        assert final_content == "Done"
+        assert result.final_content == "Done"
         assert [event["phase"] for event in file_events] == ["start", "end"]
         assert file_events[0] == {
             "version": 1,
@@ -224,11 +224,11 @@ class TestToolEventProgress:
             prepare_file_edit_trackers,
         )
 
-        final_content, _, _, _, _, _ = await loop._run_agent_loop(
+        result = await loop._run_agent_loop(
             [], runtime=loop.llm_runtime(), on_progress=on_progress
         )
 
-        assert final_content == "Done"
+        assert result.final_content == "Done"
         assert target.read_text(encoding="utf-8") == "new\n"
         prepare_file_edit_trackers.assert_not_called()
 
@@ -373,7 +373,6 @@ class TestToolEventProgress:
         """The /goal command rewrites the prompt but must not bypass WebUI file-edit progress."""
         bus = MessageBus()
         provider = MagicMock()
-        provider.supports_progress_deltas = True
         provider.get_default_model.return_value = "test-model"
         call_count = 0
 
@@ -393,9 +392,9 @@ class TestToolEventProgress:
                             },
                         )
                     ],
-                    usage={},
+                    usage=None,
                 )
-            return LLMResponse(content="Done", tool_calls=[], usage={})
+            return LLMResponse(content="Done", tool_calls=[], usage=None)
 
         provider.chat_stream_with_retry = chat_stream_with_retry
         provider.chat_with_retry = AsyncMock()
@@ -460,7 +459,6 @@ class TestToolEventProgress:
         """Non-streaming channels should get one final reply, not token progress spam."""
         bus = MessageBus()
         provider = MagicMock()
-        provider.supports_progress_deltas = True
         provider.get_default_model.return_value = "openai-codex/gpt-5.5"
         provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="Hello", tool_calls=[]))
         provider.chat_stream_with_retry = AsyncMock()
@@ -493,7 +491,6 @@ class TestToolEventProgress:
         """Streaming channels still receive provider deltas through stream events."""
         bus = MessageBus()
         provider = MagicMock()
-        provider.supports_progress_deltas = True
         provider.get_default_model.return_value = "openai-codex/gpt-5.5"
 
         async def chat_stream_with_retry(*, on_content_delta, **kwargs):
@@ -544,7 +541,6 @@ class TestToolEventProgress:
     ) -> None:
         bus = MessageBus()
         provider = MagicMock()
-        provider.supports_progress_deltas = True
         provider.get_default_model.return_value = "test-model"
         responses = iter([
             LLMResponse(content="first-", finish_reason="length"),
@@ -590,7 +586,6 @@ class TestToolEventProgress:
     ) -> None:
         bus = MessageBus()
         provider = MagicMock()
-        provider.supports_progress_deltas = True
         provider.get_default_model.return_value = "test-model"
         call_count = 0
 
@@ -637,7 +632,6 @@ class TestToolEventProgress:
     ) -> None:
         bus = MessageBus()
         provider = MagicMock()
-        provider.supports_progress_deltas = True
         provider.get_default_model.return_value = "test-model"
 
         async def chat_stream_with_retry(*, on_content_delta, **kwargs):
@@ -728,7 +722,6 @@ class TestToolEventProgress:
         """A no-tools finalization must not be dropped after empty stream retries."""
         bus = MessageBus()
         provider = MagicMock()
-        provider.supports_progress_deltas = True
         provider.get_default_model.return_value = "openai-codex/gpt-5.5"
         provider.chat_stream_with_retry = AsyncMock(side_effect=[
             LLMResponse(content=None, tool_calls=[]),
@@ -776,7 +769,6 @@ class TestToolEventProgress:
     ) -> None:
         bus = MessageBus()
         provider = MagicMock()
-        provider.supports_progress_deltas = True
         provider.get_default_model.return_value = "openai-codex/gpt-5.5"
         first_request_started = asyncio.Event()
         release_first_request = asyncio.Event()
@@ -935,7 +927,6 @@ class TestToolEventProgress:
         """Recovered streaming output should use a new stream segment."""
         bus = MessageBus()
         provider = MagicMock()
-        provider.supports_progress_deltas = True
         provider.get_default_model.return_value = "openai-codex/gpt-5.5"
 
         async def chat_stream_with_retry(*, on_content_delta, on_stream_recover, **kwargs):
@@ -988,13 +979,12 @@ class TestToolEventProgress:
         provider.chat_with_retry.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_streamed_progress_is_not_repeated_before_tool_execution(
+    async def test_streamed_content_is_not_repeated_before_tool_execution(
         self,
         tmp_path: Path,
     ) -> None:
-        """If content was already streamed as progress, tool setup should not repeat it."""
+        """If content was already streamed, tool setup should not repeat it."""
         loop = _make_loop(tmp_path)
-        loop.provider.supports_progress_deltas = True
         tool_call = ToolCallRequest(id="call1", name="custom_tool", arguments={"path": "foo.txt"})
         calls = iter([
             LLMResponse(content="I will inspect it.", tool_calls=[tool_call]),
@@ -1028,14 +1018,14 @@ class TestToolEventProgress:
         ) -> None:
             progress.append((content, tool_hint, tool_events))
 
-        final_content, _, _, _, _, _ = await loop._run_agent_loop(
+        result = await loop._run_agent_loop(
             [],
             runtime=loop.llm_runtime(),
             on_progress=on_progress,
             on_stream=on_stream,
         )
 
-        assert final_content == "Done"
+        assert result.final_content == "Done"
         assert streamed == ["I will", " inspect it."]
         assert progress[0][0] == 'custom_tool("foo.txt")'
         assert all(item[0] != "I will inspect it." for item in progress)

@@ -417,6 +417,52 @@ describe("ThreadShell", () => {
     );
   });
 
+  it("moves the session handle into the pane only when the workbench is split", () => {
+    const client = makeClient();
+    const portal = document.createElement("div");
+    document.body.append(portal);
+    const activeSession = {
+      ...session("pane-handle"),
+      handle: {
+        id: "handle_11111111111111111111111111111111",
+        name: "soro",
+      },
+    };
+
+    const { unmount } = render(wrap(
+      client,
+      <ThreadShell
+        session={activeSession}
+        title="Single pane"
+        onToggleSidebar={() => {}}
+        hideHeaderTitle
+        headerPortalTarget={portal}
+      />,
+    ));
+
+    expect(within(portal).getByText("@soro")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Session @soro")).not.toBeInTheDocument();
+
+    unmount();
+    const splitView = render(wrap(
+      client,
+      <ThreadShell
+        session={activeSession}
+        title="Split pane"
+        onToggleSidebar={() => {}}
+        hideHeaderTitle
+        inlineHandle
+        headerPortalTarget={portal}
+      />,
+    ));
+
+    expect(screen.getByLabelText("Session @soro")).toHaveTextContent("@soro");
+    expect(within(portal).queryByText("@soro")).not.toBeInTheDocument();
+
+    splitView.unmount();
+    portal.remove();
+  });
+
   it("keeps inferred file paths non-interactive when the availability probe fails", async () => {
     await preloadMarkdownText();
     const client = makeClient();
@@ -609,12 +655,33 @@ describe("ThreadShell", () => {
       ),
     );
 
-    const badge = await screen.findByLabelText("fast");
-    expect(badge).not.toHaveAttribute("title");
-    fireEvent.focus(badge);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "fast · gpt-5.5 · OpenAI Codex",
+    expect(await screen.findByTitle("fast · gpt-5.5 · OpenAI Codex")).toBeInTheDocument();
+    expect(screen.queryByTitle("Default · deepseek-v4-pro · DeepSeek")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the current preset while a renamed session reference is stale", async () => {
+    const client = makeClient();
+    const settings = settingsWithFastPreset();
+    settings.agent.model_preset = "fast";
+    settings.model_presets = settings.model_presets.map((preset) => ({
+      ...preset,
+      active: preset.name === "fast",
+    }));
+    render(
+      wrap(
+        client,
+        <ThreadShell
+          session={session("renamed-preset", "old-fast")}
+          title="Renamed preset"
+          onToggleSidebar={() => {}}
+          settingsSnapshot={settings}
+        />,
+        "openai-codex/gpt-5.5",
+      ),
     );
+
+    expect(await screen.findByTitle("fast · gpt-5.5 · OpenAI Codex")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Model not configured" })).not.toBeInTheDocument();
   });
 
   it("switches through every named preset while preserving call-order priority", async () => {
@@ -641,19 +708,18 @@ describe("ThreadShell", () => {
     ));
     const { rerender } = render(view("default"));
 
-    const badge = await screen.findByRole("spinbutton", { name: "Default" });
+    const badge = await screen.findByRole("button", { name: "Default" });
     expect(badge).toHaveTextContent("Default");
-    fireEvent.keyDown(badge, { key: "ArrowDown" });
+    fireEvent.click(badge);
+    fireEvent.click(await screen.findByRole("option", { name: /^fast\b/i }));
 
     expect(client.sendSystemCommand).toHaveBeenCalledWith(
       "preset-order",
       "/model fast",
     );
     expect(await screen.findByText("fast")).toBeInTheDocument();
-    fireEvent.keyDown(
-      screen.getByRole("spinbutton", { name: "fast" }),
-      { key: "End" },
-    );
+    fireEvent.click(screen.getByRole("button", { name: "fast" }));
+    fireEvent.click(await screen.findByRole("option", { name: /^extra\b/i }));
     expect(client.sendSystemCommand).toHaveBeenLastCalledWith(
       "preset-order",
       "/model extra",
@@ -696,15 +762,11 @@ describe("ThreadShell", () => {
       ),
     );
 
-    const badge = await screen.findByLabelText("fast");
-    fireEvent.focus(badge);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "fast · gpt-4 · Company Proxy",
-    );
+    expect(await screen.findByTitle("fast · gpt-4 · Company Proxy")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Model not configured" })).not.toBeInTheDocument();
   });
 
-  it("only highlights fallback model updates without replacing the preset label", async () => {
+  it("shows the effective fallback model in the composer badge", async () => {
     const client = makeClient();
     render(wrap(
       client,
@@ -718,7 +780,8 @@ describe("ThreadShell", () => {
     ));
 
     expect(await screen.findByText("Default")).toBeInTheDocument();
-    const configuredBadge = screen.getByTestId("composer-model-logo-openai_codex").parentElement;
+    const configuredLogo = await screen.findByTestId("composer-model-logo-openai_codex");
+    const configuredBadge = configuredLogo.parentElement;
     expect(configuredBadge).not.toBeNull();
     expect(configuredBadge).toHaveClass("composer-model-badge");
     expect(configuredBadge).not.toHaveAttribute("data-fallback");
@@ -728,31 +791,34 @@ describe("ThreadShell", () => {
         event: "turn_model_updated",
         chat_id: "fallback-model",
         model_name: "openai-codex/gpt-5.5",
+        model_preset: "Default",
       });
     });
 
     expect(configuredBadge).not.toHaveAttribute("data-fallback");
+    expect(screen.getByText("Default")).toBeInTheDocument();
 
     act(() => {
       client._emitChat("fallback-model", {
         event: "turn_model_updated",
         chat_id: "fallback-model",
         model_name: "deepseek/deepseek-chat",
+        fallback: true,
       });
     });
 
-    const logo = screen.getByTestId("composer-model-logo-openai_codex");
+    const logo = await screen.findByTestId("composer-model-logo-deepseek");
     const badge = logo.parentElement;
     expect(badge).not.toBeNull();
     expect(badge).toBe(configuredBadge);
-    expect(screen.getByText("Default")).toBeInTheDocument();
-    expect(screen.queryByText("deepseek-chat")).not.toBeInTheDocument();
+    expect(screen.queryByText("Default")).not.toBeInTheDocument();
+    expect(screen.getByText("deepseek-chat")).toBeInTheDocument();
     expect(badge).toHaveAttribute("data-fallback", "true");
-    expect(badge).not.toHaveAttribute("title");
-    expect(logo).not.toHaveAttribute("data-fallback");
-    const trigger = screen.getByLabelText("Default");
-    fireEvent.focus(trigger);
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("deepseek/deepseek-chat");
+    expect(badge).toHaveAttribute(
+      "title",
+      "Default · using deepseek/deepseek-chat",
+    );
+    expect(logo).toBeInTheDocument();
 
     act(() => {
       client._emitChat("fallback-model", {
@@ -766,12 +832,7 @@ describe("ThreadShell", () => {
         screen.getByTestId("composer-model-logo-openai_codex").parentElement,
       ).not.toHaveAttribute("data-fallback");
     });
-    expect(screen.getByRole("tooltip")).toHaveTextContent(
-      "Default · gpt-5.5 · OpenAI Codex",
-    );
-    expect(
-      screen.getByTestId("composer-model-logo-openai_codex").parentElement,
-    ).toBe(badge);
+    expect(screen.getByText("Default")).toBeInTheDocument();
   });
 
   it("opens model settings from the unconfigured model badge", async () => {
@@ -1084,10 +1145,8 @@ describe("ThreadShell", () => {
     ));
     const { rerender } = render(view(null));
 
-    fireEvent.keyDown(
-      await screen.findByRole("spinbutton", { name: "Default" }),
-      { key: "ArrowDown" },
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "Default" }));
+    fireEvent.click(await screen.findByRole("option", { name: /^fast\b/i }));
     expect(await screen.findByText("fast")).toBeInTheDocument();
     expect(client.sendSystemCommand).not.toHaveBeenCalled();
 
@@ -3992,6 +4051,34 @@ describe("ThreadShell", () => {
 
     expect(screen.getByRole("option", { name: /Same project/i })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /Other project/i })).toBeInTheDocument();
+  });
+
+  it("allows a new turn after a completed recovery state", async () => {
+    const client = makeClient();
+    render(wrap(
+      client,
+      <ThreadShell
+        session={session("recovered-chat")}
+        title="Recovered chat"
+        onToggleSidebar={() => {}}
+      />,
+    ));
+
+    const input = await screen.findByLabelText("Message input");
+    act(() => {
+      client._emitChat("recovered-chat", {
+        event: "recovery_state",
+        chat_id: "recovered-chat",
+        recovery_id: "recovery-1",
+        status: "recovered",
+      });
+    });
+
+    fireEvent.change(input, { target: { value: "start the next task" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(client.sendMessage).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Stop response" })).toBeInTheDocument();
   });
 
 });
