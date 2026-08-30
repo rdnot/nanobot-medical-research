@@ -799,7 +799,7 @@ def test_provider_login_can_set_xai_grok_as_main_provider(tmp_path):
 
     saved = Config.model_validate(json.loads(config_path.read_text(encoding="utf-8")))
     assert saved.agents.defaults.provider == "xai_grok"
-    assert saved.agents.defaults.model == "xai-grok/grok-4.5"
+    assert saved.agents.defaults.model == "xai-grok/grok-4.6"
     assert saved.agents.defaults.context_window_tokens == 500_000
     assert saved.agents.defaults.model_preset is None
     assert make_provider(saved).__class__.__name__ == "XAIGrokProvider"
@@ -2654,12 +2654,14 @@ def test_webui_foreground_attaches_to_existing_managed_gateway(monkeypatch, tmp_
     assert seen["lease_release_wait_for_stop"] is False
 
 
-def test_attach_to_background_gateway_detaches_on_ctrl_c(capsys) -> None:
+def test_attach_to_background_gateway_detaches_on_ctrl_c(capsys, tmp_path: Path) -> None:
     stopped = False
+    log_path = tmp_path / "gateway.log"
+    log_path.touch()
 
     class _FakeRuntime:
         def status(self):
-            return SimpleNamespace(running=True)
+            return SimpleNamespace(running=True, log_path=log_path)
 
         def stop(self):
             nonlocal stopped
@@ -2679,10 +2681,88 @@ def test_attach_to_background_gateway_detaches_on_ctrl_c(capsys) -> None:
     assert "WebUI launcher detached" in rendered
 
 
-def test_attach_to_background_gateway_checks_owned_sidecar() -> None:
+def test_attach_to_background_gateway_follows_only_new_logs(capsys, tmp_path: Path) -> None:
+    log_path = tmp_path / "gateway.log"
+    log_path.write_text("historical log\n", encoding="utf-8")
+    polls = 0
+
     class _FakeRuntime:
         def status(self):
-            return SimpleNamespace(running=True)
+            return SimpleNamespace(running=True, log_path=log_path)
+
+    def _append_then_interrupt(_seconds: float) -> None:
+        nonlocal polls
+        if polls == 0:
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write("[websocket] live log\n")
+            polls += 1
+            return
+        raise KeyboardInterrupt
+
+    cli_webui_support._attach_to_background_gateway(
+        _FakeRuntime(),
+        sleep=_append_then_interrupt,
+    )
+
+    output = capsys.readouterr().out
+    assert "[websocket] live log" in output
+    assert "historical log" not in output
+
+
+def test_read_new_gateway_logs_recovers_after_truncation(tmp_path: Path) -> None:
+    log_path = tmp_path / "gateway.log"
+    log_path.write_text("a much longer historical log line\n", encoding="utf-8")
+    cursor = cli_webui_support._start_gateway_log_cursor(log_path)
+    log_path.write_text("fresh log\n", encoding="utf-8")
+
+    lines = cli_webui_support._read_new_gateway_logs(log_path, cursor)
+
+    assert lines == ["fresh log"]
+    assert cursor.offset == log_path.stat().st_size
+
+
+def test_read_new_gateway_logs_detects_fast_rewrite_past_offset(tmp_path: Path) -> None:
+    log_path = tmp_path / "gateway.log"
+    log_path.write_text("historical log\n", encoding="utf-8")
+    cursor = cli_webui_support._start_gateway_log_cursor(log_path)
+    log_path.write_text("first fresh log\nsecond fresh log\n", encoding="utf-8")
+
+    lines = cli_webui_support._read_new_gateway_logs(log_path, cursor)
+
+    assert lines == ["first fresh log", "second fresh log"]
+
+
+def test_read_new_gateway_logs_waits_for_complete_utf8_line(tmp_path: Path) -> None:
+    log_path = tmp_path / "gateway.log"
+    log_path.touch()
+    cursor = cli_webui_support._start_gateway_log_cursor(log_path)
+    encoded = "模型 ready\n".encode()
+    log_path.write_bytes(encoded[:2])
+
+    assert cli_webui_support._read_new_gateway_logs(log_path, cursor) == []
+
+    with log_path.open("ab") as handle:
+        handle.write(encoded[2:])
+
+    assert cli_webui_support._read_new_gateway_logs(log_path, cursor) == ["模型 ready"]
+
+
+def test_read_new_gateway_logs_tolerates_missing_file(tmp_path: Path) -> None:
+    log_path = tmp_path / "missing.log"
+    cursor = cli_webui_support._start_gateway_log_cursor(log_path)
+    lines = cli_webui_support._read_new_gateway_logs(log_path, cursor)
+
+    assert lines == []
+    assert cursor.offset == 0
+
+
+def test_attach_to_background_gateway_checks_owned_sidecar(tmp_path: Path) -> None:
+    log_path = tmp_path / "gateway.log"
+    log_path.touch()
+
+    class _FakeRuntime:
+        def status(self):
+            return SimpleNamespace(running=True, log_path=log_path)
 
     def sidecar_exited() -> None:
         raise WebUIDevError("WebUI development server exited unexpectedly (code 23)")

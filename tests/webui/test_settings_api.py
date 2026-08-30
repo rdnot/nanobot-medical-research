@@ -13,7 +13,8 @@ from nanobot.config.schema import Config, InlineFallbackConfig, ModelPresetConfi
 from nanobot.llm_usage import get_llm_usage_store
 from nanobot.llm_usage.models import LLMCallRecord
 from nanobot.providers.base import LLMUsage
-from nanobot.providers.registry import find_by_name
+from nanobot.providers.oauth_model_catalog import OAuthModelCatalogSnapshot
+from nanobot.providers.registry import ProviderModelSpec, find_by_name
 from nanobot.session.manager import SessionManager
 from nanobot.session.model_selection import SESSION_MODEL_PRESET_METADATA_KEY
 from nanobot.webui.settings_api import (
@@ -183,11 +184,13 @@ def test_update_api_settings_requires_key_for_network_access(
     with pytest.raises(WebUISettingsError, match="API key"):
         update_api_settings({"host": ["0.0.0.0"], "port": ["8900"]})
 
-    payload = update_api_settings({
-        "host": ["0.0.0.0"],
-        "port": ["9900"],
-        "api_key": ["secret-token"],
-    })
+    payload = update_api_settings(
+        {
+            "host": ["0.0.0.0"],
+            "port": ["9900"],
+            "api_key": ["secret-token"],
+        }
+    )
     saved = load_config(config_path)
     assert saved.api.host == "0.0.0.0"
     assert saved.api.port == 9900
@@ -346,13 +349,15 @@ def test_create_model_configuration_rejects_dynamic_custom_provider_without_api_
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.json"
-    config = Config.model_validate({
-        "providers": {
-            DYNAMIC_PROVIDER_NAME: {
-                "apiKey": "sk-test",
+    config = Config.model_validate(
+        {
+            "providers": {
+                DYNAMIC_PROVIDER_NAME: {
+                    "apiKey": "sk-test",
+                }
             }
         }
-    })
+    )
     save_config(config, config_path)
     monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
@@ -497,9 +502,7 @@ def test_update_model_configuration_rolls_back_sessions_when_config_save_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.json"
-    config = Config(
-        model_presets={"openai": ModelPresetConfig(model="openai/gpt-4.1")}
-    )
+    config = Config(model_presets={"openai": ModelPresetConfig(model="openai/gpt-4.1")})
     save_config(config, config_path)
     calls: list[tuple[str, str]] = []
 
@@ -890,11 +893,13 @@ def test_update_provider_settings_updates_and_clears_oauth_proxy(
         },
     )
 
-    payload = update_provider_settings({
-        "provider": [provider_name],
-        "proxy": [" http://127.0.0.1:7890 "],
-        "extraBody": [json.dumps({"tools": []})],
-    })
+    payload = update_provider_settings(
+        {
+            "provider": [provider_name],
+            "proxy": [" http://127.0.0.1:7890 "],
+            "extraBody": [json.dumps({"tools": []})],
+        }
+    )
 
     providers = {row["name"]: row for row in payload["providers"]}
     assert providers[provider_name]["proxy"] == "http://127.0.0.1:7890"
@@ -1099,15 +1104,17 @@ def test_settings_payload_groups_opencode_compatibility_alias(tmp_path, monkeypa
 
 def test_settings_payload_keeps_configured_opencode_legacy_alias(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / "config.json"
-    config = Config.model_validate({
-        "providers": {"opencodeZen": {"apiKey": "legacy-key"}},
-        "agents": {
-            "defaults": {
-                "provider": "opencode_zen",
-                "model": "opencode/deepseek-v4-pro",
-            }
-        },
-    })
+    config = Config.model_validate(
+        {
+            "providers": {"opencodeZen": {"apiKey": "legacy-key"}},
+            "agents": {
+                "defaults": {
+                    "provider": "opencode_zen",
+                    "model": "opencode/deepseek-v4-pro",
+                }
+            },
+        }
+    )
     save_config(config, config_path)
     monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
@@ -1124,13 +1131,15 @@ def test_settings_payload_marks_dynamic_custom_provider_without_api_base_unconfi
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.json"
-    config = Config.model_validate({
-        "providers": {
-            DYNAMIC_PROVIDER_NAME: {
-                "apiKey": "sk-test",
+    config = Config.model_validate(
+        {
+            "providers": {
+                DYNAMIC_PROVIDER_NAME: {
+                    "apiKey": "sk-test",
+                }
             }
         }
-    })
+    )
     save_config(config, config_path)
     monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
@@ -1466,16 +1475,18 @@ def test_settings_payload_includes_token_usage_summary(
     config = Config()
     save_config(config, config_path)
     monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
-    get_llm_usage_store().record(LLMCallRecord(
-        started_at_ms=int(time.time() * 1000),
-        duration_ms=1,
-        provider="openai",
-        model="gpt-5",
-        source="user",
-        stream=False,
-        finish_reason="stop",
-        usage=LLMUsage.reported(input_tokens=10, output_tokens=5),
-    ))
+    get_llm_usage_store().record(
+        LLMCallRecord(
+            started_at_ms=int(time.time() * 1000),
+            duration_ms=1,
+            provider="openai",
+            model="gpt-5",
+            source="user",
+            stream=False,
+            finish_reason="stop",
+            usage=LLMUsage.reported(input_tokens=10, output_tokens=5),
+        )
+    )
 
     payload = settings_payload()
 
@@ -1496,16 +1507,18 @@ def test_settings_usage_payload_returns_lightweight_token_usage(
     config = Config()
     save_config(config, config_path)
     monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
-    get_llm_usage_store().record(LLMCallRecord(
-        started_at_ms=int(time.time() * 1000),
-        duration_ms=1,
-        provider="openai",
-        model="gpt-5",
-        source="user",
-        stream=False,
-        finish_reason="stop",
-        usage=LLMUsage.reported(input_tokens=20, output_tokens=2),
-    ))
+    get_llm_usage_store().record(
+        LLMCallRecord(
+            started_at_ms=int(time.time() * 1000),
+            duration_ms=1,
+            provider="openai",
+            model="gpt-5",
+            source="user",
+            stream=False,
+            finish_reason="stop",
+            usage=LLMUsage.reported(input_tokens=20, output_tokens=2),
+        )
+    )
 
     payload = settings_usage_payload()
 
@@ -1929,9 +1942,7 @@ def test_xai_grok_login_reports_upstream_failure_as_bad_gateway(
         )
 
     assert exc.value.status == 502
-    assert str(exc.value) == (
-        "xAI OAuth login failed: Could not reach xAI sign-in: ConnectError."
-    )
+    assert str(exc.value) == ("xAI OAuth login failed: Could not reach xAI sign-in: ConnectError.")
     assert exc.value.__cause__ is failure
 
 
@@ -1995,39 +2006,126 @@ def test_provider_models_payload_fetches_openai_compatible_models(
     assert payload["models"][1]["context_window"] == 65536
 
 
-def test_provider_models_payload_returns_curated_openai_codex_models() -> None:
+def test_provider_models_payload_returns_online_openai_codex_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "nanobot.webui.settings_models.get_oauth_model_catalog",
+        lambda *_args, **_kwargs: OAuthModelCatalogSnapshot(
+            models=(
+                ProviderModelSpec(
+                    id="openai-codex/gpt-5.6-sol",
+                    label="GPT-5.6-Sol",
+                    description="Latest frontier agentic coding model.",
+                    owned_by="OpenAI Codex",
+                    context_window=272_000,
+                    reasoning_efforts=("low", "medium", "high", "xhigh", "max", "ultra"),
+                ),
+            ),
+            source="remote",
+            fetched_at=123,
+        ),
+    )
+
     payload = provider_models_payload({"provider": ["openai_codex"]})
 
     assert payload["status"] == "available"
-    assert payload["catalog_kind"] == "builtin"
-    assert payload["model_count"] == 7
+    assert payload["catalog_kind"] == "hybrid"
+    assert payload["source"] == "remote"
+    assert payload["model_count"] == 1
     assert payload["models"][0] == {
         "id": "openai-codex/gpt-5.6-sol",
         "label": "GPT-5.6-Sol",
         "description": "Latest frontier agentic coding model.",
         "owned_by": "OpenAI Codex",
-        "context_window": 372000,
+        "context_window": 272000,
+        "reasoning_efforts": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "supports_backend_search": False,
     }
-    assert [model["id"] for model in payload["models"][:3]] == [
-        "openai-codex/gpt-5.6-sol",
-        "openai-codex/gpt-5.6-terra",
-        "openai-codex/gpt-5.6-luna",
-    ]
 
 
-def test_provider_models_payload_returns_xai_grok_model() -> None:
+def test_provider_models_payload_returns_online_github_copilot_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "nanobot.webui.settings_models.get_oauth_model_catalog",
+        lambda *_args, **_kwargs: OAuthModelCatalogSnapshot(
+            models=(
+                ProviderModelSpec(
+                    id="github-copilot/claude-sonnet",
+                    label="Claude Sonnet",
+                    owned_by="GitHub Copilot",
+                    context_window=200_000,
+                ),
+            ),
+            source="remote",
+            fetched_at=123,
+        ),
+    )
+
+    payload = provider_models_payload({"provider": ["github_copilot"]})
+
+    assert payload["status"] == "available"
+    assert payload["catalog_kind"] == "hybrid"
+    assert payload["source"] == "remote"
+    assert payload["models"][0]["id"] == "github-copilot/claude-sonnet"
+
+
+def test_provider_models_payload_returns_online_xai_grok_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "nanobot.webui.settings_models.get_oauth_model_catalog",
+        lambda *_args, **_kwargs: OAuthModelCatalogSnapshot(
+            models=(
+                ProviderModelSpec(
+                    id="xai-grok/grok-4.6",
+                    label="Grok 4.6",
+                    description="Latest frontier model",
+                    owned_by="xAI",
+                    context_window=500_000,
+                    reasoning_efforts=("xhigh", "high", "medium", "low"),
+                    supports_backend_search=True,
+                ),
+                ProviderModelSpec(
+                    id="xai-grok/grok-4.5",
+                    label="Grok 4.5",
+                    owned_by="xAI",
+                    context_window=500_000,
+                    reasoning_efforts=("high", "medium", "low"),
+                    supports_backend_search=True,
+                ),
+            ),
+            source="remote",
+            fetched_at=123,
+        ),
+    )
+
     payload = provider_models_payload({"provider": ["xai_grok"]})
 
     assert payload["status"] == "available"
-    assert payload["catalog_kind"] == "builtin"
+    assert payload["catalog_kind"] == "hybrid"
+    assert payload["source"] == "remote"
+    assert payload["fetched_at"] == 123
     assert payload["models"] == [
+        {
+            "id": "xai-grok/grok-4.6",
+            "label": "Grok 4.6",
+            "description": "Latest frontier model",
+            "owned_by": "xAI",
+            "context_window": 500000,
+            "reasoning_efforts": ["xhigh", "high", "medium", "low"],
+            "supports_backend_search": True,
+        },
         {
             "id": "xai-grok/grok-4.5",
             "label": "Grok 4.5",
-            "description": "Grok via xAI subscription; X Search is enabled when supported.",
-            "owned_by": "xAI Grok",
+            "description": None,
+            "owned_by": "xAI",
             "context_window": 500000,
-        }
+            "reasoning_efforts": ["high", "medium", "low"],
+            "supports_backend_search": True,
+        },
     ]
 
 
@@ -2160,7 +2258,9 @@ def test_model_catalog_kind_uses_provider_spec_metadata() -> None:
     assert _model_catalog_kind(find_by_name("anthropic")) == "unsupported"
     assert _model_catalog_kind(find_by_name("openrouter")) == "catalog"
     assert _model_catalog_kind(find_by_name("orcarouter")) == "catalog"
-    assert _model_catalog_kind(find_by_name("openai_codex")) == "builtin"
+    assert _model_catalog_kind(find_by_name("openai_codex")) == "hybrid"
+    assert _model_catalog_kind(find_by_name("xai_grok")) == "hybrid"
+    assert _model_catalog_kind(find_by_name("github_copilot")) == "hybrid"
 
 
 def test_create_model_configuration_accepts_configured_oauth_provider(
