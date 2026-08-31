@@ -7,11 +7,17 @@ from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse
 
 
-def _make_loop(tmp_path, *, estimated_tokens: int, context_window_tokens: int) -> AgentLoop:
+def _make_loop(
+    tmp_path,
+    *,
+    estimated_tokens: int,
+    context_window_tokens: int,
+    max_tokens: int = 0,
+) -> AgentLoop:
     from nanobot.providers.base import GenerationSettings
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
-    provider.generation = GenerationSettings(max_tokens=0)
+    provider.generation = GenerationSettings(max_tokens=max_tokens)
     provider.estimate_prompt_tokens.return_value = (estimated_tokens, "test-counter")
     _response = LLMResponse(content="ok", tool_calls=[])
     provider.chat_with_retry = AsyncMock(return_value=_response)
@@ -23,6 +29,9 @@ def _make_loop(tmp_path, *, estimated_tokens: int, context_window_tokens: int) -
         workspace=tmp_path,
         model="test-model",
         context_window_tokens=context_window_tokens,
+        # These tests isolate Memory consolidation; Runner request fitting is
+        # covered separately with realistic context windows.
+        context_block_limit=10_000,
     )
     loop.tools.get_definitions = MagicMock(return_value=[])
     loop.consolidator._SAFETY_BUFFER = 0
@@ -54,6 +63,34 @@ async def test_prompt_above_threshold_triggers_consolidation(tmp_path) -> None:
     await loop.process_direct("hello", session_key="cli:test")
 
     assert loop.consolidator.archive_session.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_token_consolidation_refreshes_summary_for_current_request(tmp_path) -> None:
+    loop = _make_loop(tmp_path, estimated_tokens=0, context_window_tokens=200)
+    loop.consolidator.archive_session = AsyncMock(  # type: ignore[method-assign]
+        return_value="FRESH_CHECKPOINT"
+    )
+    loop.consolidator.estimate_session_prompt_tokens = MagicMock(  # type: ignore[method-assign]
+        return_value=(1000, "test")
+    )
+    loop.schedule_background = lambda coro: coro.close()  # type: ignore[method-assign]
+
+    session = loop.sessions.get_or_create("cli:test")
+    session.messages = [
+        {"role": role, "content": f"{role[0]}{turn}"}
+        for turn in range(10)
+        for role in ("user", "assistant")
+    ]
+    loop.sessions.save(session)
+
+    await loop.process_direct("hello", session_key="cli:test")
+
+    request_messages = loop.provider.chat_with_retry.await_args.kwargs["messages"]
+    system_prompt = request_messages[0]["content"]
+    assert "FRESH_CHECKPOINT" in system_prompt
+    assert all(message.get("content") != "u0" for message in request_messages)
+    assert loop.sessions.get_or_create("cli:test").last_archived == 12
 
 
 @pytest.mark.asyncio

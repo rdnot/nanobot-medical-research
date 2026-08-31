@@ -1,8 +1,7 @@
-"""Tests for AgentRunner context governance: backfill, orphan cleanup, microcompact, snip_history."""
+"""Tests for AgentRunner context governance: repair and request fitting."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,11 +11,14 @@ from nanobot.agent.context_governance import (
     BACKFILL_CONTENT,
     ContextGovernanceConfig,
     ContextGovernor,
+    ContextWindowExceededError,
 )
 from nanobot.agent.runner import AgentRunSpec
 from nanobot.config.schema import AgentDefaults
 from nanobot.providers.base import (
+    LLMProvider,
     LLMResponse,
+    LLMUsage,
     ProviderConversationState,
     ToolCallRequest,
 )
@@ -28,8 +30,6 @@ def _governance_config(
     provider,
     tools,
     spec: AgentRunSpec,
-    *,
-    inflight_start_index: int = 0,
 ) -> ContextGovernanceConfig:
     return ContextGovernanceConfig(
         provider=provider,
@@ -41,7 +41,6 @@ def _governance_config(
         context_window_tokens=spec.runtime.context_window_tokens,
         context_block_limit=spec.context_block_limit,
         max_tokens=spec.runtime.generation.max_tokens,
-        inflight_start_index=inflight_start_index,
     )
 
 
@@ -89,6 +88,508 @@ async def test_runner_propagates_context_governance_failure():
     provider.chat_with_retry.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_runner_locally_fits_oversized_initial_transcript(monkeypatch):
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="done"))
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    old_content = "x" * 20_000
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda _provider, _model, messages, _tools: (
+            (600, "test-counter")
+            if any(message.get("content") == old_content for message in messages)
+            else (100, "test-counter")
+        ),
+    )
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": old_content},
+            {"role": "user", "content": "continue"},
+        ],
+        tools=tools,
+        model="local-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_tokens=100,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    assert provider.chat_with_retry.await_args.kwargs["messages"] == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "continue"},
+    ]
+    assert any(message.get("content") == old_content for message in result.messages)
+
+
+@pytest.mark.asyncio
+async def test_runner_governs_messages_added_by_before_iteration_hook(monkeypatch):
+    from nanobot.agent.hook import AgentHook, AgentHookContext
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="unexpected"))
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    oversized = "hook-added-oversized-message"
+
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda _provider, _model, messages, _tools: (
+            (2_000, "test-counter")
+            if any(message.get("content") == oversized for message in messages)
+            else (100, "test-counter")
+        ),
+    )
+
+    class MutatingHook(AgentHook):
+        async def before_iteration(self, context: AgentHookContext) -> None:
+            context.messages.append({"role": "user", "content": oversized})
+
+    with pytest.raises(ContextWindowExceededError):
+        await AgentRunner().run(make_run_spec(
+            provider,
+            initial_messages=[{"role": "user", "content": "hello"}],
+            tools=tools,
+            model="local-model",
+            context_window_tokens=2_000,
+            context_block_limit=500,
+            max_iterations=1,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+            hook=MutatingHook(),
+        ))
+
+    provider.chat_with_retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runner_drops_resumable_provider_state_when_request_is_fitted(monkeypatch):
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.can_resume_conversation_state.return_value = True
+    captured_contexts = []
+    old_content = "old-oversized-history"
+    candidate = ProviderConversationState(
+        kind="openai_responses",
+        provider="openai:test",
+        model="local-model",
+        version=1,
+        payload={"items": [{"type": "message", "content": "fresh state"}]},
+    )
+
+    async def chat_with_retry(*, provider_context=None, **_kwargs):
+        captured_contexts.append(provider_context)
+        return LLMResponse(
+            content="done",
+            usage=LLMUsage.reported(input_tokens=100, output_tokens=10),
+            provider_state=candidate,
+        )
+
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda _provider, _model, messages, _tools: (
+            (600, "test-counter")
+            if any(message.get("content") == old_content for message in messages)
+            else (100, "test-counter")
+        ),
+    )
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_message_tokens",
+        lambda message: 450 if message.get("content") == old_content else 50,
+    )
+    saved_state = ProviderConversationState(
+        kind="openai_responses",
+        provider="openai:test",
+        model="local-model",
+        version=1,
+        payload={"items": [{"type": "message", "content": "stale state"}]},
+    )
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[
+            {"role": "assistant", "content": old_content},
+            {"role": "user", "content": "continue"},
+        ],
+        tools=tools,
+        model="local-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        provider_state=saved_state,
+    ))
+
+    assert captured_contexts[0].conversation_state is None
+    assert result.provider_state is not None
+    assert result.provider_state.payload == candidate.payload
+
+
+@pytest.mark.asyncio
+async def test_runner_fits_each_malformed_retry_with_its_actual_tools(monkeypatch):
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    calls: list[dict] = []
+    estimated_tools: list[object] = []
+    definitions = [{"type": "function", "function": {"name": "read_file"}}]
+
+    async def chat_with_retry(*, messages, tools=None, **_kwargs):
+        calls.append({"messages": [dict(message) for message in messages], "tools": tools})
+        if len(calls) < 3:
+            return LLMResponse(
+                content="bad tool request",
+                tool_calls=[ToolCallRequest(id=f"bad_{len(calls)}", name=None, arguments={})],
+                finish_reason="tool_calls",
+                usage=LLMUsage.reported(input_tokens=100, output_tokens=10),
+            )
+        return LLMResponse(
+            content="recovered",
+            usage=LLMUsage.reported(input_tokens=100, output_tokens=10),
+        )
+
+    def estimate(_provider, _model, messages, _tools):
+        estimated_tools.append(_tools)
+        user_count = sum(message.get("role") == "user" for message in messages)
+        return (600 if user_count > 1 else 100), "test-counter"
+
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = definitions
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        estimate,
+    )
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_message_tokens",
+        lambda _message: 300,
+    )
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[{"role": "user", "content": "use a tool"}],
+        tools=tools,
+        model="local-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    assert [call["tools"] for call in calls] == [definitions, definitions, None]
+    assert definitions in estimated_tools
+    assert None in estimated_tools
+    assert [len(call["messages"]) for call in calls] == [1, 1, 1]
+    assert result.final_content == "recovered"
+    assert result.messages == [
+        {"role": "user", "content": "use a tool"},
+        {"role": "assistant", "content": "recovered"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_fits_empty_response_finalization_before_dispatch(monkeypatch):
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    calls: list[dict] = []
+
+    async def chat_with_retry(*, messages, tools=None, **_kwargs):
+        calls.append({"messages": [dict(message) for message in messages], "tools": tools})
+        if len(calls) < 3:
+            return LLMResponse(
+                content=None,
+                usage=LLMUsage.reported(input_tokens=100, output_tokens=1),
+            )
+        return LLMResponse(
+            content="finalized",
+            usage=LLMUsage.reported(input_tokens=100, output_tokens=10),
+        )
+
+    def estimate(_provider, _model, messages, _tools):
+        contents = [str(message.get("content") or "") for message in messages]
+        has_original = "do task" in contents
+        has_finalization = any("conversation above" in content for content in contents)
+        return (600 if has_original and has_finalization else 100), "test-counter"
+
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        estimate,
+    )
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_message_tokens",
+        lambda _message: 300,
+    )
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[{"role": "user", "content": "do task"}],
+        tools=tools,
+        model="local-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_iterations=3,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    assert len(calls) == 3
+    assert calls[-1]["tools"] is None
+    assert all(message.get("content") != "do task" for message in calls[-1]["messages"])
+    assert result.final_content == "finalized"
+
+
+@pytest.mark.asyncio
+async def test_runner_fits_max_iteration_finalization_before_dispatch(monkeypatch):
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    calls: list[dict] = []
+    oversized_result = "oversized-current-tool-result"
+
+    async def chat_with_retry(*, messages, tools=None, **_kwargs):
+        calls.append({"messages": [dict(message) for message in messages], "tools": tools})
+        if len(calls) == 1:
+            return LLMResponse(
+                content="working",
+                tool_calls=[ToolCallRequest(id="call_1", name="read_file", arguments={})],
+                finish_reason="tool_calls",
+                usage=LLMUsage.reported(input_tokens=100, output_tokens=10),
+            )
+        return LLMResponse(
+            content="safe summary",
+            usage=LLMUsage.reported(input_tokens=100, output_tokens=10),
+        )
+
+    def estimate(_provider, _model, messages, _tools):
+        has_oversized = any(
+            message.get("content") == oversized_result for message in messages
+        )
+        return (600 if has_oversized else 100), "test-counter"
+
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(return_value=oversized_result)
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        estimate,
+    )
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_message_tokens",
+        lambda message: 600 if message.get("content") == oversized_result else 50,
+    )
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[{"role": "user", "content": "inspect"}],
+        tools=tools,
+        model="local-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    assert len(calls) == 2
+    assert calls[-1]["tools"] is None
+    assert all(
+        message.get("content") != oversized_result
+        for message in calls[-1]["messages"]
+    )
+    assert any(message.get("content") == oversized_result for message in result.messages)
+    assert result.final_content == "safe summary"
+
+
+@pytest.mark.parametrize(
+    ("input_tokens", "expected_fitted"),
+    [(500, True), (100, False)],
+)
+def test_matching_reported_provider_usage_avoids_local_estimate(
+    monkeypatch,
+    input_tokens,
+    expected_fitted,
+):
+    provider = MagicMock(spec=LLMProvider)
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    spec = make_run_spec(
+        provider,
+        initial_messages=[{"role": "user", "content": "hello"}],
+        tools=tools,
+        model="local-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    )
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("matching provider usage must be authoritative")
+        ),
+    )
+
+    governor = ContextGovernor()
+    monkeypatch.setattr(governor, "fit_to_budget", lambda *_args, **_kwargs: [])
+    _messages, fitted = governor.fit_request(
+        _governance_config(provider, tools, spec),
+        spec.initial_messages,
+        LLMUsage.reported(input_tokens=input_tokens, output_tokens=10),
+        usage_matches_messages=True,
+        tool_definitions=tools.get_definitions(),
+    )
+
+    assert fitted is expected_fitted
+
+
+def test_changed_messages_use_local_estimate_after_reported_usage(monkeypatch):
+    provider = MagicMock(spec=LLMProvider)
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    spec = make_run_spec(
+        provider,
+        initial_messages=[{"role": "user", "content": "new tool output"}],
+        tools=tools,
+        model="local-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    )
+    estimate = MagicMock(return_value=(600, "test-counter"))
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        estimate,
+    )
+
+    governor = ContextGovernor()
+    monkeypatch.setattr(governor, "fit_to_budget", lambda *_args, **_kwargs: [])
+    _messages, fitted = governor.fit_request(
+        _governance_config(provider, tools, spec),
+        spec.initial_messages,
+        LLMUsage.reported(input_tokens=900, output_tokens=10),
+        usage_matches_messages=False,
+        tool_definitions=tools.get_definitions(),
+    )
+
+    assert fitted is True
+    estimate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_runner_counts_resumed_provider_state_before_dispatch(monkeypatch):
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.can_resume_conversation_state.return_value = True
+    captured_contexts = []
+
+    async def chat_with_retry(*, provider_context=None, **_kwargs):
+        captured_contexts.append(provider_context)
+        return LLMResponse(
+            content="done",
+            usage=LLMUsage.reported(input_tokens=100, output_tokens=10),
+        )
+
+    provider.chat_with_retry = chat_with_retry
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    current_message = {"role": "user", "content": "new delta"}
+    saved_state = ProviderConversationState(
+        kind="openai_responses",
+        provider="openai:test",
+        model="local-model",
+        version=1,
+        payload={
+            "items": [{"type": "reasoning", "encrypted_content": "opaque"}],
+            "context_tokens": 450,
+        },
+        pending_messages=[current_message],
+    )
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda *_args, **_kwargs: (100, "test-counter"),
+    )
+    monkeypatch.setattr(
+        "nanobot.providers.conversation_state.estimate_prompt_tokens_chain",
+        lambda *_args, **_kwargs: (100, "test-counter"),
+    )
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=[current_message],
+        tools=tools,
+        model="local-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        provider_state=saved_state,
+    ))
+
+    assert captured_contexts[0].conversation_state is None
+    assert result.messages == [
+        current_message,
+        {"role": "assistant", "content": "done"},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("context_block_limit", "expected_budget"),
+    [(500, 500), (None, 0)],
+)
+async def test_runner_refuses_locally_fitted_request_that_still_cannot_fit(
+    monkeypatch,
+    context_block_limit,
+    expected_budget,
+):
+    from nanobot.agent.runner import AgentRunner
+
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="unexpected"))
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda *_args, **_kwargs: (2_000, "test-counter"),
+    )
+
+    with pytest.raises(ContextWindowExceededError) as exc_info:
+        await AgentRunner().run(make_run_spec(
+            provider,
+            initial_messages=[
+                {"role": "system", "content": "oversized system"},
+                {"role": "user", "content": "oversized user"},
+            ],
+            tools=tools,
+            model="local-model",
+            context_window_tokens=1_000,
+            context_block_limit=context_block_limit,
+            max_iterations=1,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        ))
+
+    assert exc_info.value.estimated_tokens == 2_000
+    assert exc_info.value.input_budget == expected_budget
+    provider.chat_with_retry.assert_not_awaited()
+
+
 def test_snip_history_drops_orphaned_tool_results_from_trimmed_slice(monkeypatch):
     provider = MagicMock()
     tools = MagicMock()
@@ -130,7 +631,11 @@ def test_snip_history_drops_orphaned_tool_results_from_trimmed_slice(monkeypatch
         lambda msg: token_sizes.get(str(msg.get("content")), 40),
     )
 
-    trimmed = ContextGovernor().snip_history(_governance_config(provider, tools, spec), messages)
+    trimmed = ContextGovernor().snip_history(
+        _governance_config(provider, tools, spec),
+        messages,
+        tool_definitions=tools.get_definitions(),
+    )
 
     # After the fix, the user message is recovered so the sequence is valid
     # for providers that require system → user (e.g. GLM error 1214).
@@ -182,7 +687,11 @@ def test_snip_history_reserves_budget_for_tool_definitions(monkeypatch):
         lambda msg: token_sizes.get(str(msg.get("content")), 40),
     )
 
-    trimmed = ContextGovernor().snip_history(_governance_config(provider, tools, spec), messages)
+    trimmed = ContextGovernor().snip_history(
+        _governance_config(provider, tools, spec),
+        messages,
+        tool_definitions=tools.get_definitions(),
+    )
 
     contents = [message.get("content") for message in trimmed]
     assert contents == ["system", "recent two"]
@@ -465,260 +974,6 @@ async def test_runner_backfill_only_mutates_model_context_not_returned_messages(
     ]
 
 
-# ---------------------------------------------------------------------------
-# Microcompact (stale tool result compaction)
-# ---------------------------------------------------------------------------
-
-
-def _microcompact_messages(*, total: int, tool_name: str, content: str) -> list[dict]:
-    messages: list[dict] = [{"role": "system", "content": "sys"}]
-    for i in range(total):
-        messages.append({
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{
-                "id": f"c{i}",
-                "type": "function",
-                "function": {"name": tool_name, "arguments": "{}"},
-            }],
-        })
-        messages.append({
-            "role": "tool",
-            "tool_call_id": f"c{i}",
-            "name": tool_name,
-            "content": content,
-        })
-    return messages
-
-
-def test_microcompact_skips_when_prompt_under_hard_budget(monkeypatch):
-    """Cache-friendly path: in-flight tool results stay stable while prompt fits."""
-    provider = MagicMock()
-    provider.generation = SimpleNamespace(max_tokens=0)
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-
-    total = 15
-    long_content = "x" * 600
-    messages = _microcompact_messages(total=total, tool_name="read_file", content=long_content)
-    spec = make_run_spec(provider,
-        initial_messages=messages,
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        max_tokens=0,
-        context_window_tokens=20_000,
-    )
-
-    monkeypatch.setattr(
-        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
-        lambda *_args, **_kwargs: (1000, "test"),
-    )
-
-    result = ContextGovernor().compact_inflight_overflow(
-        _governance_config(provider, tools, spec),
-        messages,
-        set(),
-    )
-
-    assert result is messages
-
-
-def test_microcompact_overflow_compacts_to_low_watermark(monkeypatch):
-    """Overflow path: compact in-flight stale results with headroom for later calls."""
-    provider = MagicMock()
-    provider.generation = SimpleNamespace(max_tokens=0)
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-
-    total = 18
-    long_content = "x" * 600
-    messages = _microcompact_messages(total=total, tool_name="read_file", content=long_content)
-    spec = make_run_spec(provider,
-        initial_messages=messages,
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        max_tokens=0,
-        context_window_tokens=2224,  # input budget 1200, low target 1020
-    )
-
-    def estimate(_provider, _model, msgs, _tools):
-        return sum(
-            100 if (content := msg.get("content")) == long_content
-            else 1 if isinstance(content, str) and "compacted to fit context" in content
-            else 0
-            for msg in msgs
-            if msg.get("role") == "tool"
-        ), "test"
-
-    monkeypatch.setattr("nanobot.agent.context_governance.estimate_prompt_tokens_chain", estimate)
-
-    result = ContextGovernor().compact_inflight_overflow(
-        _governance_config(provider, tools, spec),
-        messages,
-        set(),
-    )
-    tool_msgs = [m for m in result if m.get("role") == "tool"]
-    compacted = [m for m in tool_msgs if "compacted to fit context" in str(m.get("content", ""))]
-    preserved = [m for m in tool_msgs if m.get("content") == long_content]
-
-    assert len(compacted) == 8
-    assert len(preserved) == total - 8
-    assert [m["tool_call_id"] for m in compacted] == [f"c{i}" for i in range(8)]
-
-
-def test_microcompact_compacts_newest_when_it_alone_overflows(monkeypatch):
-    """An unfit newest result tells the model to retry narrowly or report the limit."""
-    provider = MagicMock()
-    provider.generation = SimpleNamespace(max_tokens=0)
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-
-    long_content = "x" * 600
-    messages = _microcompact_messages(total=1, tool_name="read_file", content=long_content)
-    spec = make_run_spec(provider,
-        initial_messages=messages,
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        max_tokens=0,
-        context_window_tokens=2000,
-        context_block_limit=500,
-    )
-
-    def estimate(_provider, _model, msgs, _tools):
-        return sum(
-            1000 if msg.get("content") == long_content else 1
-            for msg in msgs
-            if msg.get("role") == "tool"
-        ), "test"
-
-    monkeypatch.setattr("nanobot.agent.context_governance.estimate_prompt_tokens_chain", estimate)
-
-    compacted_tool_call_ids: set[str] = set()
-    result = ContextGovernor().compact_inflight_overflow(
-        _governance_config(provider, tools, spec),
-        messages,
-        compacted_tool_call_ids,
-    )
-
-    tool_msg = next(m for m in result if m.get("role") == "tool")
-    assert "compacted to fit context" in tool_msg["content"]
-    assert "Do not repeat the same call unchanged" in tool_msg["content"]
-    assert "Retry with a narrower path, query, range, or result limit" in tool_msg["content"]
-    assert "tell the user the task cannot fit" in tool_msg["content"]
-    assert compacted_tool_call_ids == {"c0"}
-
-
-def test_context_governor_keeps_compaction_boundary_stable(monkeypatch):
-    provider = MagicMock()
-    provider.generation = SimpleNamespace(max_tokens=0)
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-
-    total = 18
-    long_content = "x" * 600
-    messages = _microcompact_messages(total=total, tool_name="read_file", content=long_content)
-    spec = make_run_spec(provider,
-        initial_messages=messages,
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        max_tokens=0,
-        context_window_tokens=2224,
-    )
-
-    def estimate(_provider, _model, msgs, _tools):
-        return sum(
-            100 if msg.get("content") == long_content else 1
-            for msg in msgs
-            if msg.get("role") == "tool"
-        ), "test"
-
-    monkeypatch.setattr("nanobot.agent.context_governance.estimate_prompt_tokens_chain", estimate)
-
-    governor = ContextGovernor()
-    compacted_tool_call_ids: set[str] = set()
-    config = _governance_config(provider, tools, spec, inflight_start_index=0)
-    first = governor.compact_inflight_overflow(config, messages, compacted_tool_call_ids)
-    first_ids = set(compacted_tool_call_ids)
-
-    second = governor.compact_inflight_overflow(config, messages, compacted_tool_call_ids)
-
-    assert compacted_tool_call_ids == first_ids
-    assert [m.get("content") for m in second] == [m.get("content") for m in first]
-
-
-def test_microcompact_preserves_short_results(monkeypatch):
-    """Short tool results below the compaction threshold should not be replaced."""
-    provider = MagicMock()
-    provider.generation = SimpleNamespace(max_tokens=0)
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-
-    total = 15
-    messages = _microcompact_messages(total=total, tool_name="exec", content="short")
-    spec = make_run_spec(provider,
-        initial_messages=messages,
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        max_tokens=0,
-        context_window_tokens=2024,
-    )
-
-    monkeypatch.setattr(
-        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
-        lambda *_args, **_kwargs: (2000, "test"),
-    )
-
-    result = ContextGovernor().compact_inflight_overflow(
-        _governance_config(provider, tools, spec),
-        messages,
-        set(),
-    )
-    assert result is messages  # no copy needed — all stale results are short
-
-
-def test_microcompact_skips_non_compactable_tools(monkeypatch):
-    """Non-compactable tools (e.g. 'message') should never be replaced."""
-    provider = MagicMock()
-    provider.generation = SimpleNamespace(max_tokens=0)
-    tools = MagicMock()
-    tools.get_definitions.return_value = []
-
-    total = 15
-    long_content = "y" * 1000
-    messages = _microcompact_messages(total=total, tool_name="message", content=long_content)
-    spec = make_run_spec(provider,
-        initial_messages=messages,
-        tools=tools,
-        model="test-model",
-        max_iterations=1,
-        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
-        max_tokens=0,
-        context_window_tokens=2024,
-    )
-
-    monkeypatch.setattr(
-        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
-        lambda *_args, **_kwargs: (2000, "test"),
-    )
-
-    result = ContextGovernor().compact_inflight_overflow(
-        _governance_config(provider, tools, spec),
-        messages,
-        set(),
-    )
-    assert result is messages  # no compactable tools found
-
-
 def test_governance_repairs_orphans_after_snip():
     """After snipping clips an assistant+tool_calls, orphan repair cleans up the tail."""
     # Simulate snipping that keeps only the tail: drop the assistant with
@@ -818,7 +1073,11 @@ def test_snip_history_preserves_user_message_after_truncation(monkeypatch):
         lambda msg: token_sizes.get(str(msg.get("content")), 100),
     )
 
-    trimmed = ContextGovernor().snip_history(_governance_config(provider, tools, spec), messages)
+    trimmed = ContextGovernor().snip_history(
+        _governance_config(provider, tools, spec),
+        messages,
+        tool_definitions=tools.get_definitions(),
+    )
 
     # The first non-system message MUST be user (not assistant).
     non_system = [m for m in trimmed if m.get("role") != "system"]
@@ -863,7 +1122,11 @@ def test_snip_history_no_user_at_all_falls_back_gracefully(monkeypatch):
         lambda msg: 100,
     )
 
-    trimmed = ContextGovernor().snip_history(_governance_config(provider, tools, spec), messages)
+    trimmed = ContextGovernor().snip_history(
+        _governance_config(provider, tools, spec),
+        messages,
+        tool_definitions=tools.get_definitions(),
+    )
 
     # Should not crash.  The result should still be a valid list.
     assert isinstance(trimmed, list)
@@ -871,7 +1134,6 @@ def test_snip_history_no_user_at_all_falls_back_gracefully(monkeypatch):
     assert any(m.get("role") == "system" for m in trimmed)
     # The _enforce_role_alternation safety net must be able to fix whatever
     # _snip_history returns here — verify it produces a valid sequence.
-    from nanobot.providers.base import LLMProvider
     fixed = LLMProvider._enforce_role_alternation(trimmed)
     non_system = [m for m in fixed if m["role"] != "system"]
     if non_system:

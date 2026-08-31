@@ -1302,9 +1302,9 @@ class TestSummaryPersistence:
         assert "_last_summary" in reloaded.metadata
 
         # Simulate /new command
-        session.clear()
-        loop.sessions.save(session)
-        loop.sessions.invalidate(session.key)
+        reloaded.clear()
+        loop.sessions.save(reloaded)
+        loop.sessions.invalidate(reloaded.key)
 
         # After /new, metadata should no longer contain _last_summary
         fresh = loop.sessions.get_or_create("cli:test")

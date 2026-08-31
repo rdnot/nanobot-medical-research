@@ -529,7 +529,6 @@ class AgentLoop:
                 workspace_scopes=self.workspace_scopes,
                 unified_session=unified_session,
             ),
-            unified_session=unified_session,
         )
         self.auto_compact = AutoCompact(
             sessions=self.sessions,
@@ -1316,9 +1315,6 @@ class AgentLoop:
             channel=request_ctx.channel,
             workspace=effective_scope.project_path,
             include_memory=session.policy.persist if session is not None else True,
-            include_memory_recent_history=not ephemeral,
-            session_key=session.key if session is not None else request_ctx.session_key,
-            unified_session=self._unified_session,
         )
         if request_context is None:
             request_ctx = dataclasses.replace(
@@ -2092,6 +2088,13 @@ class AgentLoop:
                 session,
                 runtime=runtime,
             )
+            # Token consolidation may have committed a replacement checkpoint
+            # after the compact stage captured its summary for this request.
+            ctx.session, ctx.pending_summary = self.auto_compact.prepare_session(
+                session,
+                ctx.session_key,
+            )
+            session = ctx.require_session()
         is_subagent = ctx.kind is TurnKind.SYSTEM and ctx.msg.sender_id == "subagent"
 
         _hist_kwargs: dict[str, Any] = {
