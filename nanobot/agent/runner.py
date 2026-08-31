@@ -14,6 +14,7 @@ from typing import Any, cast
 
 from loguru import logger
 
+from nanobot.agent.context import TranscriptInput
 from nanobot.agent.context_governance import (
     ContextGovernanceConfig,
     ContextGovernor,
@@ -66,6 +67,7 @@ ContinuationCallback = Callable[[], str | None]
 RetryWaitCallback = Callable[[str], Awaitable[None]]
 CheckpointCallback = Callable[[dict[str, Any]], Awaitable[None]]
 InjectionCallback = Callable[..., Awaitable[Iterable[Any] | None]]
+TranscriptBuilder = Callable[[TranscriptInput], list[dict[str, Any]]]
 
 _DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
 _ARREARAGE_ERROR_MESSAGE = (
@@ -94,11 +96,13 @@ def _restore_outer_whitespace(content: str, original: str | None) -> str:
 class AgentRunSpec:
     """Configuration for a single agent execution."""
 
-    initial_messages: list[dict[str, Any]]
+    initial_messages: list[dict[str, Any]] | None
     tools: ToolRegistry
     runtime: LLMRuntime
     max_iterations: int
     max_tool_result_chars: int
+    transcript_input: TranscriptInput | None = None
+    transcript_builder: TranscriptBuilder | None = None
     hook: AgentHook | None = None
     error_message: str | None = _DEFAULT_ERROR_MESSAGE
     max_iterations_message: str | None = None
@@ -410,7 +414,7 @@ class AgentRunner:
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
         hook = spec.hook or AgentHook()
-        messages = list(spec.initial_messages)
+        messages = self._initial_transcript(spec)
         context = AgentRunHookContext(messages=deepcopy(messages))
         llm_usage_source_token = bind_llm_usage_source(
             spec.llm_usage_source or source_from_session_key(spec.session_key)
@@ -462,6 +466,19 @@ class AgentRunner:
             finally:
                 reset_llm_usage_source(llm_usage_source_token)
 
+    @staticmethod
+    def _initial_transcript(spec: AgentRunSpec) -> list[dict[str, Any]]:
+        """Resolve exactly one supported source for the initial model transcript."""
+        if spec.transcript_input is not None:
+            if spec.initial_messages is not None:
+                raise ValueError("provide either transcript_input or initial_messages, not both")
+            if spec.transcript_builder is None:
+                raise ValueError("transcript_builder is required with transcript_input")
+            return list(spec.transcript_builder(spec.transcript_input))
+        if spec.initial_messages is None:
+            raise ValueError("initial_messages is required without transcript_input")
+        return list(spec.initial_messages)
+
     async def _run_core(
         self,
         spec: AgentRunSpec,
@@ -502,7 +519,7 @@ class AgentRunner:
             context_window_tokens=spec.runtime.context_window_tokens,
             context_block_limit=spec.context_block_limit,
             max_tokens=spec.runtime.generation.max_tokens,
-            inflight_start_index=len(spec.initial_messages),
+            inflight_start_index=len(messages),
         )
 
         for iteration in range(spec.max_iterations):
@@ -949,6 +966,7 @@ class AgentRunner:
 
         active_hosted_tools: dict[str, dict[str, Any]] = {}
         native_reasoning_open = False
+        native_reasoning_close_task: asyncio.Task[None] | None = None
         request_started_at = 0.0
         first_output_at: float | None = None
         generation_started_at: float | None = None
@@ -972,11 +990,29 @@ class AgentRunner:
             generation_started_at = None
 
         async def _close_native_reasoning() -> None:
-            nonlocal native_reasoning_open
-            if not native_reasoning_open:
-                return
-            native_reasoning_open = False
-            await hook.emit_reasoning_end()
+            nonlocal native_reasoning_open, native_reasoning_close_task
+            if native_reasoning_close_task is None:
+                if not native_reasoning_open:
+                    return
+                native_reasoning_open = False
+                native_reasoning_close_task = asyncio.create_task(
+                    hook.emit_reasoning_end()
+                )
+
+            close_task = native_reasoning_close_task
+            cancellation: asyncio.CancelledError | None = None
+            while not close_task.done():
+                try:
+                    await asyncio.shield(close_task)
+                except asyncio.CancelledError as exc:
+                    cancellation = cancellation or exc
+            try:
+                close_task.result()
+            finally:
+                if native_reasoning_close_task is close_task:
+                    native_reasoning_close_task = None
+            if cancellation is not None:
+                raise cancellation
 
         async def _provider_tool_event(event: dict[str, Any]) -> None:
             if event.get("kind") != "hosted_tool":
@@ -1051,6 +1087,10 @@ class AgentRunner:
                 await coro if outer_timeout_s is None
                 else await asyncio.wait_for(coro, timeout=outer_timeout_s)
             )
+        except asyncio.CancelledError:
+            _pause_generation()
+            await _close_native_reasoning()
+            raise
         except asyncio.TimeoutError:
             if outer_timeout_s is None:
                 response = LLMResponse(
