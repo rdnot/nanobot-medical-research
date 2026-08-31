@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from loguru import logger
 
+from nanobot.providers.base import LLMUsage
 from nanobot.utils.helpers import (
     estimate_message_tokens,
     estimate_prompt_tokens_chain,
@@ -27,18 +28,33 @@ if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
 
 SNIP_SAFETY_BUFFER = 1024
-MICROCOMPACT_MIN_CHARS = 500
-INFLIGHT_COMPACT_TARGET_RATIO = 0.85
-COMPACTABLE_TOOLS = frozenset({
-    "read_file", "exec", "grep", "find_files",
-    "web_search", "web_fetch", "list_dir", "list_exec_sessions",
-})
 # read_file is the recovery path for persisted results; exempting it prevents persist->read->persist loops.
 TOOL_RESULT_OFFLOAD_EXEMPT_TOOLS = frozenset({"read_file"})
 BACKFILL_CONTENT = "[Tool result unavailable — call was interrupted or lost]"
 PLACEHOLDER_TEXTS = frozenset({
     "[Previous assistant message omitted.]",
 })
+
+
+class ContextWindowExceededError(RuntimeError):
+    """Raised before a locally fitted request that still exceeds its budget."""
+
+    def __init__(
+        self,
+        *,
+        session_key: str | None,
+        estimated_tokens: int,
+        input_budget: int,
+        source: str,
+    ) -> None:
+        self.session_key = session_key
+        self.estimated_tokens = estimated_tokens
+        self.input_budget = input_budget
+        self.source = source
+        super().__init__(
+            "Model input still exceeds the local context budget after request fitting "
+            f"for {session_key or 'default'}: {estimated_tokens}/{input_budget} via {source}"
+        )
 
 
 def _tool_call_name_is_valid(tool_call: Any) -> bool:
@@ -67,7 +83,6 @@ class ContextGovernanceConfig:
     context_window_tokens: int | None = None
     context_block_limit: int | None = None
     max_tokens: int | None = None
-    inflight_start_index: int = 0
 
 
 class ContextGovernor:
@@ -77,17 +92,85 @@ class ContextGovernor:
         self,
         config: ContextGovernanceConfig,
         messages: list[dict[str, Any]],
-        compacted_tool_call_ids: set[str],
     ) -> list[dict[str, Any]]:
         updated = self.strip_placeholder_assistant_messages(messages)
         updated = self.strip_malformed_tool_calls(updated)
         updated = self.drop_orphan_tool_results(updated)
         updated = self.backfill_missing_tool_results(updated)
-        updated = self.apply_tool_result_budget(config, updated)
-        updated = self.compact_inflight_overflow(config, updated, compacted_tool_call_ids)
-        updated = self.snip_history(config, updated)
+        return self.apply_tool_result_budget(config, updated)
+
+    def fit_to_budget(
+        self,
+        config: ContextGovernanceConfig,
+        messages: list[dict[str, Any]],
+        *,
+        tool_definitions: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        """Fit a model-facing copy while keeping the source transcript intact."""
+        updated = self.snip_history(
+            config,
+            messages,
+            tool_definitions=tool_definitions,
+            force=True,
+        )
         updated = self.drop_orphan_tool_results(updated)
-        return self.backfill_missing_tool_results(updated)
+        updated = self.backfill_missing_tool_results(updated)
+        if not config.context_window_tokens:
+            return updated
+        budget = self.input_budget(config)
+        estimated, source = estimate_prompt_tokens_chain(
+            config.provider,
+            config.model,
+            updated,
+            tool_definitions,
+        )
+        if budget > 0 and estimated <= budget:
+            return updated
+        raise ContextWindowExceededError(
+            session_key=config.session_key,
+            estimated_tokens=estimated,
+            input_budget=budget,
+            source=source,
+        )
+
+    def fit_request(
+        self,
+        config: ContextGovernanceConfig,
+        messages: list[dict[str, Any]],
+        usage: LLMUsage | None,
+        *,
+        usage_matches_messages: bool,
+        tool_definitions: list[dict[str, Any]] | None,
+        request_context_tokens: int | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Fit the request when its measured or estimated input is pressured."""
+        if not config.context_window_tokens:
+            return messages, False
+        budget = self.input_budget(config)
+        if (
+            request_context_tokens is None
+            and usage_matches_messages
+            and usage is not None
+            and usage.context_tokens is not None
+        ):
+            pressured = budget <= 0 or usage.context_tokens >= budget
+        else:
+            estimated, _ = estimate_prompt_tokens_chain(
+                config.provider,
+                config.model,
+                messages,
+                tool_definitions,
+            )
+            if request_context_tokens is not None:
+                estimated = max(estimated, request_context_tokens)
+            pressured = budget <= 0 or estimated >= budget
+        if not pressured:
+            return messages, False
+        return self.fit_to_budget(
+            config,
+            messages,
+            tool_definitions=tool_definitions,
+        ), True
 
     @staticmethod
     def input_budget(config: ContextGovernanceConfig) -> int:
@@ -326,71 +409,13 @@ class ContextGovernor:
                 updated[idx]["content"] = normalized
         return updated
 
-    def compact_inflight_overflow(
-        self,
-        config: ContextGovernanceConfig,
-        messages: list[dict[str, Any]],
-        compacted_tool_call_ids: set[str],
-    ) -> list[dict[str, Any]]:
-        """Compact in-flight tool results only when the request would overflow."""
-        budget = self.input_budget(config)
-        if budget <= 0:
-            return messages
-
-        tools = config.tools.get_definitions()
-        updated = self._apply_recorded_compactions(messages, compacted_tool_call_ids)
-        estimate, source = estimate_prompt_tokens_chain(
-            config.provider,
-            config.model,
-            updated,
-            tools,
-        )
-        if estimate <= budget:
-            return updated
-
-        target = int(budget * INFLIGHT_COMPACT_TARGET_RATIO)
-        candidates = self._inflight_compaction_candidates(
-            config,
-            updated,
-            compacted_tool_call_ids,
-        )
-        if not candidates:
-            return updated
-
-        for candidate_idx, (idx, tool_call_id) in enumerate(candidates):
-            is_newest_candidate = candidate_idx == len(candidates) - 1
-            if is_newest_candidate and estimate <= budget:
-                break
-            if tool_call_id in compacted_tool_call_ids:
-                continue
-            if updated is messages:
-                updated = [dict(m) for m in messages]
-            compacted_tool_call_ids.add(tool_call_id)
-            self._compact_tool_result_at(updated, idx)
-            estimate, source = estimate_prompt_tokens_chain(
-                config.provider,
-                config.model,
-                updated,
-                tools,
-            )
-            if estimate <= target:
-                break
-
-        logger.debug(
-            "In-flight context compaction for {}: prompt={} budget={} target={} via {}, ids={}",
-            config.session_key or "default",
-            estimate,
-            budget,
-            target,
-            source,
-            len(compacted_tool_call_ids),
-        )
-        return updated
-
     def snip_history(
         self,
         config: ContextGovernanceConfig,
         messages: list[dict[str, Any]],
+        *,
+        tool_definitions: list[dict[str, Any]] | None,
+        force: bool = False,
     ) -> list[dict[str, Any]]:
         if not messages or not config.context_window_tokens:
             return messages
@@ -399,14 +424,13 @@ class ContextGovernor:
         if budget <= 0:
             return messages
 
-        tools = config.tools.get_definitions()
         estimate, _ = estimate_prompt_tokens_chain(
             config.provider,
             config.model,
             messages,
-            tools,
+            tool_definitions,
         )
-        if estimate <= budget:
+        if not force and estimate <= budget:
             return messages
 
         system_messages = [dict(msg) for msg in messages if msg.get("role") == "system"]
@@ -419,7 +443,7 @@ class ContextGovernor:
             config.provider,
             config.model,
             system_messages,
-            tools,
+            tool_definitions,
         )
         remaining_budget = max(0, budget - max(system_tokens, fixed_tokens))
         kept: list[dict[str, Any]] = []
@@ -433,16 +457,6 @@ class ContextGovernor:
         kept.reverse()
 
         return system_messages + self._legal_history_tail(kept, non_system)
-
-    @staticmethod
-    def _tool_result_compaction_message(message: dict[str, Any]) -> str:
-        name = message.get("name", "tool")
-        return (
-            f"Error: The previous {name} result was compacted to fit context because it was too "
-            "large. Do not repeat the same call unchanged. Retry with a narrower path, query, "
-            "range, or result limit, use another tool, or tell the user the task cannot fit in "
-            "the available context."
-        )
 
     def _legal_history_tail(
         self,
@@ -462,50 +476,3 @@ class ContextGovernor:
             if messages[idx].get("role") == "user":
                 return messages[idx:]
         return []
-
-    def _apply_recorded_compactions(
-        self,
-        messages: list[dict[str, Any]],
-        compacted_tool_call_ids: set[str],
-    ) -> list[dict[str, Any]]:
-        if not compacted_tool_call_ids:
-            return messages
-        updated = messages
-        for idx, msg in enumerate(messages):
-            if msg.get("role") != "tool":
-                continue
-            tool_call_id = msg.get("tool_call_id")
-            if not tool_call_id or str(tool_call_id) not in compacted_tool_call_ids:
-                continue
-            compaction_message = self._tool_result_compaction_message(msg)
-            if msg.get("content") == compaction_message:
-                continue
-            if updated is messages:
-                updated = [dict(m) for m in messages]
-            updated[idx]["content"] = compaction_message
-        return updated
-
-    def _inflight_compaction_candidates(
-        self,
-        config: ContextGovernanceConfig,
-        messages: list[dict[str, Any]],
-        compacted_tool_call_ids: set[str],
-    ) -> list[tuple[int, str]]:
-        compactable: list[tuple[int, str]] = []
-        for idx, msg in enumerate(messages):
-            if idx < config.inflight_start_index:
-                continue
-            if msg.get("role") != "tool" or msg.get("name") not in COMPACTABLE_TOOLS:
-                continue
-            tool_call_id = msg.get("tool_call_id")
-            if not tool_call_id or str(tool_call_id) in compacted_tool_call_ids:
-                continue
-            content = msg.get("content")
-            if not isinstance(content, str) or len(content) < MICROCOMPACT_MIN_CHARS:
-                continue
-            compactable.append((idx, str(tool_call_id)))
-
-        return compactable
-
-    def _compact_tool_result_at(self, messages: list[dict[str, Any]], idx: int) -> None:
-        messages[idx]["content"] = self._tool_result_compaction_message(messages[idx])
