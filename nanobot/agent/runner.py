@@ -16,8 +16,13 @@ from loguru import logger
 
 from nanobot.agent.context import TranscriptInput
 from nanobot.agent.context_governance import (
+    ContextCompactionState,
     ContextGovernanceConfig,
     ContextGovernor,
+    HistoryConsolidator,
+    ModelRequestState,
+    ProviderCompactionConsolidator,
+    TranscriptBuilder,
 )
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentRunHookContext
 from nanobot.agent.tools.execution import execute_tool_calls
@@ -32,20 +37,10 @@ from nanobot.providers.base import (
     LLMProvider,
     LLMResponse,
     LLMUsage,
-    ProviderCallContext,
     ProviderConversationState,
 )
-from nanobot.providers.conversation_state import (
-    ProviderConversationStateController,
-    allows_conversation_message_merge,
-)
-from nanobot.runtime_context import (
-    RUNTIME_CONTEXT_MESSAGE_META,
-    detach_runtime_context,
-    reattach_runtime_context,
-)
-from nanobot.session.history_visibility import is_hidden_history_message
-from nanobot.session.recovery import PENDING_FOLLOWUP_ID_KEY
+from nanobot.providers.conversation_state import ProviderConversationStateController
+from nanobot.session.summary import SessionSummaryCheckpoint
 from nanobot.utils.helpers import (
     build_assistant_message,
     estimate_message_tokens,
@@ -67,7 +62,6 @@ ContinuationCallback = Callable[[], str | None]
 RetryWaitCallback = Callable[[str], Awaitable[None]]
 CheckpointCallback = Callable[[dict[str, Any]], Awaitable[None]]
 InjectionCallback = Callable[..., Awaitable[Iterable[Any] | None]]
-TranscriptBuilder = Callable[[TranscriptInput], list[dict[str, Any]]]
 
 _DEFAULT_ERROR_MESSAGE = "Sorry, I encountered an error calling the AI model."
 _ARREARAGE_ERROR_MESSAGE = (
@@ -113,6 +107,8 @@ class AgentRunSpec:
     provider_retry_mode: str = "standard"
     retry_wait_callback: RetryWaitCallback | None = None
     checkpoint_callback: CheckpointCallback | None = None
+    consolidate_history: HistoryConsolidator | None = None
+    consolidate_provider_compaction: ProviderCompactionConsolidator | None = None
     injection_callback: InjectionCallback | None = None
     terminal_injection_callback: InjectionCallback | None = None
     llm_timeout_s: float | None = None
@@ -137,17 +133,8 @@ class AgentRunResult:
     # Terminal tail to emit when the preceding final-content prefix was already streamed.
     pending_stream_content: str | None = None
     provider_state: ProviderConversationState | None = field(default=None, repr=False)
-
-
-@dataclass(slots=True)
-class _ModelRequestState:
-    """Per-run state used to govern the next provider request."""
-
-    config: ContextGovernanceConfig
-    conversation: ProviderConversationStateController
-    usage: LLMUsage | None = None
-    messages: list[dict[str, Any]] | None = None
-    tool_definitions: list[dict[str, Any]] | None = None
+    summary_checkpoint: SessionSummaryCheckpoint | None = field(default=None, repr=False)
+    provider_compaction_applied: bool = field(default=False, repr=False)
 
 
 class AgentRunner:
@@ -157,118 +144,12 @@ class AgentRunner:
         self.context_governor = ContextGovernor()
 
     @staticmethod
-    def _merge_message_content(left: Any, right: Any) -> str | list[dict[str, Any]]:
-        if isinstance(left, str) and isinstance(right, str):
-            return f"{left}\n\n{right}" if left else right
-
-        def _to_blocks(value: Any) -> list[dict[str, Any]]:
-            if isinstance(value, list):
-                return [
-                    cast(dict[str, Any], item)
-                    if isinstance(item, dict)
-                    else {"type": "text", "text": str(item)}
-                    for item in cast(list[Any], value)
-                ]
-            if value is None:
-                return []
-            return [{"type": "text", "text": str(value)}]
-
-        return _to_blocks(left) + _to_blocks(right)
-
-    @classmethod
     def _append_injected_messages(
-        cls,
         messages: list[dict[str, Any]],
         injections: list[dict[str, Any]],
     ) -> None:
-        """Append injected user messages while preserving role alternation."""
-        for injection in injections:
-            if (
-                messages
-                and injection.get("role") == "user"
-                and messages[-1].get("role") == "user"
-                and not is_hidden_history_message(injection)
-                and not is_hidden_history_message(messages[-1])
-                and allows_conversation_message_merge(messages[-1])
-            ):
-                merged = dict(messages[-1])
-                left_meta = merged.get("_meta")
-                right_meta = injection.get("_meta")
-                left_meta_dict = cast(dict[str, Any], left_meta) if isinstance(left_meta, dict) else None
-                right_meta_dict = (
-                    cast(dict[str, Any], right_meta) if isinstance(right_meta, dict) else None
-                )
-                left_marker = (
-                    left_meta_dict.get(RUNTIME_CONTEXT_MESSAGE_META)
-                    if left_meta_dict is not None
-                    else None
-                )
-                right_marker = (
-                    right_meta_dict.get(RUNTIME_CONTEXT_MESSAGE_META)
-                    if right_meta_dict is not None
-                    else None
-                )
-                left_marker_dict = (
-                    cast(dict[str, Any], left_marker) if isinstance(left_marker, dict) else None
-                )
-                right_marker_dict = (
-                    cast(dict[str, Any], right_marker) if isinstance(right_marker, dict) else None
-                )
-                empty_sources: list[str] = []
-                empty_blocks: list[dict[str, Any]] = []
-                detached_left = (
-                    detach_runtime_context(merged.get("content"), left_marker_dict)
-                    if left_marker_dict is not None
-                    else (merged.get("content"), empty_sources, empty_blocks)
-                )
-                detached_right = (
-                    detach_runtime_context(injection.get("content"), right_marker_dict)
-                    if right_marker_dict is not None
-                    else (injection.get("content"), empty_sources, empty_blocks)
-                )
-                if detached_left is not None and detached_right is not None:
-                    left_content, left_sources, left_blocks = detached_left
-                    right_content, right_sources, right_blocks = detached_right
-                    merged_content = cls._merge_message_content(left_content, right_content)
-                    context_blocks = [*left_blocks, *right_blocks]
-                    if context_blocks:
-                        merged_content, marker = reattach_runtime_context(
-                            merged_content,
-                            [*left_sources, *right_sources],
-                            context_blocks,
-                        )
-                        internal_meta = dict(left_meta_dict) if left_meta_dict is not None else {}
-                        if right_meta_dict is not None:
-                            for key, value in right_meta_dict.items():
-                                internal_meta.setdefault(key, value)
-                        internal_meta[RUNTIME_CONTEXT_MESSAGE_META] = marker
-                        merged["_meta"] = internal_meta
-                    merged["content"] = merged_content
-                else:
-                    merged["content"] = cls._merge_message_content(
-                        merged.get("content"),
-                        injection.get("content"),
-                    )
-                followup_id = injection.get(PENDING_FOLLOWUP_ID_KEY)
-                if isinstance(followup_id, str) and followup_id:
-                    existing = cast(object, merged.get(PENDING_FOLLOWUP_ID_KEY))
-                    followup_ids = (
-                        [existing]
-                        if isinstance(existing, str)
-                        else [
-                            item
-                            for item in cast(list[object], existing)
-                            if isinstance(item, str)
-                        ]
-                        if isinstance(existing, list)
-                        else []
-                    )
-                    if followup_id not in followup_ids:
-                        followup_ids.append(followup_id)
-                    merged[PENDING_FOLLOWUP_ID_KEY] = followup_ids
-                messages[-1] = merged
-                continue
-            messages.append(injection)
+        """Append injected messages without rewriting the raw transcript."""
+        messages.extend(injections)
 
     async def _try_drain_injections(
         self,
@@ -425,7 +306,7 @@ class AgentRunner:
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
         hook = spec.hook or AgentHook()
-        messages = self._initial_transcript(spec)
+        messages, compaction = self._initial_transcript_and_compaction(spec)
         context = AgentRunHookContext(messages=deepcopy(messages))
         llm_usage_source_token = bind_llm_usage_source(
             spec.llm_usage_source or source_from_session_key(spec.session_key)
@@ -433,7 +314,7 @@ class AgentRunner:
 
         try:
             await hook.before_run(context)
-            result = await self._run_core(spec, hook, messages)
+            result = await self._run_core(spec, hook, messages, compaction)
         except asyncio.CancelledError as exc:
             context.messages = deepcopy(messages)
             context.stop_reason = "cancelled"
@@ -478,23 +359,35 @@ class AgentRunner:
                 reset_llm_usage_source(llm_usage_source_token)
 
     @staticmethod
-    def _initial_transcript(spec: AgentRunSpec) -> list[dict[str, Any]]:
-        """Resolve exactly one supported source for the initial model transcript."""
-        if spec.transcript_input is not None:
+    def _initial_transcript_and_compaction(
+        spec: AgentRunSpec,
+    ) -> tuple[list[dict[str, Any]], ContextCompactionState | None]:
+        """Build the initial transcript and its optional compaction state."""
+        transcript_input = spec.transcript_input
+        if transcript_input is not None:
             if spec.initial_messages is not None:
                 raise ValueError("provide either transcript_input or initial_messages, not both")
-            if spec.transcript_builder is None:
+            transcript_builder = spec.transcript_builder
+            if transcript_builder is None:
                 raise ValueError("transcript_builder is required with transcript_input")
-            return list(spec.transcript_builder(spec.transcript_input))
+            return ContextCompactionState.from_transcript(
+                transcript_input,
+                transcript_builder,
+                spec.consolidate_history,
+                spec.consolidate_provider_compaction,
+            )
         if spec.initial_messages is None:
             raise ValueError("initial_messages is required without transcript_input")
-        return list(spec.initial_messages)
+        if spec.consolidate_history is not None:
+            raise ValueError("consolidate_history requires transcript_input")
+        return list(spec.initial_messages), None
 
     async def _run_core(
         self,
         spec: AgentRunSpec,
         hook: AgentHook,
         messages: list[dict[str, Any]],
+        compaction: ContextCompactionState | None,
     ) -> AgentRunResult:
         final_content: str | None = None
         tools_used: list[str] = []
@@ -530,9 +423,10 @@ class AgentRunner:
             context_block_limit=spec.context_block_limit,
             max_tokens=spec.runtime.generation.max_tokens,
         )
-        request_state = _ModelRequestState(
+        request_state = ModelRequestState(
             config=governance_config,
             conversation=conversation_state,
+            compaction=compaction,
         )
 
         for iteration in range(spec.max_iterations):
@@ -542,9 +436,15 @@ class AgentRunner:
                 session_key=spec.session_key,
             )
             await hook.before_iteration(context)
+            request_message_count = len(messages)
+            request_messages = (
+                request_state.compaction.request_messages(messages)
+                if request_state.compaction is not None
+                else messages
+            )
             response = await self._request_model(
                 spec,
-                messages,
+                request_messages,
                 hook,
                 context,
                 request_state=request_state,
@@ -553,6 +453,11 @@ class AgentRunner:
             assert request_state.messages is not None
             messages_for_model = request_state.messages
             conversation_state.observe_response(response, messages)
+            if request_state.compaction is not None:
+                request_state.compaction.accept_request(
+                    messages_for_model,
+                    raw_boundary=request_message_count,
+                )
             context.response = response
             context.tool_calls = list(response.tool_calls)
 
@@ -634,7 +539,7 @@ class AgentRunner:
                     messages.append(tool_message)
                     completed_tool_results.append(tool_message)
                 checkpoint_model_messages = (
-                    self.context_governor.prepare_for_model(
+                    self.context_governor.prepare_messages_for_model(
                         governance_config,
                         messages,
                     )
@@ -920,6 +825,12 @@ class AgentRunner:
             had_injections=had_injections,
             pending_stream_content=pending_stream_content,
             provider_state=conversation_state.finish(messages),
+            summary_checkpoint=(
+                request_state.compaction.summary_checkpoint
+                if request_state.compaction is not None
+                else None
+            ),
+            provider_compaction_applied=request_state.provider_compaction_applied,
         )
 
     def _build_request_kwargs(
@@ -942,60 +853,6 @@ class AgentRunner:
         kwargs["reasoning_effort"] = generation.reasoning_effort
         return kwargs
 
-    def _prepare_model_request(
-        self,
-        state: _ModelRequestState,
-        messages: list[dict[str, Any]],
-        *,
-        tool_definitions: list[dict[str, Any]] | None,
-        transcript: list[dict[str, Any]] | None = None,
-    ) -> tuple[list[dict[str, Any]], ProviderCallContext | None]:
-        """Prepare, fit, and record the exact payload sent to a provider."""
-        prepared = self.context_governor.prepare_for_model(state.config, messages)
-        supplemental_messages = (
-            [prepared[-1]] if transcript is not None and tool_definitions is None else None
-        )
-        model_messages = None if supplemental_messages is not None else prepared
-        request_context_tokens = (
-            state.conversation.estimate_request_context_tokens(
-                transcript,
-                model_messages=model_messages,
-                supplemental_messages=supplemental_messages,
-                tool_definitions=tool_definitions,
-            )
-            if transcript is not None
-            else None
-        )
-        usage_matches_messages = (
-            state.messages is not None
-            and prepared == state.messages
-            and tool_definitions == state.tool_definitions
-        )
-        prepared, fitted = self.context_governor.fit_request(
-            state.config,
-            prepared,
-            state.usage,
-            usage_matches_messages=usage_matches_messages,
-            tool_definitions=tool_definitions,
-            request_context_tokens=request_context_tokens,
-        )
-        provider_context = (
-            state.conversation.prepare_request(
-                transcript,
-                context_window_tokens=state.config.context_window_tokens,
-                model_messages=model_messages,
-                supplemental_messages=supplemental_messages,
-                resume_state=not fitted,
-            )
-            if transcript is not None
-            else state.conversation.independent_request_context(
-                context_window_tokens=state.config.context_window_tokens,
-            )
-        )
-        state.messages = deepcopy(prepared)
-        state.tool_definitions = deepcopy(tool_definitions)
-        return prepared, provider_context
-
     async def _request_model(
         self,
         spec: AgentRunSpec,
@@ -1003,13 +860,13 @@ class AgentRunner:
         hook: AgentHook,
         context: AgentHookContext,
         *,
-        request_state: _ModelRequestState,
+        request_state: ModelRequestState,
         malformed_retry: bool = False,
         transcript: list[dict[str, Any]] | None,
     ) -> LLMResponse:
         timeout_s = self._resolve_llm_timeout_s(spec)
         tool_definitions = spec.tools.get_definitions()
-        messages, provider_context = self._prepare_model_request(
+        messages, provider_context = await self.context_governor.prepare_request(
             request_state,
             messages,
             tool_definitions=tool_definitions,
@@ -1169,6 +1026,12 @@ class AgentRunner:
             response.ttft_ms = max(0, round((first_output_at - request_started_at) * 1000))
         if generation_elapsed_s > 0:
             response.generation_ms = max(1, round(generation_elapsed_s * 1000))
+        await self.context_governor.summarize_provider_compaction(
+            request_state,
+            response,
+            current_request_boundary=(len(transcript) if transcript is not None else None),
+        )
+        request_state.provider_compaction_applied |= response.provider_compaction_applied
         # chat_stream_with_retry may recover internally, so only fail unfinished
         # hosted calls after the provider returns its final error response.
         if response.finish_reason == "error":
@@ -1283,7 +1146,7 @@ class AgentRunner:
         spec: AgentRunSpec,
         messages: list[dict[str, Any]],
         *,
-        request_state: _ModelRequestState,
+        request_state: ModelRequestState,
         transcript: list[dict[str, Any]],
     ) -> LLMResponse:
         retry_messages = self._finalization_retry_messages(messages)
@@ -1313,14 +1176,21 @@ class AgentRunner:
         messages: list[dict[str, Any]],
         usage: LLMUsage | None,
         *,
-        request_state: _ModelRequestState,
+        request_state: ModelRequestState,
     ) -> tuple[str | None, LLMUsage | None]:
-        retry_messages = self._budget_exhausted_finalization_messages(messages)
+        compaction = request_state.compaction
+        request_messages = (
+            compaction.request_messages(messages)
+            if compaction is not None
+            else messages
+        )
+        retry_messages = self._budget_exhausted_finalization_messages(request_messages)
         try:
             response = await self._request_no_tools(
                 spec,
                 retry_messages,
                 request_state=request_state,
+                transcript=messages if compaction is not None else None,
             )
         except Exception:
             logger.exception(
@@ -1358,10 +1228,10 @@ class AgentRunner:
         spec: AgentRunSpec,
         messages: list[dict[str, Any]],
         *,
-        request_state: _ModelRequestState,
+        request_state: ModelRequestState,
         transcript: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
-        messages, provider_context = self._prepare_model_request(
+        messages, provider_context = await self.context_governor.prepare_request(
             request_state,
             messages,
             tool_definitions=None,
@@ -1389,6 +1259,12 @@ class AgentRunner:
                 finish_reason="error",
                 error_kind="timeout",
             )
+        await self.context_governor.summarize_provider_compaction(
+            request_state,
+            response,
+            current_request_boundary=(len(transcript) if transcript is not None else None),
+        )
+        request_state.provider_compaction_applied |= response.provider_compaction_applied
         return response
 
     @staticmethod
@@ -1453,7 +1329,7 @@ class AgentRunner:
     def _record_request_usage(
         self,
         spec: AgentRunSpec,
-        state: _ModelRequestState,
+        state: ModelRequestState,
         response: LLMResponse,
     ) -> LLMUsage | None:
         assert state.messages is not None

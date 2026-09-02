@@ -7,13 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.runner_helpers import make_run_spec
+from nanobot.agent.context import TranscriptInput
 from nanobot.agent.context_governance import (
     BACKFILL_CONTENT,
     ContextGovernanceConfig,
     ContextGovernor,
     ContextWindowExceededError,
 )
-from nanobot.agent.runner import AgentRunSpec
+from nanobot.agent.runner import AgentRunner, AgentRunSpec
 from nanobot.config.schema import AgentDefaults
 from nanobot.providers.base import (
     LLMProvider,
@@ -22,8 +23,21 @@ from nanobot.providers.base import (
     ProviderConversationState,
     ToolCallRequest,
 )
+from nanobot.session.summary import SUMMARY_CONTINUATION_TEXT
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
+
+
+def _build_transcript(transcript: TranscriptInput) -> list[dict]:
+    system = (
+        transcript.session_summary["text"]
+        if transcript.session_summary is not None
+        else "system"
+    )
+    messages = [{"role": "system", "content": system}, *transcript.history]
+    if transcript.current_message is not None:
+        messages.append({"role": transcript.current_role, "content": transcript.current_message})
+    return messages
 
 
 def _governance_config(
@@ -97,13 +111,16 @@ async def test_runner_locally_fits_oversized_initial_transcript(monkeypatch):
     tools = MagicMock()
     tools.get_definitions.return_value = []
     old_content = "x" * 20_000
-    monkeypatch.setattr(
-        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
-        lambda _provider, _model, messages, _tools: (
+    estimate = MagicMock(
+        side_effect=lambda _provider, _model, messages, _tools: (
             (600, "test-counter")
             if any(message.get("content") == old_content for message in messages)
             else (100, "test-counter")
-        ),
+        )
+    )
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        estimate,
     )
 
     result = await AgentRunner().run(make_run_spec(
@@ -127,7 +144,439 @@ async def test_runner_locally_fits_oversized_initial_transcript(monkeypatch):
         {"role": "system", "content": "system"},
         {"role": "user", "content": "continue"},
     ]
+    estimated_messages = [call.args[2] for call in estimate.call_args_list]
+    assert sum(
+        any(message.get("content") == old_content for message in messages)
+        for messages in estimated_messages
+    ) == 1
+    assert len(estimated_messages) == 3
     assert any(message.get("content") == old_content for message in result.messages)
+
+
+async def test_runner_summarizes_history_and_preserves_current_input(monkeypatch):
+    provider = MagicMock(spec=LLMProvider)
+    provider.can_resume_conversation_state.return_value = True
+    prior_state = ProviderConversationState(
+        kind="openai_responses",
+        provider="openai:test",
+        model="test-model",
+        version=1,
+        payload={"items": [{"type": "message", "role": "assistant"}]},
+    )
+    candidate_state = ProviderConversationState(
+        kind="openai_responses",
+        provider="openai:test",
+        model="test-model",
+        version=1,
+        payload={"items": [{"type": "message", "role": "assistant", "fresh": True}]},
+    )
+    requests: list[tuple[list[dict], object]] = []
+
+    async def request(*, messages, provider_context, **_kwargs):
+        requests.append((messages, provider_context))
+        return LLMResponse(content="done", provider_state=candidate_state)
+
+    provider.chat_with_retry = request
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    old_answer = "old answer " * 2_000
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda _provider, _model, messages, _tools: (
+            (600, "test-counter")
+            if any(message.get("content") == old_answer for message in messages)
+            else (100, "test-counter")
+        ),
+    )
+    consolidate = AsyncMock(return_value="fresh checkpoint")
+    previous = {"text": "existing checkpoint", "last_active": "2026-08-30T00:00:00"}
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=None,
+        transcript_input=TranscriptInput(
+            history=[
+                {"role": "user", "content": "old question"},
+                {"role": "assistant", "content": old_answer},
+            ],
+            current_message="continue the current task",
+            session_summary=previous,
+        ),
+        transcript_builder=_build_transcript,
+        consolidate_history=consolidate,
+        provider_state=prior_state,
+        tools=tools,
+        model="test-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_tokens=100,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    consolidate.assert_awaited_once_with(
+        [
+            {"role": "system", "content": "existing checkpoint"},
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": old_answer},
+        ],
+        "existing checkpoint",
+    )
+    assert requests[0][0] == [
+        {"role": "system", "content": "fresh checkpoint"},
+        {"role": "user", "content": SUMMARY_CONTINUATION_TEXT},
+        {"role": "user", "content": "continue the current task"},
+    ]
+    assert requests[0][1].conversation_state is None
+    assert result.provider_state == candidate_state
+    assert result.summary_checkpoint is not None
+    assert result.summary_checkpoint.summary == "fresh checkpoint"
+    assert result.summary_checkpoint.transcript_boundary == 3
+    assert any(message.get("content") == old_answer for message in result.messages)
+
+
+async def test_runner_rejects_oversized_delta_without_summarizable_history(monkeypatch):
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock()
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda *_args, **_kwargs: (600, "test-counter"),
+    )
+    consolidate = AsyncMock(return_value=None)
+
+    with pytest.raises(ContextWindowExceededError):
+        await AgentRunner().run(make_run_spec(
+            provider,
+            initial_messages=None,
+            transcript_input=TranscriptInput(
+                history=[],
+                current_message="current input is the entire oversized delta",
+            ),
+            transcript_builder=_build_transcript,
+            consolidate_history=consolidate,
+            tools=tools,
+            model="test-model",
+            context_window_tokens=2_000,
+            context_block_limit=500,
+            max_tokens=100,
+            max_iterations=1,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        ))
+
+    consolidate.assert_awaited_once_with(
+        [{"role": "system", "content": "system"}],
+        None,
+    )
+    provider.chat_with_retry.assert_not_awaited()
+
+
+async def test_runner_governs_history_before_summarizing_it(monkeypatch):
+    provider = MagicMock(spec=LLMProvider)
+    provider.can_resume_conversation_state.return_value = False
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="done"))
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda _provider, _model, messages, _tools: (
+            (100, "test-counter")
+            if messages[0].get("content") == "fresh checkpoint"
+            else (600, "test-counter")
+        ),
+    )
+    consolidate = AsyncMock(return_value="fresh checkpoint")
+
+    await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=None,
+        transcript_input=TranscriptInput(
+            history=[
+                {"role": "user", "content": "inspect"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call-missing",
+                        "type": "function",
+                        "function": {"name": "inspect", "arguments": "{}"},
+                    }],
+                },
+            ],
+            current_message="continue",
+        ),
+        transcript_builder=_build_transcript,
+        consolidate_history=consolidate,
+        tools=tools,
+        model="test-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_tokens=100,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    summarized = consolidate.await_args.args[0]
+    assert [message["role"] for message in summarized] == [
+        "system", "user", "assistant", "tool",
+    ]
+    assert summarized[-1]["tool_call_id"] == "call-missing"
+    assert summarized[-1]["content"] == BACKFILL_CONTENT
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected_contents", "expected_boundary"),
+    [
+        ("prior_context", ["system", "accepted question", "accepted answer"], 3),
+        (
+            "current_request",
+            ["system", "accepted question", "accepted answer", "inspect the project"],
+            4,
+        ),
+    ],
+)
+async def test_native_compaction_uses_provider_request_boundary(
+    monkeypatch,
+    scope,
+    expected_contents,
+    expected_boundary,
+):
+    provider = MagicMock(spec=LLMProvider)
+    provider.can_resume_conversation_state.return_value = False
+    compacted_state = ProviderConversationState(
+        kind="openai_responses",
+        provider="openai:test",
+        model="test-model",
+        version=1,
+        payload={"items": [{"type": "compaction", "encrypted_content": "opaque"}]},
+    )
+    provider.chat_with_retry = AsyncMock(side_effect=[
+        LLMResponse(
+            content=None,
+            tool_calls=[ToolCallRequest(id="call-1", name="inspect", arguments={})],
+            provider_compaction_applied=True,
+            provider_compaction_state=compacted_state,
+            provider_compaction_scope=scope,
+        ),
+        LLMResponse(content="done"),
+    ])
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(return_value="complete tool result")
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda *_args: (100, "test-counter"),
+    )
+    consolidate = AsyncMock(return_value="portable checkpoint")
+    consolidate_native = AsyncMock(return_value="portable checkpoint")
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=None,
+        transcript_input=TranscriptInput(
+            history=[
+                {"role": "user", "content": "accepted question"},
+                {"role": "assistant", "content": "accepted answer"},
+            ],
+            current_message="inspect the project",
+        ),
+        transcript_builder=_build_transcript,
+        consolidate_history=consolidate,
+        consolidate_provider_compaction=consolidate_native,
+        tools=tools,
+        model="test-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_tokens=100,
+        max_iterations=2,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    consolidate.assert_not_awaited()
+    consolidate_native.assert_awaited_once()
+    assert consolidate_native.await_args.args[0] == compacted_state
+    assert [
+        message["content"] for message in consolidate_native.await_args.args[1]
+    ] == expected_contents
+    assert consolidate_native.await_args.args[2] is None
+    assert result.summary_checkpoint is not None
+    assert result.summary_checkpoint.transcript_boundary == expected_boundary
+    assert result.provider_compaction_applied is True
+    assert any(message.get("content") == "inspect the project" for message in result.messages)
+    assert any(message.get("content") == "complete tool result" for message in result.messages)
+
+
+async def test_runner_keeps_current_tool_exchange_outside_summary(monkeypatch):
+    provider = MagicMock(spec=LLMProvider)
+    provider.can_resume_conversation_state.return_value = False
+    responses = [
+        LLMResponse(
+            content=None,
+            tool_calls=[ToolCallRequest(id="call-1", name="inspect", arguments={})],
+        ),
+        LLMResponse(content="done"),
+    ]
+    requests: list[list[dict]] = []
+
+    async def request(*, messages, **_kwargs):
+        requests.append(messages)
+        return responses.pop(0)
+
+    provider.chat_with_retry = request
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    full_result = "tool-result:" + ("x" * 4_000)
+    tools.execute = AsyncMock(return_value=full_result)
+
+    def estimate(_provider, _model, messages, _tools):
+        has_tool_result = any(message.get("role") == "tool" for message in messages)
+        has_old_system = any(
+            message.get("role") == "system" and message.get("content") == "system"
+            for message in messages
+        )
+        return (600 if has_tool_result and has_old_system else 100, "test-counter")
+
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        estimate,
+    )
+    consolidate = AsyncMock(return_value="fresh checkpoint")
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=None,
+        transcript_input=TranscriptInput(history=[], current_message="inspect the project"),
+        transcript_builder=_build_transcript,
+        consolidate_history=consolidate,
+        tools=tools,
+        model="test-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_tokens=100,
+        max_iterations=2,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    consolidate.assert_awaited_once_with(
+        [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "inspect the project"},
+        ],
+        None,
+    )
+    assert [message["role"] for message in requests[1]] == [
+        "system", "user", "assistant", "tool",
+    ]
+    assert requests[1][1]["content"] == SUMMARY_CONTINUATION_TEXT
+    assert requests[1][-1]["content"] == full_result
+    assert result.summary_checkpoint is not None
+    assert result.summary_checkpoint.transcript_boundary == 2
+    assert any(message.get("content") == full_result for message in result.messages)
+
+
+async def test_repeated_pressure_advances_summary_boundary(monkeypatch):
+    provider = MagicMock(spec=LLMProvider)
+    provider.can_resume_conversation_state.return_value = False
+    provider.chat_with_retry = AsyncMock(side_effect=[
+        LLMResponse(
+            content=None,
+            tool_calls=[ToolCallRequest(id="call-1", name="inspect", arguments={})],
+        ),
+        LLMResponse(
+            content=None,
+            tool_calls=[ToolCallRequest(id="call-2", name="inspect", arguments={})],
+        ),
+        LLMResponse(content="done"),
+    ])
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    tools.execute = AsyncMock(side_effect=["result-1", "result-2"])
+
+    def estimate(_provider, _model, messages, _tools):
+        system = messages[0].get("content")
+        contents = {message.get("content") for message in messages}
+        if "result-2" in contents:
+            return (100 if system == "checkpoint-2" else 600, "test-counter")
+        if "result-1" in contents:
+            return (100 if system == "checkpoint-1" else 600, "test-counter")
+        return 100, "test-counter"
+
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        estimate,
+    )
+    consolidate = AsyncMock(side_effect=["checkpoint-1", "checkpoint-2"])
+
+    result = await AgentRunner().run(make_run_spec(
+        provider,
+        initial_messages=None,
+        transcript_input=TranscriptInput(history=[], current_message="inspect"),
+        transcript_builder=_build_transcript,
+        consolidate_history=consolidate,
+        tools=tools,
+        model="test-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_tokens=100,
+        max_iterations=3,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    ))
+
+    assert consolidate.await_count == 2
+    assert consolidate.await_args_list[0].args[1] is None
+    assert consolidate.await_args_list[1].args[1] == "checkpoint-1"
+    second_prefix = consolidate.await_args_list[1].args[0]
+    assert second_prefix[0]["content"] == "checkpoint-1"
+    assert any(message.get("content") == "result-1" for message in second_prefix)
+    assert result.final_content == "done"
+    assert result.summary_checkpoint is not None
+    assert result.summary_checkpoint.summary == "checkpoint-2"
+    assert result.summary_checkpoint.transcript_boundary == 4
+
+
+async def test_runner_refuses_checkpoint_that_cannot_fit_with_delta(monkeypatch):
+    provider = MagicMock(spec=LLMProvider)
+    provider.chat_with_retry = AsyncMock(return_value=LLMResponse(content="unexpected"))
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    old_answer = "old answer"
+    current_input = "current input must remain intact"
+
+    def estimate(_provider, _model, messages, _tools):
+        contents = {message.get("content") for message in messages}
+        if old_answer in contents or current_input in contents:
+            return 600, "test-counter"
+        return 100, "test-counter"
+
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        estimate,
+    )
+    consolidate = AsyncMock(return_value="small checkpoint")
+
+    with pytest.raises(ContextWindowExceededError):
+        await AgentRunner().run(make_run_spec(
+            provider,
+            initial_messages=None,
+            transcript_input=TranscriptInput(
+                history=[{"role": "assistant", "content": old_answer}],
+                current_message=current_input,
+            ),
+            transcript_builder=_build_transcript,
+            consolidate_history=consolidate,
+            tools=tools,
+            model="test-model",
+            context_window_tokens=2_000,
+            context_block_limit=500,
+            max_tokens=100,
+            max_iterations=1,
+            max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+        ))
+
+    summarized = consolidate.await_args.args[0]
+    assert all(message.get("content") != current_input for message in summarized)
+    provider.chat_with_retry.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -145,7 +594,7 @@ async def test_runner_governs_messages_added_by_before_iteration_hook(monkeypatc
         "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
         lambda _provider, _model, messages, _tools: (
             (2_000, "test-counter")
-            if any(message.get("content") == oversized for message in messages)
+            if any(oversized in str(message.get("content")) for message in messages)
             else (100, "test-counter")
         ),
     )
@@ -491,6 +940,39 @@ def test_changed_messages_use_local_estimate_after_reported_usage(monkeypatch):
     estimate.assert_called_once()
 
 
+def test_resumed_provider_context_avoids_full_transcript_estimate(monkeypatch):
+    provider = MagicMock(spec=LLMProvider)
+    tools = MagicMock()
+    tools.get_definitions.return_value = []
+    spec = make_run_spec(
+        provider,
+        initial_messages=[{"role": "user", "content": "pending delta"}],
+        tools=tools,
+        model="local-model",
+        context_window_tokens=2_000,
+        context_block_limit=500,
+        max_iterations=1,
+        max_tool_result_chars=_MAX_TOOL_RESULT_CHARS,
+    )
+    monkeypatch.setattr(
+        "nanobot.agent.context_governance.estimate_prompt_tokens_chain",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resumed provider context must be authoritative")
+        ),
+    )
+
+    pressure = ContextGovernor().request_pressure(
+        _governance_config(provider, tools, spec),
+        spec.initial_messages,
+        LLMUsage.reported(input_tokens=900, output_tokens=10),
+        usage_matches_messages=False,
+        tool_definitions=tools.get_definitions(),
+        request_context_tokens=100,
+    )
+
+    assert pressure is None
+
+
 @pytest.mark.asyncio
 async def test_runner_counts_resumed_provider_state_before_dispatch(monkeypatch):
     from nanobot.agent.runner import AgentRunner
@@ -832,7 +1314,6 @@ async def test_backfill_repairs_model_context_without_shifting_save_turn_boundar
         model="test-model",
     )
     loop.tools.get_definitions = MagicMock(return_value=[])
-    loop.consolidator.maybe_consolidate_by_tokens = AsyncMock(return_value=False)  # type: ignore[method-assign]
 
     session = loop.sessions.get_or_create("cli:test")
     session.messages = [
