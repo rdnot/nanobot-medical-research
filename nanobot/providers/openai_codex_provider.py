@@ -31,6 +31,7 @@ from nanobot.providers.oauth_model_catalog import (
 )
 from nanobot.providers.openai_responses import (
     ResponsesStreamCapture,
+    build_responses_compaction_state,
     build_responses_state,
     consume_sse_with_reasoning,
     convert_tools,
@@ -137,6 +138,8 @@ class OpenAICodexProvider(LLMProvider):
             body.update(self._extra_body)
 
         stage = "oauth_token"
+        native_compaction_applied = False
+        native_compaction_state: ProviderConversationState | None = None
         try:
             token = await asyncio.to_thread(get_codex_token, proxy=self.proxy)
             headers = _build_headers(cast(str, token.account_id), token.access)
@@ -187,9 +190,11 @@ class OpenAICodexProvider(LLMProvider):
                 and responses_state_context_tokens(sanitized_state) >= compact_threshold
             ):
                 stage = "codex_compaction"
+                history_items = responses_state_items(sanitized_state) or []
+                delta_items = input_items[len(history_items):]
                 compact_body = {
                     **body,
-                    "input": [*input_items, {"type": "compaction_trigger"}],
+                    "input": [*history_items, {"type": "compaction_trigger"}],
                 }
                 try:
                     compact_result = await _send(compact_body, emit_deltas=False)
@@ -205,9 +210,16 @@ class OpenAICodexProvider(LLMProvider):
                     }:
                         raise RuntimeError("Codex compaction returned no compaction item")
                     body["input"] = [
-                        *_retained_compaction_messages(input_items),
+                        *_retained_compaction_messages(history_items),
                         *compact_items,
+                        *delta_items,
                     ]
+                    native_compaction_state = build_responses_compaction_state(
+                        provider=self._responses_state_provider(),
+                        model=_strip_model_prefix(model),
+                        output_items=compact_items,
+                    )
+                    native_compaction_applied = True
                 except Exception as compact_error:
                     if is_compaction_compatibility_error(compact_error):
                         self._native_compaction_available = False
@@ -220,7 +232,14 @@ class OpenAICodexProvider(LLMProvider):
                     )
 
             stage = "codex_request"
-            return await _send(body, emit_deltas=True)
+            result = await _send(body, emit_deltas=True)
+            result.provider_compaction_applied = (
+                result.provider_compaction_applied or native_compaction_applied
+            )
+            if native_compaction_state is not None:
+                result.provider_compaction_state = native_compaction_state
+                result.provider_compaction_scope = "prior_context"
+            return result
         except Exception as e:
             response = _codex_error_response(e)
             exc_type = "CodexHTTPError" if isinstance(e, _CodexHTTPError) else type(e).__name__

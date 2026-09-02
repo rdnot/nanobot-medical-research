@@ -131,7 +131,6 @@ function baseSettingsPayload() {
       heartbeat: {
         enabled: true,
         interval_s: 1800,
-        keep_recent_messages: 8,
       },
       dream: {
         schedule: "every 2h",
@@ -479,6 +478,38 @@ describe("App layout", () => {
     ).toBeInTheDocument();
     expect(container.querySelectorAll("main")).toHaveLength(1);
     expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("opens the full Models settings directly from the first-run prompt", async () => {
+    const user = userEvent.setup();
+    const base = baseSettingsPayload();
+    mockFetchRoutes({
+      "/api/settings": {
+        ...base,
+        agent: {
+          ...base.agent,
+          model: "",
+          resolved_provider: "",
+          has_api_key: false,
+          model_preset: "",
+        },
+        model_presets: [],
+        model_call_order: [],
+      },
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    await user.click(await screen.findByRole("button", { name: "Choose your AI" }));
+
+    expect(
+      await screen.findByRole("navigation", { name: "Settings sections" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Model providers")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add your own model provider" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Choose your AI" })).not.toBeInTheDocument();
   });
 
   it("places Automations after Skills in the main sidebar", async () => {
@@ -2438,7 +2469,6 @@ describe("App layout", () => {
                 heartbeat: {
                   enabled: true,
                   interval_s: 1800,
-                  keep_recent_messages: 8,
                 },
                 dream: {
                   schedule: "every 2h",
@@ -2521,7 +2551,7 @@ describe("App layout", () => {
     expect(screen.queryByText("Model call order")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "New model preset" }));
     expect(screen.queryByRole("dialog", { name: "New model preset" })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText("Fast writing"), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Preset name" }), {
       target: { value: "Fast writing" },
     });
     expect(
@@ -2928,7 +2958,6 @@ describe("App layout", () => {
                 heartbeat: {
                   enabled: true,
                   interval_s: 1800,
-                  keep_recent_messages: 8,
                 },
                 dream: {
                   schedule: "every 2h",

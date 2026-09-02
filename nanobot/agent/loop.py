@@ -13,6 +13,7 @@ import weakref
 from collections.abc import Coroutine, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum, auto
 from functools import partial
 from pathlib import Path
@@ -94,7 +95,11 @@ from nanobot.session.recovery import (
     restore_pending_interruption,
     restore_runtime_checkpoint,
 )
-from nanobot.session.summary import SessionSummary
+from nanobot.session.summary import (
+    SUMMARY_CONTINUATION_TEXT,
+    SessionSummary,
+    SessionSummaryCheckpoint,
+)
 from nanobot.triggers.local_turns import LocalTriggerTurnCoordinator
 from nanobot.utils.cancellation import task_is_cancelling
 from nanobot.utils.document import reference_non_image_attachments
@@ -246,6 +251,8 @@ class TurnContext:
 
     pending_queue: asyncio.Queue[InboundMessage] | None = None
     pending_summary: SessionSummary | None = None
+    summary_checkpoint: SessionSummaryCheckpoint | None = None
+    provider_compaction_applied: bool = False
 
     ephemeral: bool = False
     run_extra_hooks_for_ephemeral: bool = False
@@ -1042,6 +1049,22 @@ class AgentLoop:
             metadata={**metadata, "render_as": "text"},
         )
 
+    def _track_active_task(self, key: str, task: asyncio.Task[Any]) -> None:
+        """Track active session work until its task group becomes empty."""
+        tasks = self._active_tasks.setdefault(key, set())
+        tasks.add(task)
+        task.add_done_callback(partial(self._active_task_done, key, tasks))
+
+    def _active_task_done(
+        self,
+        key: str,
+        tasks: set[asyncio.Task[Any]],
+        task: asyncio.Task[Any],
+    ) -> None:
+        tasks.discard(task)
+        if not tasks and self._active_tasks.get(key) is tasks:
+            self._active_tasks.pop(key, None)
+
     async def _cancel_active_tasks(self, key: str) -> int:
         """Cancel and await all active work for *key*.
 
@@ -1096,19 +1119,6 @@ class AgentLoop:
         if automation_metadata:
             return
         remember_last_channel(session.metadata, msg.channel, msg.chat_id)
-
-    @staticmethod
-    def _replay_token_budget(runtime: LLMRuntime) -> int:
-        """Derive a token budget for session history replay from the context window."""
-        if runtime.context_window_tokens <= 0:
-            return 0
-        max_output = runtime.generation.max_tokens
-        try:
-            reserved_output = int(max_output)
-        except (TypeError, ValueError):
-            reserved_output = 4096
-        budget = runtime.context_window_tokens - max(1, reserved_output) - 1024
-        return budget if budget > 0 else max(128, runtime.context_window_tokens // 2)
 
     async def _run_agent_loop(
         self,
@@ -1378,6 +1388,26 @@ class AgentLoop:
                 provider_retry_mode=self.provider_retry_mode,
                 retry_wait_callback=on_retry_wait,
                 checkpoint_callback=_checkpoint,
+                consolidate_history=(
+                    partial(
+                        self.consolidator.summarize_transcript,
+                        runtime=runtime,
+                        session_key=session.key,
+                        tools=effective_tools.get_definitions(),
+                    )
+                    if session is not None and not ephemeral
+                    else None
+                ),
+                consolidate_provider_compaction=(
+                    partial(
+                        self.consolidator.summarize_provider_compaction,
+                        runtime=runtime,
+                        session_key=session.key,
+                        tools=effective_tools.get_definitions(),
+                    )
+                    if session is not None and not ephemeral
+                    else None
+                ),
                 injection_callback=_drain_pending,
                 terminal_injection_callback=_wait_for_pending,
                 # Sustained goals may legitimately exceed NANOBOT_LLM_TIMEOUT_S; idle stall
@@ -1559,12 +1589,7 @@ class AgentLoop:
                 # Compute the effective session key before dispatching
                 # This ensures /stop command can find tasks correctly when unified session is enabled
                 task = asyncio.create_task(self._dispatch(msg))
-                active_tasks: set[asyncio.Task[Any]] = self._active_tasks.setdefault(
-                    effective_key,
-                    set(),
-                )
-                active_tasks.add(task)
-                task.add_done_callback(active_tasks.discard)
+                self._track_active_task(effective_key, task)
         finally:
             await self.aclose()
 
@@ -2084,12 +2109,6 @@ class AgentLoop:
         if ctx.on_runtime_admitted is not None:
             await ctx.on_runtime_admitted(runtime)
         if not ctx.ephemeral:
-            await self.consolidator.maybe_consolidate_by_tokens(
-                session,
-                runtime=runtime,
-            )
-            # Token consolidation may have committed a replacement checkpoint
-            # after the compact stage captured its summary for this request.
             ctx.session, ctx.pending_summary = self.auto_compact.prepare_session(
                 session,
                 ctx.session_key,
@@ -2097,11 +2116,7 @@ class AgentLoop:
             session = ctx.require_session()
         is_subagent = ctx.kind is TurnKind.SYSTEM and ctx.msg.sender_id == "subagent"
 
-        _hist_kwargs: dict[str, Any] = {
-            "max_tokens": self._replay_token_budget(runtime),
-            "extend_to_user": is_subagent,
-        }
-        ctx.history = session.get_history(**_hist_kwargs)
+        ctx.history = session.get_history(extend_to_user=is_subagent)
         stored_state = session.provider_state
         subagent_followup_persisted = False
         if is_subagent:
@@ -2219,6 +2234,8 @@ class AgentLoop:
             )
         ctx.final_content = result.final_content
         ctx.all_messages = result.messages
+        ctx.summary_checkpoint = result.summary_checkpoint
+        ctx.provider_compaction_applied = result.provider_compaction_applied
         ctx.stop_reason = result.stop_reason
         ctx.tool_calls_log = getattr(self, "_last_tool_calls_log", [])  # FORK  # pyright: ignore[reportAttributeAccessIssue]
         if (
@@ -2233,7 +2250,6 @@ class AgentLoop:
             await turn_continuation.maybe_continue_turn(ctx)
 
     async def _persist_turn(self, ctx: TurnContext) -> None:
-        runtime = ctx.require_runtime()
         session = ctx.require_session()
         turn_continuation.prepare_save_boundary(ctx)
 
@@ -2259,15 +2275,18 @@ class AgentLoop:
         self._save_turn(
             session, ctx.all_messages, ctx.save_skip,
             turn_latency_ms=ctx.turn_latency_ms,
+            summary_checkpoint=ctx.summary_checkpoint,
+            input_persisted_early=ctx.input_persisted_early,
         )
+        if (
+            not ctx.ephemeral
+            and ctx.provider_compaction_applied
+            and ctx.summary_checkpoint is not None
+        ):
+            # The next request must rebuild from the portable checkpoint;
+            # the opaque continuation predates that transcript rewrite.
+            session.provider_state = None
         ctx.delivery.record_latency(ctx.turn_latency_ms)
-        if not ctx.ephemeral:
-            self.schedule_background(
-                self.consolidator.maybe_consolidate_by_tokens(
-                    session,
-                    runtime=runtime,
-                )
-            )
         self._clear_pending_user_turn(session)
         self._clear_runtime_checkpoint(session)
         self.sessions.save(session)
@@ -2351,6 +2370,55 @@ class AgentLoop:
 
         return filtered
 
+    @staticmethod
+    def _insert_summary_checkpoint(
+        session: Session,
+        checkpoint: SessionSummaryCheckpoint,
+        *,
+        insert_at: int | None = None,
+    ) -> None:
+        """Commit a replacement summary and its hidden transcript boundary."""
+        hint = {
+            "role": "user",
+            "content": SUMMARY_CONTINUATION_TEXT,
+            HIDDEN_HISTORY_META: True,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if insert_at is None:
+            session.messages.append(hint)
+            checkpoint_session_index = len(session.messages) - 1
+        else:
+            session.messages.insert(insert_at, hint)
+            checkpoint_session_index = insert_at
+        session.metadata["_last_summary"] = {
+            "text": checkpoint.summary,
+            "last_active": session.updated_at.isoformat(),
+        }
+        session.last_archived = checkpoint_session_index
+
+    @staticmethod
+    def _validated_checkpoint_boundary(
+        checkpoint: SessionSummaryCheckpoint | None,
+        *,
+        skip: int,
+        message_count: int,
+        session_key: str,
+    ) -> int | None:
+        """Return a checkpoint boundary only when it belongs to this turn."""
+        if checkpoint is None:
+            return None
+        boundary = checkpoint.transcript_boundary
+        if skip - 1 <= boundary <= message_count:
+            return boundary
+        logger.warning(
+            "Ignoring invalid summary boundary {} outside [{}, {}] for {}",
+            boundary,
+            skip - 1,
+            message_count,
+            session_key,
+        )
+        return None
+
     def _save_turn(
         self,
         session: Session,
@@ -2358,10 +2426,10 @@ class AgentLoop:
         skip: int,
         *,
         turn_latency_ms: int | None = None,
+        summary_checkpoint: SessionSummaryCheckpoint | None = None,
+        input_persisted_early: bool = False,
     ) -> None:
-        """Save new-turn messages into session, truncating large tool results."""
-        from datetime import datetime
-
+        """Commit new-turn messages and an optional summary boundary."""
         declared_tool_call_ids = {
             str(tc["id"])
             for m in session.messages
@@ -2378,8 +2446,30 @@ class AgentLoop:
         }
         last_assistant_idx: int | None = None
         saved_followup_ids: set[str] = set()
-        for m in messages[skip:]:
-            entry = dict(m)
+        checkpoint_boundary = self._validated_checkpoint_boundary(
+            summary_checkpoint,
+            skip=skip,
+            message_count=len(messages),
+            session_key=session.key,
+        )
+
+        # The trigger input may already be the session tail while still being
+        # the first message after the replacement checkpoint.
+        if summary_checkpoint is not None and checkpoint_boundary == skip - 1:
+            insert_at = len(session.messages) - (1 if input_persisted_early else 0)
+            self._insert_summary_checkpoint(
+                session,
+                summary_checkpoint,
+                insert_at=insert_at,
+            )
+
+        for message_index, message in enumerate(messages[skip:], start=skip):
+            # Insert against the raw transcript index before filtering the
+            # message so persistence cleanup cannot shift the H/Δ boundary.
+            if summary_checkpoint is not None and checkpoint_boundary == message_index:
+                self._insert_summary_checkpoint(session, summary_checkpoint)
+
+            entry = dict(message)
             followup_id_value = cast(object, entry.pop(PENDING_FOLLOWUP_ID_KEY, None))
             followup_ids = (
                 [followup_id_value]
@@ -2458,6 +2548,8 @@ class AgentLoop:
                     for tc in (cast(dict[str, Any], tc_value),)
                     if tc.get("id")
                 )
+        if summary_checkpoint is not None and checkpoint_boundary == len(messages):
+            self._insert_summary_checkpoint(session, summary_checkpoint)
         if turn_latency_ms is not None and last_assistant_idx is not None:
             session.messages[last_assistant_idx]["latency_ms"] = int(turn_latency_ms)
         if saved_followup_ids:

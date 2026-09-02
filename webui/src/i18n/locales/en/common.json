@@ -145,7 +145,7 @@
       "presetName": "Preset name",
       "presetNameHelp": "Used in the interface and /model commands. Names must be unique.",
       "presetNameDuplicate": "A preset with this name already exists.",
-      "presetNamePlaceholder": "Fast writing",
+      "presetNamePlaceholder": "e.g. Fast writing",
       "advancedOptions": "Advanced options",
       "advancedSummary": "Context {{context}} · Max {{max}} tokens",
       "maxTokens": "Max output tokens",
@@ -1195,6 +1195,7 @@
       "removeQuotedContext": "Remove quoted context",
       "modelNotConfigured": "Model not configured",
       "configureModel": "Configure model",
+      "chooseAI": "Choose your AI",
       "switchModel": "Switch model for this chat",
       "manageModels": "Manage models",
       "context": {

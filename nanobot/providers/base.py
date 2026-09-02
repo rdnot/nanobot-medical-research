@@ -31,6 +31,7 @@ RETRY_AFTER_BUFFER = 1
 
 RetryEventCallback = Callable[[str], Awaitable[None]]
 LLMCallObserver = Callable[["LLMCallRecord"], None]
+ProviderCompactionScope = Literal["prior_context", "current_request"]
 
 
 def resolve_stream_idle_timeout_s(
@@ -563,6 +564,22 @@ class LLMResponse:
     reasoning_content: str | None = None  # Kimi, DeepSeek-R1, MiMo etc.
     thinking_blocks: list[dict[str, Any]] | None = None  # Anthropic extended thinking
     provider_state: ProviderConversationState | None = field(default=None, repr=False)
+    # True only when this response installed a new provider-native compaction
+    # boundary. Replaying an older compaction item does not set this flag.
+    provider_compaction_applied: bool = field(default=False, repr=False)
+    # State immediately after native compaction, before the normal response
+    # continues. An archive prompt can resume this state without replaying H.
+    provider_compaction_state: ProviderConversationState | None = field(
+        default=None,
+        repr=False,
+    )
+    # Which model input the native compaction state replaces. Providers that
+    # compact before attaching the current request delta report
+    # ``prior_context``; in-request compaction reports ``current_request``.
+    provider_compaction_scope: ProviderCompactionScope | None = field(
+        default=None,
+        repr=False,
+    )
     # Routing wrappers may preserve or discard an incoming provider-owned
     # continuation independently of the final fallback error's retry policy.
     preserve_provider_state_on_error: bool | None = field(default=None, repr=False)

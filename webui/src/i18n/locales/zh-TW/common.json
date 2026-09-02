@@ -423,7 +423,7 @@
       "presetName": "預設名稱",
       "presetNameHelp": "用於介面和 /model 命令；名稱不得重複。",
       "presetNameDuplicate": "已有同名預設。",
-      "presetNamePlaceholder": "快速寫作",
+      "presetNamePlaceholder": "例如：快速寫作",
       "advancedOptions": "進階選項",
       "advancedSummary": "上下文 {{context}} · 最大輸出 {{max}} tokens",
       "maxTokens": "最大輸出 tokens",
@@ -1181,6 +1181,7 @@
       "removeQuotedContext": "移除引用內容",
       "modelNotConfigured": "尚未設定模型",
       "configureModel": "設定模型",
+      "chooseAI": "選擇你的 AI",
       "switchModel": "切換此對話使用的模型",
       "manageModels": "管理模型預設",
       "context": {

@@ -961,7 +961,7 @@ export function ThreadShell({
     [activeModelPreset, modelName, settings],
   );
   const modelBadgeLabel = modelBadge.needsSetup
-    ? t("thread.composer.modelNotConfigured", { defaultValue: "Model not configured" })
+    ? t("thread.composer.chooseAI", { defaultValue: "Choose your AI" })
     : modelBadge.label;
   useEffect(() => {
     if (showHeroComposer && !wasShowingHeroComposerRef.current) {
