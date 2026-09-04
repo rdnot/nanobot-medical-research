@@ -1185,8 +1185,16 @@
       "switchModel": "Ganti model untuk percakapan ini",
       "manageModels": "Kelola model",
       "context": {
-        "tooltip": "Konteks · {{tokens}}{{capacity}}",
-        "meterDescription": "{{context}}. {{percent}}% digunakan."
+        "tooltip": "Konteks {{percent}}%",
+        "detailsLabel": "Buka penggunaan konteks",
+        "panelTitle": "Penggunaan konteks",
+        "contextTitle": "Konteks",
+        "recentRounds": "Putaran terbaru",
+        "inputTrend": "Token masukan",
+        "input": "Token masukan",
+        "cacheHitRate": "Rasio hit KV cache",
+        "output": "Token keluaran",
+        "duration": "Waktu pembuatan"
       },
       "queued": {
         "label": "Panduan antrean",

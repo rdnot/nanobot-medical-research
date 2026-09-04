@@ -1185,8 +1185,16 @@
       "switchModel": "この会話で使うモデルを切り替える",
       "manageModels": "モデルを管理",
       "context": {
-        "tooltip": "コンテキスト · {{tokens}}{{capacity}}",
-        "meterDescription": "{{context}}。{{percent}}% 使用中"
+        "tooltip": "コンテキスト {{percent}}%",
+        "detailsLabel": "コンテキスト使用量を開く",
+        "panelTitle": "コンテキスト使用量",
+        "contextTitle": "コンテキスト",
+        "recentRounds": "最近のラウンド",
+        "inputTrend": "入力トークン",
+        "input": "入力トークン",
+        "cacheHitRate": "KV キャッシュヒット率",
+        "output": "出力トークン",
+        "duration": "生成時間"
       },
       "queued": {
         "label": "保留中のガイド",

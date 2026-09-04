@@ -452,6 +452,17 @@ describe("webui i18n", () => {
     expect(resolveInitialLocale()).toBe("zh-CN");
   });
 
+  it("lists each language by its native name", async () => {
+    const user = userEvent.setup();
+
+    render(<LanguageSwitcher />);
+    await user.click(screen.getByRole("button", { name: "Change language" }));
+
+    for (const { nativeLabel } of supportedLocales) {
+      expect(screen.getByRole("menuitemradio", { name: nativeLabel })).toBeInTheDocument();
+    }
+  });
+
   it("switches UI copy and document locale through the language switcher", async () => {
     const user = userEvent.setup();
 

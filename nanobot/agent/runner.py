@@ -126,6 +126,9 @@ class AgentRunResult:
     messages: list[dict[str, Any]]
     tools_used: list[str] = field(default_factory=list)
     usage: LLMUsage | None = None
+    # One entry per runner-visible model round. Recovery dispatches needed to
+    # produce that round's response are folded into the same usage value.
+    round_usages: list[LLMUsage] = field(default_factory=list)
     stop_reason: str = "completed"
     error: str | None = None
     tool_events: list[dict[str, str]] = field(default_factory=list)
@@ -392,6 +395,7 @@ class AgentRunner:
         final_content: str | None = None
         tools_used: list[str] = []
         usage: LLMUsage | None = None
+        round_usages: list[LLMUsage] = []
         error: str | None = None
         stop_reason = "completed"
         tool_events: list[dict[str, str]] = []
@@ -442,7 +446,7 @@ class AgentRunner:
                 if request_state.compaction is not None
                 else messages
             )
-            response = await self._request_model(
+            response, raw_usage = await self._request_model(
                 spec,
                 request_messages,
                 hook,
@@ -468,7 +472,7 @@ class AgentRunner:
                 response.content,
             )
             response.content = cleaned_content
-            raw_usage = self._record_request_usage(spec, request_state, response)
+            round_usages.append(raw_usage)
             context.usage = raw_usage
             usage = self._merge_usage(usage, raw_usage)
             if reasoning_text and not context.streamed_reasoning:
@@ -614,6 +618,7 @@ class AgentRunner:
                     transcript=messages,
                 )
                 retry_usage = self._record_request_usage(spec, request_state, response)
+                round_usages.append(retry_usage)
                 usage = self._merge_usage(usage, retry_usage)
                 raw_usage = self._merge_usage(raw_usage, retry_usage)
                 context.response = response
@@ -801,6 +806,7 @@ class AgentRunner:
                     messages,
                     usage,
                     request_state=request_state,
+                    round_usages=round_usages,
                 )
             if terminal_content is None:
                 terminal_content = self._max_iterations_fallback(spec)
@@ -819,6 +825,7 @@ class AgentRunner:
             messages=messages,
             tools_used=tools_used,
             usage=usage,
+            round_usages=round_usages,
             stop_reason=stop_reason,
             error=error,
             tool_events=tool_events,
@@ -863,7 +870,7 @@ class AgentRunner:
         request_state: ModelRequestState,
         malformed_retry: bool = False,
         transcript: list[dict[str, Any]] | None,
-    ) -> LLMResponse:
+    ) -> tuple[LLMResponse, LLMUsage]:
         timeout_s = self._resolve_llm_timeout_s(spec)
         tool_definitions = spec.tools.get_definitions()
         messages, provider_context = await self.context_governor.prepare_request(
@@ -1032,6 +1039,7 @@ class AgentRunner:
             current_request_boundary=(len(transcript) if transcript is not None else None),
         )
         request_state.provider_compaction_applied |= response.provider_compaction_applied
+        round_usage = self._record_request_usage(spec, request_state, response)
         # chat_stream_with_retry may recover internally, so only fail unfinished
         # hosted calls after the provider returns its final error response.
         if response.finish_reason == "error":
@@ -1058,12 +1066,13 @@ class AgentRunner:
             retry_messages = self._malformed_tool_call_retry_messages(
                 messages, response.content,
             )
-            return await self._request_model(
+            retry_response, retry_usage = await self._request_model(
                 spec, retry_messages, hook, context,
                 request_state=request_state,
                 malformed_retry=True,
                 transcript=None,
             )
+            return retry_response, round_usage + retry_usage
         if (
             all_dropped
             and original_finish_reason in ("tool_calls", "function_call")
@@ -1075,12 +1084,18 @@ class AgentRunner:
             fallback_messages = self._malformed_tool_call_retry_messages(
                 messages, response.content,
             )
-            return await self._request_no_tools(
+            fallback_response = await self._request_no_tools(
                 spec,
                 fallback_messages,
                 request_state=request_state,
             )
-        return response
+            fallback_usage = self._record_request_usage(
+                spec,
+                request_state,
+                fallback_response,
+            )
+            return fallback_response, round_usage + fallback_usage
+        return response, round_usage
 
     @staticmethod
     def _drop_malformed_tool_calls(
@@ -1177,6 +1192,7 @@ class AgentRunner:
         usage: LLMUsage | None,
         *,
         request_state: ModelRequestState,
+        round_usages: list[LLMUsage],
     ) -> tuple[str | None, LLMUsage | None]:
         compaction = request_state.compaction
         request_messages = (
@@ -1200,6 +1216,7 @@ class AgentRunner:
             return None, usage
 
         raw_usage = self._record_request_usage(spec, request_state, response)
+        round_usages.append(raw_usage)
         usage = self._merge_usage(usage, raw_usage)
         if response.finish_reason == "error" or response.has_tool_calls:
             logger.warning(
@@ -1309,7 +1326,7 @@ class AgentRunner:
         response: LLMResponse,
         *,
         tool_definitions: list[dict[str, Any]] | None,
-    ) -> LLMUsage | None:
+    ) -> LLMUsage:
         usage = response.usage
         if response.finish_reason == "error":
             if usage is None or usage.total_tokens == 0:
@@ -1331,7 +1348,7 @@ class AgentRunner:
         spec: AgentRunSpec,
         state: ModelRequestState,
         response: LLMResponse,
-    ) -> LLMUsage | None:
+    ) -> LLMUsage:
         assert state.messages is not None
         state.usage = self._usage_or_estimate(
             spec,

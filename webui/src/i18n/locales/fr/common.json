@@ -1185,8 +1185,16 @@
       "switchModel": "Changer le modèle de cette conversation",
       "manageModels": "Gérer les modèles",
       "context": {
-        "tooltip": "Contexte · {{tokens}}{{capacity}}",
-        "meterDescription": "{{context}}. {{percent}} % utilisé."
+        "tooltip": "Contexte {{percent}} %",
+        "detailsLabel": "Ouvrir l’utilisation du contexte",
+        "panelTitle": "Utilisation du contexte",
+        "contextTitle": "Contexte",
+        "recentRounds": "Tours récents",
+        "inputTrend": "Jetons d’entrée",
+        "input": "Jetons d’entrée",
+        "cacheHitRate": "Taux de succès du cache KV",
+        "output": "Jetons de sortie",
+        "duration": "Temps de génération"
       },
       "queued": {
         "label": "Guidage en attente",
