@@ -42,12 +42,19 @@ interface UIMessageSource { kind: "cron" | "local_trigger" | "trigger" | string;
 export interface TurnUsage {
   prompt_tokens?: number;
   completion_tokens?: number;
+  total_tokens?: number;
   cached_tokens?: number;
+  cache_write_tokens?: number;
   context_tokens?: number;
   request_count?: number;
   estimated_tokens?: number;
-  [key: string]: number | undefined;
+  generation_ms?: number;
+  measured_completion_tokens?: number;
+  ttft_ms?: number;
+  timed_requests?: number;
 }
+
+export type RoundUsage = TurnUsage;
 
 export type RecoveryStatus = "resuming" | "awaiting_user" | "recovered" | "failed";
 
@@ -102,6 +109,8 @@ export interface UIMessage {
   completedAt?: number;
   /** Additive model usage for this turn; context_tokens is the final request only. */
   usage?: TurnUsage;
+  /** Logical model rounds in display order; runner-level recovery calls are aggregated. */
+  roundUsages?: RoundUsage[];
   /** Configured context-window capacity for the model used by this turn. */
   contextWindowTokens?: number;
   /** Lightweight provenance for proactive assistant messages. */
@@ -1419,6 +1428,7 @@ export type InboundEvent =
       chat_id: string;
       latency_ms?: number;
       usage?: TurnUsage;
+      round_usages?: RoundUsage[];
       context_window_tokens?: number;
       /** Authoritative sustained-goal snapshot for this chat (same shape as ``goal_state`` events). */
       goal_state?: GoalStateWsPayload;

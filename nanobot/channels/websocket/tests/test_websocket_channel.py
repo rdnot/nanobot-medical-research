@@ -143,6 +143,14 @@ async def _connect_when_ready(url: str) -> Any:
             await asyncio.sleep(0.02)
 
 
+async def _wait_for_connection_cleanup(
+    channel: WebSocketChannel,
+    connection: Any,
+) -> None:
+    while connection in channel._conn_chats:
+        await asyncio.sleep(0)
+
+
 async def _webui_mutate(
     client: Any,
     action: str,
@@ -1392,6 +1400,7 @@ async def test_webui_sidebar_state_update_broadcasts_workbench_to_other_devices(
     source.request = SimpleNamespace(headers=Headers())
     other_device = AsyncMock()
     channel._webui_connections.update({source, other_device})
+    channel._register_connection_outbound(other_device)
     request_id = "sidebar-workbench-state"
 
     await channel._dispatch_envelope(
@@ -2243,6 +2252,7 @@ async def test_send_removes_connection_on_connection_closed() -> None:
 
     msg = OutboundMessage(channel="websocket", chat_id="chat-1", content="hello")
     await channel.send(msg)
+    await asyncio.wait_for(_wait_for_connection_cleanup(channel, mock_ws), timeout=1)
 
     assert "chat-1" not in channel._subs
     assert mock_ws not in channel._conn_chats
@@ -2384,6 +2394,7 @@ async def test_send_delta_removes_connection_on_connection_closed() -> None:
     channel._attach(mock_ws, "chat-1")
 
     await channel.send_delta("chat-1", "chunk", stream_id="s1")
+    await asyncio.wait_for(_wait_for_connection_cleanup(channel, mock_ws), timeout=1)
 
     assert "chat-1" not in channel._subs
     assert mock_ws not in channel._conn_chats
@@ -2804,6 +2815,7 @@ async def test_recovery_state_is_a_structured_event_not_assistant_text() -> None
     )
     mock_ws = AsyncMock()
     channel._attach(mock_ws, "chat-1")
+    channel._persist_turn_transcript_event = MagicMock(return_value=True)
 
     await channel.send(OutboundMessage(
         channel="websocket",
@@ -2825,6 +2837,7 @@ async def test_recovery_state_is_a_structured_event_not_assistant_text() -> None
         "reason": "tool_state_unknown",
         "attempts": 1,
     }]
+    channel._persist_turn_transcript_event.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2872,7 +2885,7 @@ async def test_system_command_turn_end_only_refreshes_session_metadata() -> None
         ("owner-new", "owner-old", False),
     ],
 )
-async def test_turn_end_persists_and_conditionally_clears_when_fanout_fails(
+async def test_turn_end_persists_and_conditionally_clears_when_delivery_fails(
     active_owner: str,
     event_owner: str,
     expected_cleared: bool,
@@ -2891,14 +2904,14 @@ async def test_turn_end_persists_and_conditionally_clears_when_fanout_fails(
     wth._WEBSOCKET_TURN_OWNERS[chat_id] = active_owner
 
     try:
-        with pytest.raises(RuntimeError, match="fanout failed"):
-            await channel.send(OutboundMessage(
-                channel="websocket",
-                chat_id=chat_id,
-                content="",
-                metadata={WEBSOCKET_TURN_OWNER_METADATA_KEY: event_owner},
-                event=TurnEndEvent(),
-            ))
+        await channel.send(OutboundMessage(
+            channel="websocket",
+            chat_id=chat_id,
+            content="",
+            metadata={WEBSOCKET_TURN_OWNER_METADATA_KEY: event_owner},
+            event=TurnEndEvent(),
+        ))
+        await asyncio.wait_for(_wait_for_connection_cleanup(channel, mock_ws), timeout=1)
 
         assert read_transcript_lines(f"websocket:{chat_id}")[-1]["event"] == "turn_end"
         assert (wth.websocket_turn_wall_started_at(chat_id) is None) is expected_cleared
@@ -3264,7 +3277,7 @@ async def test_non_webui_transcript_failure_does_not_block_idle_cleanup(
 
 
 @pytest.mark.asyncio
-async def test_idle_clears_matching_owner_when_fanout_fails() -> None:
+async def test_idle_clears_matching_owner_when_delivery_fails() -> None:
     bus = MagicMock()
     channel = WebSocketChannel(
         {"enabled": True, "allowFrom": ["*"]},
@@ -3279,14 +3292,14 @@ async def test_idle_clears_matching_owner_when_fanout_fails() -> None:
     wth._WEBSOCKET_TURN_WALL_STARTED_AT[chat_id] = 1234.5
     wth._WEBSOCKET_TURN_OWNERS[chat_id] = owner
 
-    with pytest.raises(RuntimeError, match="fanout failed"):
-        await channel.send(OutboundMessage(
-            channel="websocket",
-            chat_id=chat_id,
-            content="",
-            metadata={WEBSOCKET_TURN_OWNER_METADATA_KEY: owner},
-            event=GoalStatusEvent(status="idle"),
-        ))
+    await channel.send(OutboundMessage(
+        channel="websocket",
+        chat_id=chat_id,
+        content="",
+        metadata={WEBSOCKET_TURN_OWNER_METADATA_KEY: owner},
+        event=GoalStatusEvent(status="idle"),
+    ))
+    await asyncio.wait_for(_wait_for_connection_cleanup(channel, mock_ws), timeout=1)
 
     assert wth.websocket_turn_wall_started_at(chat_id) is None
     assert chat_id not in wth._WEBSOCKET_TURN_OWNERS
@@ -3311,6 +3324,7 @@ async def test_send_turn_end_includes_latency_ms_when_present() -> None:
         event=TurnEndEvent(
             latency_ms=1500,
             usage=usage,
+            round_usages=(usage,),
             context_window_tokens=128_000,
         ),
     ))
@@ -3333,6 +3347,21 @@ async def test_send_turn_end_includes_latency_ms_when_present() -> None:
                 "ttft_ms": 125,
                 "timed_requests": 1,
             },
+            "round_usages": [
+                {
+                    "prompt_tokens": 80,
+                    "completion_tokens": 20,
+                    "total_tokens": 100,
+                    "context_tokens": 80,
+                    "cached_tokens": 40,
+                    "request_count": 1,
+                    "estimated_tokens": 0,
+                    "generation_ms": 500,
+                    "measured_completion_tokens": 20,
+                    "ttft_ms": 125,
+                    "timed_requests": 1,
+                }
+            ],
             "context_window_tokens": 128_000,
         },
         {"event": "session_updated", "chat_id": "chat-1", "scope": "thread"},
@@ -3604,7 +3633,7 @@ async def test_send_session_updated_includes_scope_when_present() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_non_connection_closed_exception_is_raised() -> None:
+async def test_send_non_connection_closed_exception_is_isolated() -> None:
     bus = MagicMock()
     channel = WebSocketChannel({"enabled": True, "allowFrom": ["*"]}, bus, gateway=_basic_handler(bus))
     mock_ws = AsyncMock()
@@ -3612,8 +3641,11 @@ async def test_send_non_connection_closed_exception_is_raised() -> None:
     channel._attach(mock_ws, "chat-1")
 
     msg = OutboundMessage(channel="websocket", chat_id="chat-1", content="hello")
-    with pytest.raises(RuntimeError, match="unexpected"):
-        await channel.send(msg)
+    await channel.send(msg)
+    await asyncio.wait_for(_wait_for_connection_cleanup(channel, mock_ws), timeout=1)
+
+    mock_ws.close.assert_awaited_once_with(code=1011, reason="outbound send failed")
+    assert "chat-1" not in channel._subs
 
 
 @pytest.mark.asyncio

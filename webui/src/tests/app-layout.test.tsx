@@ -310,6 +310,7 @@ describe("App layout", () => {
     sessionUpdateHandlers.clear();
     sidebarStateUpdateHandlers.clear();
     window.history.replaceState(null, "", "/");
+    Reflect.deleteProperty(window, "nanobotHost");
     setNavigatorPlatform("Linux x86_64");
     localStorage.removeItem("nanobot-webui.sidebar");
     localStorage.removeItem("nanobot-webui.sidebar.completed-runs.v1");
@@ -335,6 +336,7 @@ describe("App layout", () => {
 
   afterEach(() => {
     cleanup();
+    Reflect.deleteProperty(window, "nanobotHost");
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -454,6 +456,9 @@ describe("App layout", () => {
     const main = container.querySelector("main");
     expect(main).toBeInTheDocument();
     expect(main).not.toHaveAttribute("style");
+    expect(screen.getByTestId("sidebar-brand-row")).toHaveClass("pt-3");
+    expect(screen.getByTestId("sidebar-brand-mark")).not.toHaveClass("mt-5");
+    expect(screen.getByRole("button", { name: "Collapse sidebar" })).toHaveClass("mt-1");
 
     const asideClassNames = Array.from(container.querySelectorAll("aside")).map(
       (el) => el.className,
@@ -476,6 +481,9 @@ describe("App layout", () => {
     expect(
       screen.getByRole("navigation", { name: "Settings sections" }),
     ).toBeInTheDocument();
+    const backButton = screen.getByRole("button", { name: "Back to chat" });
+    expect(backButton.closest("aside")).toHaveClass("pt-4", "lg:pt-4");
+    expect(backButton).not.toHaveClass("-ml-1");
     expect(container.querySelectorAll("main")).toHaveLength(1);
     expect(screen.getByRole("heading", { level: 1, name: "Settings" })).toBeInTheDocument();
   });
@@ -1609,7 +1617,7 @@ describe("App layout", () => {
     expect(document.title).toBe("自动任务 · nanobot");
   });
 
-  it("fully collapses the native host sidebar and previews it on hover", async () => {
+  it("uses the shared sidebar controls and rail on the native host", async () => {
     mockSessions = [
       {
         key: "websocket:chat-a",
@@ -1632,36 +1640,74 @@ describe("App layout", () => {
 
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
     const flowSidebar = screen.getByTestId("host-sidebar-flow");
-    const toggle = screen.getByTestId("host-sidebar-toggle");
     expect(flowSidebar).toHaveStyle({ width: "272px" });
+    expect(screen.getByTestId("sidebar-brand-row")).toHaveClass("pt-3");
+    expect(screen.getByTestId("sidebar-brand-mark")).toHaveClass("mt-5");
+    expect(screen.getByRole("button", { name: "Collapse sidebar" })).toHaveClass("mt-1");
+    expect(screen.queryByTestId("host-sidebar-toggle")).not.toBeInTheDocument();
     expect(
       screen.getByRole("navigation", { name: "Sidebar navigation" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(toggle);
-    await waitFor(() => expect(flowSidebar).toHaveStyle({ width: "0px" }));
+    fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }));
+    await waitFor(() => expect(flowSidebar).toHaveStyle({ width: "56px" }));
     expect(
-      screen.queryByRole("navigation", { name: "Sidebar navigation" }),
-    ).not.toBeInTheDocument();
-
-    fireEvent.mouseEnter(toggle);
-    const previewSidebar = await screen.findByTestId("host-sidebar-preview");
-    expect(flowSidebar).toHaveStyle({ width: "0px" });
-    expect(previewSidebar).toHaveStyle({ width: "272px" });
-    expect(
-      within(previewSidebar).getByRole("navigation", {
-        name: "Sidebar navigation",
-      }),
+      screen.getByRole("navigation", { name: "Sidebar navigation" }),
     ).toBeInTheDocument();
 
-    fireEvent.click(toggle);
-    await waitFor(() =>
-      expect(screen.queryByTestId("host-sidebar-preview")).not.toBeInTheDocument(),
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "Sidebar navigation" }))
+        .getByRole("button", { name: "Toggle sidebar" }),
     );
-    expect(flowSidebar).toHaveStyle({ width: "272px" });
-    expect(
-      screen.getByRole("navigation", { name: "Sidebar navigation" }),
-    ).toBeInTheDocument();
+    await waitFor(() => expect(flowSidebar).toHaveStyle({ width: "272px" }));
+  });
+
+  it("aligns native settings navigation below the titlebar without extra top padding", async () => {
+    vi.mocked(fetchBootstrap).mockResolvedValue({
+      token: "tok",
+      api_token: "api-tok",
+      ws_path: "/",
+      expires_in: 300,
+      runtime_surface: "native",
+    });
+    mockFetchRoutes({ "/api/settings": baseSettingsPayload() });
+
+    render(<App />);
+
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    const sidebar = screen.getByRole("navigation", { name: "Sidebar navigation" });
+    fireEvent.click(within(sidebar).getByRole("button", { name: "Settings" }));
+
+    const backButton = await screen.findByRole("button", { name: "Back to chat" });
+    expect(backButton.closest("aside")).toHaveClass("pt-10", "lg:pt-10");
+    expect(backButton.closest("aside")).not.toHaveClass("pt-[4.25rem]");
+    expect(backButton).toHaveClass("-ml-1");
+  });
+
+  it("uses native chrome when the host bridge overrides browser gateway metadata", async () => {
+    Reflect.set(window, "nanobotHost", { pickFolder: vi.fn() });
+    vi.mocked(fetchBootstrap).mockResolvedValue({
+      token: "tok",
+      api_token: "api-tok",
+      ws_path: "/",
+      expires_in: 300,
+      runtime_surface: "browser",
+    });
+    mockFetchRoutes({
+      "/api/settings": {
+        ...baseSettingsPayload(),
+        surface: "browser",
+        runtime_surface: "browser",
+      },
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(connectSpy).toHaveBeenCalled());
+    await waitFor(() => {
+      expect(screen.getByTestId("sidebar-brand-mark")).toHaveClass("mt-5");
+    });
+    expect(document.documentElement).toHaveClass("native-host");
   });
 
   it("switches to the next session when deleting the active chat", async () => {

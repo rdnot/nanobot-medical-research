@@ -706,6 +706,7 @@ class WebuiTurnCoordinator:
             session_key=event.context.session_key,
             latency_ms=event.latency_ms,
             usage=event.usage,
+            round_usages=event.round_usages,
             context_window_tokens=(
                 event.runtime.context_window_tokens if event.runtime is not None else None
             ),
@@ -750,6 +751,7 @@ class WebuiTurnCoordinator:
         session_key: str,
         latency_ms: int | None,
         usage: LLMUsage | None = None,
+        round_usages: tuple[LLMUsage, ...] = (),
         context_window_tokens: int | None = None,
     ) -> None:
         if msg.channel != "websocket":
@@ -764,6 +766,7 @@ class WebuiTurnCoordinator:
                     latency_ms=latency_ms,
                     goal_state=goal_state_ws_blob(session.metadata),
                     usage=usage,
+                    round_usages=round_usages,
                     context_window_tokens=context_window_tokens,
                 ),
                 metadata=msg.metadata,

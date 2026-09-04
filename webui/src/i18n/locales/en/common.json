@@ -1199,8 +1199,16 @@
       "switchModel": "Switch model for this chat",
       "manageModels": "Manage models",
       "context": {
-        "tooltip": "Context · {{tokens}}{{capacity}}",
-        "meterDescription": "{{context}}. {{percent}}% used."
+        "tooltip": "Context {{percent}}%",
+        "detailsLabel": "Open context usage",
+        "panelTitle": "Context usage",
+        "contextTitle": "Context",
+        "recentRounds": "Recent rounds",
+        "inputTrend": "Input tokens",
+        "input": "Input tokens",
+        "cacheHitRate": "KV cache hit rate",
+        "output": "Output tokens",
+        "duration": "Generation time"
       },
       "queued": {
         "label": "Queued guidance",
