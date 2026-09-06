@@ -26,6 +26,7 @@ from nanobot.providers.factory import ProviderSnapshot
 from nanobot.runtime_context import (
     RUNTIME_CONTEXT_HISTORY_META,
     RUNTIME_CONTEXT_MESSAGE_META,
+    RUNTIME_CONTEXT_TAG,
     RuntimeContextBlock,
     append_runtime_context,
     public_history_message,
@@ -128,7 +129,7 @@ def _make_full_loop(tmp_path: Path) -> AgentLoop:
         bus=loop.bus,
         sessions=loop.sessions,
         schedule_background=lambda coro: loop.schedule_background(coro),
-    ).subscribe(loop.runtime_events)
+    ).subscribe()
     return loop
 
 
@@ -680,7 +681,7 @@ def test_build_and_save_preserves_multimodal_user_block_starting_with_runtime_ta
     image = tmp_path / "user-tag.png"
     image.write_bytes(_PNG_1X1)
     user_text = (
-        f"{ContextBuilder._RUNTIME_CONTEXT_TAG}\n"
+        f"{RUNTIME_CONTEXT_TAG}\n"
         "This entire block is user-authored and must remain in history."
     )
     messages = ContextBuilder(tmp_path).build_messages(
@@ -1197,6 +1198,9 @@ async def test_process_message_persists_unified_session_delivery_route(tmp_path:
     loop.sessions.invalidate(UNIFIED_SESSION_KEY)
     persisted = loop.sessions.get_or_create(UNIFIED_SESSION_KEY)
     assert persisted.metadata[LAST_CHANNEL_METADATA_KEY] == "feishu:oc_123"
+    assert persisted.metadata["_compaction_route"] == {
+        "channel": "feishu", "chat_id": "oc_123", "metadata": {},
+    }
 
 
 @pytest.mark.parametrize(
@@ -1251,7 +1255,10 @@ def test_unified_session_route_ignores_non_user_destinations(
     session = loop.sessions.get_or_create(UNIFIED_SESSION_KEY)
     session.metadata[LAST_CHANNEL_METADATA_KEY] = "telegram:existing"
 
-    loop._remember_unified_session_route(session, msg, is_user_turn=is_user_turn)
+    loop._remember_session_route(
+        session, msg, is_user_turn=is_user_turn,
+        delivery=loop.turn_delivery_factory.unrouted(msg, session.key),
+    )
 
     assert session.metadata[LAST_CHANNEL_METADATA_KEY] == "telegram:existing"
 
@@ -1445,7 +1452,7 @@ async def test_internal_continuation_preserves_streaming_route_metadata(
 
     calls = 0
 
-    async def fake_run_agent_loop(transcript_input, *, on_stream=None, on_stream_end=None, **_kwargs):
+    async def fake_run_agent_loop(transcript_input, *, events, streaming, **_kwargs):
         nonlocal calls
         initial_messages = _assembled_messages(loop.context, transcript_input)
         calls += 1
@@ -1455,10 +1462,9 @@ async def test_internal_continuation_preserves_streaming_route_metadata(
                 [*initial_messages, {"role": "assistant", "content": "paused"}],
                 stop_reason="max_iterations",
             )
-        assert on_stream is not None
-        assert on_stream_end is not None
-        await on_stream("done")
-        await on_stream_end(resuming=False)
+        assert streaming
+        await events.emit(StreamDeltaEvent(content="done"))
+        await events.emit(StreamEndEvent())
         return _agent_run_result(
             "done",
             [*initial_messages, {"role": "assistant", "content": "done"}],

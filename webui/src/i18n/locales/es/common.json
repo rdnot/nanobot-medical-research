@@ -1070,6 +1070,13 @@
     "error": "Error de conexión"
   },
   "thread": {
+    "compaction": {
+      "cancelled": "Compresión de contexto cancelada",
+      "empty": "No hay contexto que comprimir.",
+      "started": "Comprimiendo el contexto…",
+      "failed": "La compresión del contexto falló",
+      "succeeded": "Contexto comprimido"
+    },
     "loadingConversation": "Cargando conversación…",
     "empty": {
       "greetings": {
@@ -1253,6 +1260,10 @@
           "new": {
             "title": "Nuevo chat",
             "description": "Restablece este chat e inicia una conversación nueva."
+          },
+          "compact": {
+            "title": "Compactar contexto",
+            "description": "Compacta el contexto de este chat y continúa la conversación."
           },
           "stop": {
             "title": "Detener tarea actual",

@@ -1,3 +1,7 @@
+import { decodeNotification, isCompactionPhase, isRecoveryState } from "../../packages/client-events/notifications"
+import type { ContextCompaction, NotificationEvent, RecoveryState } from "../../packages/client-events/notifications"
+export type { ContextCompaction, RecoveryState, RecoveryStatus } from "../../packages/client-events/notifications"
+
 export type ConnectionStatus =
   | "starting"
   | "connecting"
@@ -76,16 +80,6 @@ export interface RuntimeControls {
   canUseFullAccess: boolean
 }
 
-export type RecoveryStatus = "resuming" | "awaiting_user" | "recovered" | "failed"
-
-export interface RecoveryState {
-  status: RecoveryStatus
-  recovery_id: string
-  reason?: string
-  attempts?: number
-  can_continue?: boolean
-}
-
 export type InboundEvent =
   | { event: "ready"; chat_id: string; client_id: string }
   | {
@@ -151,7 +145,7 @@ export type InboundEvent =
       turn_id?: string
     }
   | { event: "goal_state"; chat_id: string; goal_state: Record<string, unknown> }
-  | ({ event: "recovery_state"; chat_id: string } & RecoveryState)
+  | NotificationEvent
   | {
       event: "session_updated"
       chat_id: string
@@ -234,6 +228,7 @@ export interface HistoryMessage {
   media?: MediaAttachment[]
   toolEvents?: ToolProgressEvent[]
   fileEdits?: FileEditEvent[]
+  compaction?: ContextCompaction
   forkIndex?: number
 }
 
@@ -356,6 +351,7 @@ const CHAT_EVENTS = new Set([
   "goal_status",
   "goal_state",
   "recovery_state",
+  "context_compaction",
   "session_updated",
   "turn_model_updated",
   "error",
@@ -437,15 +433,6 @@ function isWorkspaceScope(value: unknown): value is WorkspaceScopePayload {
     && (value.access_mode === "restricted" || value.access_mode === "full")
     && optional(value.project_name, "string")
     && optional(value.restrict_to_workspace, "boolean")
-}
-
-function isRecoveryState(value: unknown): value is RecoveryState {
-  return isRecord(value)
-    && ["resuming", "awaiting_user", "recovered", "failed"].includes(String(value.status))
-    && typeof value.recovery_id === "string"
-    && optional(value.reason, "string")
-    && optional(value.attempts, "number")
-    && optional(value.can_continue, "boolean")
 }
 
 interface WebUIResponseEvent {
@@ -543,7 +530,7 @@ function decodeInboundEvent(value: unknown): InboundEvent | null | undefined {
   ) return null
   if (name === "goal_status" && record.status !== "running" && record.status !== "idle") return null
   if (name === "goal_state" && !isRecord(record.goal_state)) return null
-  if (name === "recovery_state" && !isRecoveryState(record)) return null
+  if (decodeNotification(record) === null) return null
   if (
     name === "session_updated"
     && (!optional(record.scope, "string")
@@ -608,6 +595,20 @@ export async function fetchHistory(
   for (const message of payload.messages || []) {
     const role = message.role
     const content = message.content
+    if (message.kind === "compaction") {
+      const compaction = message.compaction
+      if (isRecord(compaction)
+        && typeof compaction.id === "string"
+        && compaction.id
+        && isCompactionPhase(compaction.phase)) {
+        messages.push({
+          role: "activity",
+          content: "",
+          compaction: { id: compaction.id, phase: compaction.phase },
+        })
+      }
+      continue
+    }
     if (role === "tool" && message.kind === "trace") {
       const traces = Array.isArray(message.traces)
         ? message.traces.filter((value): value is string => typeof value === "string")

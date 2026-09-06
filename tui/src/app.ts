@@ -1063,6 +1063,9 @@ export class NanobotTui {
     }
 
     switch (event.event) {
+      case "context_compaction":
+        this.transcript.compaction({ id: event.compaction_id, phase: event.phase })
+        return
       case "message_accepted":
         this.reconcileTurnOwnership(event)
         return
@@ -1738,16 +1741,30 @@ export class NanobotTui {
       key.preventDefault()
       return
     }
-    if (!key.ctrl && !key.meta && !key.shift && (key.name === "left" || key.name === "right")) {
+    if (!key.ctrl && !key.meta && (key.name === "left" || key.name === "right")) {
       const direction = key.name === "left" ? -1 : 1
+      const cursor = this.composerStringCursor()
       const target = this.draft.moveImageCursor(
         this.composer.plainText,
-        this.composerStringCursor(),
+        cursor,
         direction,
       )
       if (target !== null) {
         this.composerCursor = target
-        this.setComposerStringCursor(this.composer.plainText, target)
+        if (key.shift) {
+          const cursorOffset = this.composerOffsetForStringIndex(this.composer.plainText, cursor)
+          const targetOffset = this.composerOffsetForStringIndex(this.composer.plainText, target)
+          this.composer.setSelection(
+            Math.min(cursorOffset, targetOffset),
+            Math.max(cursorOffset, targetOffset),
+          )
+          // OpenTUI 0.5.10 clears the selection through the public cursor
+          // setter. Move the native edit cursor directly so the placeholder
+          // remains one selected, replaceable unit.
+          this.composer.editBuffer.setCursorByOffset(targetOffset)
+        } else {
+          this.setComposerStringCursor(this.composer.plainText, target)
+        }
         key.preventDefault()
         return
       }
@@ -1897,8 +1914,8 @@ export class NanobotTui {
       : "ready"
     if (mode === "ready") {
       this.meta.content = footerTelemetry(
-        this.lastUsage,
-        this.renderer.width,
+        this.lastUsage?.context_tokens ?? null,
+        this.contextWindowTokens,
         footerHintTheme(this.palette),
       )
       return
