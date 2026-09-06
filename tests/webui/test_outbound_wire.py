@@ -1,9 +1,34 @@
 from __future__ import annotations
 
-from nanobot.bus.outbound_events import RecoveryStateEvent, TurnEndEvent
+from nanobot.bus.outbound_events import (
+    ContextCompactionEvent,
+    RecoveryStateEvent,
+    TurnEndEvent,
+)
 from nanobot.providers.base import LLMUsage
 from nanobot.webui.metadata import WEBUI_TURN_METADATA_KEY
-from nanobot.webui.outbound_wire import encode_recovery_state, encode_turn_end
+from nanobot.webui.outbound_wire import (
+    encode_context_compaction,
+    encode_recovery_state,
+    encode_turn_end,
+)
+
+
+def test_encode_context_compaction_projects_the_lifecycle() -> None:
+    payload = encode_context_compaction(
+        "chat-1",
+        ContextCompactionEvent(
+            compaction_id="compact-1",
+            phase="succeeded",
+        ),
+    )
+
+    assert payload == {
+        "event": "context_compaction",
+        "chat_id": "chat-1",
+        "compaction_id": "compact-1",
+        "phase": "succeeded",
+    }
 
 
 def test_encode_recovery_state_omits_absent_optional_fields() -> None:

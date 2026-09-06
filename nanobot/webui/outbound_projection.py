@@ -8,16 +8,15 @@ from loguru import logger
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.outbound_events import (
+    ContextCompactionEvent,
     GoalStateSyncEvent,
     GoalStatusEvent,
     ProgressEvent,
-    RecoveryStateEvent,
     RuntimeModelUpdatedEvent,
     SessionUpdatedEvent,
     TurnEndEvent,
     TurnModelUpdatedEvent,
     UserInputEvent,
-    outbound_event_from_message,
 )
 from nanobot.session.webui_turns import clear_websocket_turn_if_current
 from nanobot.webui.metadata import (
@@ -28,8 +27,8 @@ from nanobot.webui.metadata import (
 from nanobot.webui.outbound_wire import (
     WebUIWirePayload,
     WebUIWirePersistence,
-    encode_recovery_state,
     encode_turn_end,
+    project_notification,
 )
 from nanobot.webui.session_identity import webui_session_key
 from nanobot.webui.session_projection import WebUISessionProjection
@@ -134,7 +133,7 @@ class WebUIOutboundProjector:
             )
 
     async def send(self, msg: OutboundMessage) -> None:
-        event = outbound_event_from_message(msg)
+        event = msg.event
         progress_event = event if isinstance(event, ProgressEvent) else None
         if isinstance(event, RuntimeModelUpdatedEvent):
             await self._transport.send_runtime_model_updated(
@@ -152,6 +151,7 @@ class WebUIOutboundProjector:
                 SessionUpdatedEvent,
                 GoalStatusEvent,
                 GoalStateSyncEvent,
+                ContextCompactionEvent,
             )
             log = (
                 logger.debug
@@ -179,12 +179,16 @@ class WebUIOutboundProjector:
                     provenance=event.provenance,
                 )
             return
-        if isinstance(event, RecoveryStateEvent):
-            if conns:
+        notification = project_notification(msg.chat_id, event)
+        if notification is not None:
+            if conns or notification.deliver_offline:
+                kwargs: dict[str, Any] = (
+                    {"metadata": msg.metadata} if notification.attach_turn_metadata else {}
+                )
                 await self._transport.send_payload(
-                    msg.chat_id,
-                    encode_recovery_state(msg.chat_id, event),
-                    persistence="transient",
+                    msg.chat_id, notification.payload,
+                    persistence=notification.persistence,
+                    **kwargs,
                 )
             return
         if isinstance(event, GoalStateSyncEvent):

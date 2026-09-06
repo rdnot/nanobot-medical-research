@@ -17,9 +17,11 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, cast
+from uuid import uuid4
 
 from loguru import logger
 
+from nanobot.events import NO_EVENTS, ContextCompactionEvent, EventSink
 from nanobot.llm_usage.context import llm_usage_source
 from nanobot.providers.base import ProviderCallContext, ProviderConversationState
 from nanobot.runtime_context import public_history_messages
@@ -930,9 +932,8 @@ class MemoryArchiver:
         if not summary:
             logger.warning("Memory archive provider summary was not safe to replay, raw-dumping")
             return raw_fallback()
-        if summary == "(nothing)":
-            return "(nothing)"
-        self.store.append_history(summary, session_key=session_key)
+        if summary != "(nothing)":
+            self.store.append_history(summary, session_key=session_key)
         return summary
 
     async def archive_session(
@@ -944,7 +945,10 @@ class MemoryArchiver:
         input_token_budget: int,
     ) -> str | None:
         """Archive a captured session prefix without mutating the session."""
-        messages = list(session.messages[session.last_archived:archive_end])
+        messages = [
+            message for message in session.messages[session.last_archived:archive_end]
+            if not message.get("_command")
+        ]
         if not messages:
             return None
         session_summary = session_summary_from_metadata(
@@ -1184,6 +1188,7 @@ class Consolidator:
         *,
         runtime: LLMRuntime,
         max_suffix: int = MIN_COMPACTED_REPLAY_MESSAGES,
+        events: EventSink = NO_EVENTS,
     ) -> str | None:
         """Archive the full idle tail while keeping recent messages replayable.
 
@@ -1205,25 +1210,52 @@ class Consolidator:
 
             archive_start = session.last_archived
             messages_to_archive = list(session.messages[archive_start:])
-            if not messages_to_archive:
+            if not any(not message.get("_command") for message in messages_to_archive):
                 return ""
 
+            compaction_id = uuid4().hex
+            await events.emit(
+                ContextCompactionEvent(compaction_id=compaction_id, phase="started"),
+            )
             last_active = session.updated_at
             archive_end = archive_start + len(messages_to_archive)
-            summary = await self.archive_session(
-                session,
-                archive_end=archive_end,
-                runtime=runtime,
-            )
+            try:
+                summary = await self.archive_session(
+                    session,
+                    archive_end=archive_end,
+                    runtime=runtime,
+                )
+                if summary is not None:
+                    self._set_last_summary(
+                        session,
+                        summary,
+                        last_active=last_active,
+                    )
+
+                    # A turn can append while the provider call is in flight. Advance only
+                    # through the captured batch so new messages remain eligible next time.
+                    session.last_archived = archive_end
+                    self.sessions.save(session)
+            except (Exception, asyncio.CancelledError) as exc:
+                await events.emit(
+                    ContextCompactionEvent(
+                        compaction_id=compaction_id,
+                        phase="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
+                    ),
+                )
+                raise
             if summary is None:
+                await events.emit(
+                    ContextCompactionEvent(compaction_id=compaction_id, phase="failed"),
+                )
                 return None
 
-            self._set_last_summary(session, summary, last_active=last_active)
-
-            # A turn can append while the provider call is in flight. Advance only
-            # through the captured batch so new messages remain eligible next time.
-            session.last_archived = archive_end
-            self.sessions.save(session)
+            await events.emit(
+                ContextCompactionEvent(
+                    compaction_id=compaction_id,
+                    phase="succeeded",
+                ),
+            )
 
             visible = session.get_history(
                 max_messages=MIN_COMPACTED_REPLAY_MESSAGES,
