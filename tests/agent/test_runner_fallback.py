@@ -1086,7 +1086,8 @@ class TestRetryBeforeFailover:
             )
         assert result.content == "fallback ok"
         events = [call.args[0] for call in observe.await_args_list]
-        assert len(events) == 3
+        # FORK: 5 retries emit 5 wait events (upstream: 3)
+        assert len(events) == 5
         assert all(isinstance(event, RetryWaitEvent) for event in events)
         assert not any("giving up" in event.content for event in events)
 
@@ -1106,8 +1107,9 @@ class TestRetryBeforeFailover:
             )
         assert result.finish_reason == "error"
         notices = [call.args[0].content for call in observe.await_args_list]
-        # Two candidates, three waits each, for two chains, plus one chain wait.
-        assert len(notices) == 14
+        # FORK: two candidates, five waits each, for two chains, plus two extras
+        # (upstream: three waits each → 14).
+        assert len(notices) == 22
         assert sum("Persistent retry stopped" in text for text in notices) == 1
         assert not any("giving up" in text for text in notices)
 
