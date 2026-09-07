@@ -93,7 +93,7 @@ async def test_chat_with_retry_emits_structured_retry_lifecycle(monkeypatch) -> 
     assert response.content == "ok"
     assert [status.state for status in statuses] == ["waiting", "recovered"]
     assert statuses[0].attempt == 1
-    assert statuses[0].max_attempts == 4
+    assert statuses[0].max_attempts == 6  # FORK: 5 retries = 6 attempts (upstream: 4)
     assert statuses[0].error_kind == "connection"
     assert statuses[0].next_retry_at is not None
     assert statuses[1].attempt == 2

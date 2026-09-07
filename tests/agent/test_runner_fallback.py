@@ -1170,12 +1170,14 @@ class TestRetryBeforeFailover:
             "waiting",
             "waiting",
             "waiting",
+            "waiting",
+            "waiting",
             "cleared",
         ]
         assert retry_statuses[-1] == RetryStatusEvent(
             state="cleared",
-            attempt=4,
-            max_attempts=4,
+            attempt=6,
+            max_attempts=6,
             error_kind="server",
         )
         factory.assert_called_once_with(_fallback("fallback-a"))
