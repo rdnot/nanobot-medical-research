@@ -237,6 +237,7 @@ class TurnContext:
     final_content: str | None = None
     all_messages: list[dict[str, Any]] = field(default_factory=list)
     stop_reason: str = ""
+    failure_error_kind: str | None = None
     streamed_content: bool = False
 
     input_persisted_early: bool = False
@@ -2218,6 +2219,7 @@ class AgentLoop:
         ctx.provider_compaction_applied = result.provider_compaction_applied
         ctx.stop_reason = result.stop_reason
         ctx.tool_calls_log = getattr(self, "_last_tool_calls_log", [])  # FORK  # pyright: ignore[reportAttributeAccessIssue]
+        ctx.failure_error_kind = result.failure_error_kind
         if (
             ctx.kind is TurnKind.USER
             and (ctx.delivery.route.channel, ctx.delivery.route.chat_id) in message_sends
@@ -2279,6 +2281,10 @@ class AgentLoop:
             )
 
     async def _prepare_outbound(self, ctx: TurnContext) -> None:
+        ctx.delivery.record_stop_reason(
+            ctx.stop_reason,
+            failure_error_kind=ctx.failure_error_kind,
+        )
         if ctx.suppress_response:
             ctx.outbound = None
             return
