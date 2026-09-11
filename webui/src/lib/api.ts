@@ -566,12 +566,16 @@ export async function stopApiService(
 export async function enableNanobotFeature(
   transport: WebUIMutationTransport,
   name: string,
-  options: { instanceId?: string } = {},
+  options: { instanceId?: string; installOnly?: boolean } = {},
 ): Promise<NanobotFeaturesPayload> {
   return mutation<NanobotFeaturesPayload>(
     transport,
     "settings.feature.enable",
-    { name, ...(options.instanceId ? { instance_id: options.instanceId } : {}) },
+    {
+      name,
+      ...(options.instanceId ? { instance_id: options.instanceId } : {}),
+      ...(options.installOnly ? { install_only: true } : {}),
+    },
     PACKAGE_MUTATION_TIMEOUT_MS,
   );
 }
@@ -611,22 +615,14 @@ export async function runPairingAction(
 export async function startChannelConnect(
   transport: WebUIMutationTransport,
   channel: string,
-  options: {
-    domain?: string;
-    instanceId?: string;
-    mode?: "replace" | "create";
-    force?: boolean;
-  } = {},
+  params: Readonly<Record<string, string | boolean>> = {},
 ): Promise<ChannelConnectPayload> {
   return mutation<ChannelConnectPayload>(
     transport,
     "settings.channel.connect.start",
     {
+      ...params,
       channel,
-      ...(options.domain ? { domain: options.domain } : {}),
-      ...(options.instanceId ? { instance_id: options.instanceId } : {}),
-      ...(options.mode ? { mode: options.mode } : {}),
-      ...(options.force ? { force: true } : {}),
     },
     PACKAGE_MUTATION_TIMEOUT_MS,
   );
@@ -664,7 +660,7 @@ export async function cancelChannelConnect(
 export async function configureChannel(
   transport: WebUIMutationTransport,
   name: string,
-  values: Record<string, string>,
+  values: Record<string, string | null>,
   options: { enable?: boolean; instanceId?: string } = {},
 ): Promise<ChannelConfigurePayload> {
   return mutation<ChannelConfigurePayload>(
@@ -683,7 +679,7 @@ export async function configureChannel(
 export async function validateChannel(
   transport: WebUIMutationTransport,
   name: string,
-  values: Record<string, string> = {},
+  values: Record<string, string | null> = {},
   options: { instanceId?: string } = {},
 ): Promise<ChannelValidationPayload> {
   return mutation<ChannelValidationPayload>(
@@ -1078,4 +1074,12 @@ export async function updateTranscriptionSettings(
       max_upload_mb: update.maxUploadMb,
     },
   );
+}
+
+
+export async function updateRuntimeConfigSettings(
+  transport: WebUIMutationTransport,
+  values: Record<string, import("@/lib/types").RuntimeConfigValue>,
+): Promise<SettingsPayload> {
+  return mutation<SettingsPayload>(transport, "settings.runtime_config.update", { values });
 }
