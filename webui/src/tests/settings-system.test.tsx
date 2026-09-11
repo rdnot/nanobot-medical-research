@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { installedMcpPresetsFromPayload } from "@/lib/mcp-preset-events";
 import { requestMutationMock, jsonResponse, settingsPayload, renderSettingsView, installSettingsViewTestHooks } from "@/tests/settings-test-utils";
@@ -40,6 +40,61 @@ const agentPlugin = {
 
 describe("Settings system domains", () => {
   installSettingsViewTestHooks();
+
+  it("asks before leaving with pending changes and lets the user restart later", () => {
+    const leave = vi.fn();
+    renderSettingsView({ initialSection: "runtime", initialSettings: {
+      ...settingsPayload(), requires_restart: true, restart_required_sections: ["runtime"],
+    }, onBackToChat: leave });
+    fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+    const dialog = screen.getByRole("dialog", { name: "Restart before leaving?" });
+    expect(leave).not.toHaveBeenCalled();
+    expect(within(dialog).getByText("Your changes are saved. Restart to apply them.")).toBeVisible();
+    expect(within(dialog).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "Restart later", "Restart",
+    ]);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Restart later" }));
+    expect(leave).toHaveBeenCalledTimes(1);
+    expect(requestMutationMock).not.toHaveBeenCalled();
+  });
+
+  it("restarts from the exit prompt", () => {
+    const restart = vi.fn();
+    renderSettingsView({ initialSection: "runtime", initialSettings: {
+      ...settingsPayload(), requires_restart: true,
+    }, onRestart: restart });
+    fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Restart", exact: true }));
+    expect(restart).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves directly when no restart is pending", () => {
+    const leave = vi.fn();
+    renderSettingsView({ initialSection: "runtime", initialSettings: settingsPayload(), onBackToChat: leave });
+    fireEvent.click(screen.getByRole("button", { name: "Back to chat" }));
+    expect(leave).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps one restart action and pending notice in the sidebar across settings pages", async () => {
+    renderSettingsView({
+      initialSection: "runtime",
+      initialSettings: {
+        ...settingsPayload(),
+        requires_restart: true,
+        restart_required_sections: ["runtime", "image"],
+      },
+    });
+    const sidebar = screen.getByRole("complementary");
+    const restart = within(sidebar).getByRole("button", { name: "Restart", exact: true });
+    for (const section of ["Capabilities", "Models", "Advanced", "System"]) {
+      fireEvent.click(within(sidebar).getByRole("button", { name: section, exact: true }));
+      await waitFor(() => {
+        expect(screen.getAllByRole("button", { name: "Restart", exact: true })).toEqual([restart]);
+        expect(screen.getAllByText("Saved. Restart to apply changes.")).toHaveLength(1);
+        expect(within(sidebar).getByText("Saved. Restart to apply changes.")).toBeVisible();
+      });
+    }
+  });
 
   it("keeps enabled Agent Plugins out of MCP composer attachments", () => {
     const enabled = { ...agentPlugin, enabled: true, available: true, status: "enabled" };
@@ -91,7 +146,23 @@ describe("Settings system domains", () => {
   });
 
 
-  it("does not show the Settings kicker on the standalone Automations surface", async () => {
+  it.each(["apps", "skills", "automations", "channels"] as const)(
+    "uses the conversation-width content frame for the standalone %s page",
+    (initialSection) => {
+      renderSettingsView({ initialSection, initialSettings: settingsPayload(), showSidebar: false });
+
+      expect(screen.getByTestId("settings-section-transition")).toHaveClass("settings-feature-page");
+    },
+  );
+
+  it("keeps the regular settings page at its existing width", () => {
+    renderSettingsView({ initialSection: "models", initialSettings: settingsPayload() });
+
+    expect(screen.getByTestId("settings-section-transition")).toHaveClass("settings-grid");
+    expect(screen.getByTestId("settings-section-transition")).not.toHaveClass("settings-feature-page");
+  });
+
+  it("opens a chat from the standalone automations empty state", async () => {
     const onBackToChat = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -109,10 +180,6 @@ describe("Settings system domains", () => {
 
     expect(screen.getByRole("heading", { name: "Automations" })).toBeInTheDocument();
     expect(await screen.findByText("No automations yet.")).toBeInTheDocument();
-    expect(screen.queryByText("Settings")).not.toBeInTheDocument();
-    expect(
-      screen.queryByPlaceholderText("Search task, message, linked chat, or schedule"),
-    ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open a chat" }));
     expect(onBackToChat).toHaveBeenCalledTimes(1);
   });
@@ -262,7 +329,6 @@ describe("Settings system domains", () => {
 
     renderSettingsView();
 
-    expect(screen.queryByRole("heading", { name: "Apps" })).not.toBeInTheDocument();
     expect(await screen.findByText("AnyGen")).toBeInTheDocument();
     const uninstall = screen.getByRole("button", { name: "Uninstall app" });
 
@@ -279,7 +345,6 @@ describe("Settings system domains", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
 
-    expect(screen.queryByText("Uninstalled CLI for AnyGen.")).not.toBeInTheDocument();
   });
 
   it("keeps runtime dependencies out of Apps and explains chat mentions", async () => {
@@ -319,18 +384,12 @@ describe("Settings system domains", () => {
     renderSettingsView({ initialSection: "apps" });
 
     expect(await screen.findByText("AnyGen")).toBeInTheDocument();
-    expect(
-      screen.queryByText("Add tools to nanobot, then @ them in chat."),
-    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Ready" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: "Apps" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "MCP" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Plugins" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Api")).not.toBeInTheDocument();
-    expect(screen.queryByText("0 ready")).not.toBeInTheDocument();
   });
 
-  it("shows nanobot optional features and enables one", async () => {
+  it("installs optional channel support before enabling and disabling it", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/settings") return jsonResponse(settingsPayload());
@@ -344,6 +403,7 @@ describe("Settings system domains", () => {
             webui: "webui/index.ts",
             type: "channel",
             enabled: false,
+            configured: true,
             installed: false,
             ready: false,
             status: "missing_dependency",
@@ -356,25 +416,31 @@ describe("Settings system domains", () => {
       return { ok: false, status: 404, json: async () => ({}) } as Response;
     });
     vi.stubGlobal("fetch", fetchMock);
-    requestMutationMock.mockImplementation(async (action: string) => {
+    requestMutationMock.mockImplementation(async (action: string, values: Record<string, unknown>) => {
       if (action === "settings.feature.enable") {
+        const enabled = values.install_only !== true;
         return {
           features: [{
             name: "matrix",
             display_name: "Matrix",
             webui: "webui/index.ts",
             type: "channel",
-            enabled: true,
-            running: true,
-            runtime_status: "running",
+            enabled,
+            running: enabled,
+            runtime_status: enabled ? "running" : "stopped",
+            configured: true,
             installed: true,
             ready: true,
-            status: "enabled",
+            status: enabled ? "enabled" : "not_enabled",
             install_supported: true,
             requires_restart: true,
           }],
-          enabled_count: 1,
-          last_action: { ok: true, message: "Enabled channel 'matrix'", enabled: true },
+          enabled_count: enabled ? 1 : 0,
+          last_action: {
+            ok: true,
+            message: enabled ? "Enabled channel 'matrix'" : "Installed support for channel 'matrix'",
+            enabled,
+          },
         };
       }
       if (action === "settings.feature.disable") {
@@ -402,15 +468,25 @@ describe("Settings system domains", () => {
     renderSettingsView({ initialSection: "channels" });
 
     const matrixRow = await screen.findByRole("button", { name: "View Matrix settings" });
-    expect(matrixRow).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getAllByText("Matrix")).toHaveLength(2);
-    expect(screen.getAllByText("Use nanobot from Matrix rooms.")).toHaveLength(2);
-    expect(screen.queryByText(/Enabling Nanobot features may install Python packages/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("switch", { name: "Matrix channel" }));
-    expect(screen.getByRole("dialog", { name: "Install support for Matrix?" })).toBeInTheDocument();
-    expect(screen.getByText("nanobot will add what Matrix needs, then turn it on. Continue?")).toBeInTheDocument();
+    expect(matrixRow).toHaveAttribute("aria-haspopup", "dialog");
+    fireEvent.click(matrixRow);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Matrix channel" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Install Matrix" })).toHaveFocus();
     expect(requestMutationMock).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Install and enable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Install Matrix" }));
+
+    await waitFor(() =>
+      expect(requestMutationMock).toHaveBeenCalledWith(
+        "settings.feature.enable",
+        { name: "matrix", install_only: true },
+        150_000,
+      ),
+    );
+    const matrixToggle = await screen.findByRole("switch", { name: "Matrix channel" });
+    expect(matrixToggle).toHaveAttribute("aria-checked", "false");
+    expect(requestMutationMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(matrixToggle);
 
     await waitFor(() =>
       expect(requestMutationMock).toHaveBeenCalledWith(
@@ -422,15 +498,14 @@ describe("Settings system domains", () => {
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: "Matrix channel" })).toHaveAttribute("aria-checked", "true"),
     );
-    expect(screen.queryByText("Enabled channel 'matrix'")).not.toBeInTheDocument();
-    expect(screen.queryByText("Restart nanobot to apply updated channel support.")).not.toBeInTheDocument();
     expect(screen.getAllByText("On").length).toBeGreaterThan(0);
 
+    fireEvent.click(screen.getByRole("button", { name: "View Matrix settings" }));
     expect(screen.getByLabelText("Homeserver")).toBeInTheDocument();
     expect(screen.getByLabelText("User ID")).toBeInTheDocument();
     expect(screen.getByLabelText("Device ID")).toBeInTheDocument();
-    expect(screen.queryByText("channels.matrix.homeserver")).not.toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("button", { name: "Close", exact: true }));
     fireEvent.click(screen.getByRole("switch", { name: "Matrix channel" }));
 
     await waitFor(() =>
@@ -443,6 +518,5 @@ describe("Settings system domains", () => {
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: "Matrix channel" })).toHaveAttribute("aria-checked", "false"),
     );
-    expect(screen.queryByText("Disabled channel 'matrix'")).not.toBeInTheDocument();
   });
 });

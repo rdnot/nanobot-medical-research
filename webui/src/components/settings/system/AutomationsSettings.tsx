@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
+import type { TFunction } from "i18next";
 import {
   ArrowUpDown,
   Check,
@@ -17,7 +18,8 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { channelUiPresentation } from "@/channel-plugins/registry";
+import { channelTranslator } from "@/channel-plugins/i18n";
+import { channelUiOwner, channelUiPresentation } from "@/channel-plugins/registry";
 import { SETTINGS_SEARCH_INPUT_CLASS } from "@/components/settings/shared/SettingsControls";
 import { AppsActionButton } from "@/components/settings/system/AppsSettings";
 import { Button } from "@/components/ui/button";
@@ -124,10 +126,10 @@ export function AutomationsSettings({
   }, [filtered, selectedJobId]);
 
   return (
-    <div className="space-y-5">
+    <div className="automations-page space-y-5">
       {jobs.length ? (
         <section className="shrink-0">
-          <div className="mx-auto flex w-full max-w-[56rem] flex-col gap-3">
+          <div className="flex w-full flex-col gap-3">
             <div className="-mx-1 overflow-x-auto px-1 pb-0.5">
               <div className="grid w-full min-w-[36rem] grid-cols-5 gap-1 rounded-floating bg-muted p-1">
                 {summaryOptions.map((option) => (
@@ -166,7 +168,7 @@ export function AutomationsSettings({
                     "Search task, message, linked chat, or schedule",
                   )}
                   className={cn(
-                    "h-9 w-full rounded-control pl-9 text-[13px]",
+                    "h-9 w-full rounded-full pl-9 text-[13px]",
                     SETTINGS_SEARCH_INPUT_CLASS,
                   )}
                 />
@@ -175,7 +177,7 @@ export function AutomationsSettings({
                 <DropdownMenuTrigger asChild>
                   <button
                     type="button"
-                    className="inline-flex h-9 min-w-[8.5rem] items-center justify-center gap-1.5 whitespace-nowrap rounded-control border border-border/45 bg-settings-surface px-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground sm:w-auto"
+                    className="inline-flex h-9 min-w-[8.5rem] items-center justify-center gap-1.5 whitespace-nowrap rounded-control border border-border/45 bg-settings-surface px-3 text-[12px] font-medium text-muted-foreground transition-colors settings-hover hover:text-foreground sm:w-auto"
                   >
                     <ArrowUpDown className="h-3.5 w-3.5" aria-hidden />
                     <span>{sortLabel[sort]}</span>
@@ -209,8 +211,8 @@ export function AutomationsSettings({
           {tx("settings.automations.loading", "Loading automations...")}
         </div>
       ) : filtered.length && selectedJob ? (
-        <section className="grid min-h-0 overflow-hidden rounded-panel bg-settings-surface xl:grid-cols-[minmax(16rem,18rem)_minmax(0,1fr)] xl:items-stretch">
-          <aside className="flex min-h-0 flex-col overflow-hidden border-b border-border/35 bg-settings-surface xl:border-b-0 xl:border-r">
+        <section className="automations-workspace grid min-h-0 overflow-hidden rounded-panel bg-settings-surface">
+          <aside className="automations-queue flex min-h-0 flex-col overflow-hidden border-b border-border/35 bg-settings-surface">
             <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-3">
               <h2 className="text-[13px] font-semibold tracking-[-0.01em] text-foreground/85">
                 {tx("settings.automations.queue", "Queue")}
@@ -220,7 +222,7 @@ export function AutomationsSettings({
               </span>
             </div>
             <div
-              className="max-h-[28rem] space-y-1 overflow-y-auto overscroll-contain px-2 pb-2 xl:max-h-[calc(100vh-24rem)]"
+              className="automations-queue-list max-h-[28rem] space-y-1 overflow-y-auto overscroll-contain px-2 pb-2"
               role="list"
               aria-label={tx("settings.automations.queue", "Queue")}
             >
@@ -302,7 +304,7 @@ function AutomationListItem({
   const tx = (key: string, fallback: string, values?: Record<string, unknown>) =>
     t(key, { defaultValue: fallback, ...(values ?? {}) });
   const status = automationStatus(job, tx);
-  const origin = automationOriginLabel(job, tx);
+  const origin = automationOriginLabel(job, t);
   const nextRun = formatAutomationNext(job, tx);
   const summary = automationSummary(job, tx);
 
@@ -316,7 +318,7 @@ function AutomationListItem({
           "group grid w-full grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-floating px-3 py-3.5 text-left transition-colors",
           selected
             ? "bg-background/80 text-foreground"
-            : "text-muted-foreground hover:bg-background/55 hover:text-foreground",
+            : "text-muted-foreground settings-hover hover:text-foreground",
         )}
       >
         <span className="min-w-0">
@@ -381,7 +383,7 @@ function AutomationDetailPanel({
   const tx = (key: string, fallback: string, values?: Record<string, unknown>) =>
     t(key, { defaultValue: fallback, ...(values ?? {}) });
   const status = automationStatus(job, tx);
-  const origin = automationOriginLabel(job, tx);
+  const origin = automationOriginLabel(job, t);
   const originHref = job.origin?.channel === "websocket" && job.origin.session_key
     ? `#/chat/${encodeURIComponent(job.origin.session_key)}`
     : null;
@@ -404,9 +406,9 @@ function AutomationDetailPanel({
   }, [job.id]);
 
   return (
-    <article className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-settings-surface">
+    <article className="automation-detail-panel flex min-h-0 min-w-0 flex-col overflow-hidden bg-settings-surface">
       <div className="shrink-0 border-b border-border/35 px-4 py-3.5 dark:border-white/10 sm:px-5">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h3 className="min-w-0 truncate text-[18px] font-medium leading-7 text-foreground">
@@ -431,7 +433,7 @@ function AutomationDetailPanel({
         </div>
       </div>
 
-      <div className="grid min-h-0 min-w-0 flex-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_14.5rem]">
+      <div className="automation-detail-body grid min-h-0 min-w-0 flex-1 overflow-hidden">
         <div className="min-h-0 min-w-0 space-y-3 overflow-y-auto overscroll-contain p-4 sm:p-5">
           <section className="rounded-floating bg-background/55 px-4 py-3.5">
             <div className="flex items-center justify-between gap-3">
@@ -483,7 +485,7 @@ function AutomationDetailPanel({
             ) : null}
           </section>
 
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))] gap-3">
             <AutomationDetail
               label={tx("settings.automations.labels.next", "Next")}
               title={formatAutomationNextTitle(job, locale, tx)}
@@ -512,7 +514,7 @@ function AutomationDetailPanel({
           ) : null}
         </div>
 
-        <aside className="min-h-0 overflow-y-auto overscroll-contain border-t border-border/35 bg-settings-surface p-4 text-[12px] text-muted-foreground lg:border-l lg:border-t-0">
+        <aside className="automation-detail-metadata min-h-0 overflow-y-auto overscroll-contain border-t border-border/35 bg-settings-surface p-4 text-[12px] text-muted-foreground">
           <div className="grid gap-3">
             <AutomationDetail
               label={tx("settings.automations.labels.schedule", "Schedule")}
@@ -1070,27 +1072,27 @@ function automationEditDraftError(
   job: SessionAutomationJob | null,
   tx: (key: string, fallback: string, values?: Record<string, unknown>) => string,
 ): string | null {
-  if (!draft.name.trim()) return tx("settings.automations.validation.nameRequired", "Name is required.");
+  if (!draft.name.trim()) return tx("settings.automations.validation.nameRequired", "Enter a task name.");
   if (isLocalTriggerAutomation(job)) return null;
   if (!draft.message.trim()) {
-    return tx("settings.automations.validation.messageRequired", "Message is required.");
+    return tx("settings.automations.validation.messageRequired", "Enter a task message.");
   }
   if (draft.scheduleKind === "every") {
     const value = Number(draft.everyValue);
     if (!Number.isInteger(value) || value <= 0) {
-      return tx("settings.automations.validation.intervalRequired", "Interval must be a positive number.");
+      return tx("settings.automations.validation.intervalRequired", "Enter a positive whole number for the interval.");
     }
   }
   if (draft.scheduleKind === "cron" && !draft.cronExpr.trim()) {
-    return tx("settings.automations.validation.cronRequired", "Cron expression is required.");
+    return tx("settings.automations.validation.cronRequired", "Enter a Cron expression.");
   }
   if (draft.scheduleKind === "at") {
     const atMs = new Date(draft.atLocal).getTime();
     if (!Number.isFinite(atMs)) {
-      return tx("settings.automations.validation.timeRequired", "Run time is required.");
+      return tx("settings.automations.validation.timeRequired", "Choose a run time.");
     }
     if (atMs <= Date.now() && automationScheduleChanged(draft, job)) {
-      return tx("settings.automations.validation.futureRequired", "Run time must be in the future.");
+      return tx("settings.automations.validation.futureRequired", "Choose a time in the future.");
     }
   }
   return null;
@@ -1358,23 +1360,27 @@ function automationStatus(
 
 function automationOriginLabel(
   job: SessionAutomationJob,
-  tx: (key: string, fallback: string, values?: Record<string, unknown>) => string,
+  t: TFunction,
 ): string {
-  if (job.protected) return tx("settings.automations.origin.system", "System");
+  if (job.protected) return t("settings.automations.origin.system", { defaultValue: "System" });
   const origin = job.origin;
-  if (!origin) return tx("settings.automations.origin.unknown", "No linked chat");
-  if (origin.channel !== "websocket") return automationChannelLabel(origin.channel, tx);
-  return origin.title || origin.preview || origin.session_key || automationChannelLabel(origin.channel, tx);
+  if (!origin) return t("settings.automations.origin.unknown", { defaultValue: "No linked chat" });
+  if (origin.channel !== "websocket") return automationChannelLabel(origin.channel, t);
+  return origin.title || origin.preview || origin.session_key || automationChannelLabel(origin.channel, t);
 }
 
 function automationChannelLabel(
   channel: string,
-  tx: (key: string, fallback: string, values?: Record<string, unknown>) => string,
+  t: TFunction,
 ): string {
   const key = channel.trim().toLowerCase();
-  const displayName = automationChannelDisplayName(key);
+  const presentation = channelUiPresentation(key);
+  if (presentation) {
+    return channelTranslator(t, channelUiOwner(key))("displayName", presentation.displayName);
+  }
+  const displayName = HOST_AUTOMATION_CHANNEL_LABELS[key];
   return displayName
-    ? tx(`settings.automations.channels.${key}`, displayName)
+    ? t(`settings.automations.channels.${key}`, { defaultValue: displayName })
     : channel;
 }
 
