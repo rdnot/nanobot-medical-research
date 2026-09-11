@@ -2603,9 +2603,10 @@ function Shell({
           {showMainSidebar ? (
             <aside
               data-testid="host-sidebar-flow"
+              data-resizing={sidebarDragging || undefined}
               id="main-sidebar"
               className={cn(
-                "relative z-20 hidden shrink-0 overflow-hidden lg:block",
+                "group/sidebar relative z-20 hidden shrink-0 overflow-hidden lg:block",
                 sidebarDragging ? "select-none" : "transition-[width] duration-300 ease-out motion-reduce:transition-none",
               )}
               style={{
@@ -2831,6 +2832,7 @@ function Shell({
                     onModelNameChange={onModelNameChange}
                     onSettingsChange={setSettingsSnapshot}
                     skills={skills}
+                    titleOverrides={sidebarState.title_overrides}
                     onSectionChange={onSettingsSectionChange}
                     onLogout={onLogout}
                     onRestart={onRestart}
