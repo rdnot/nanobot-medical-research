@@ -129,10 +129,10 @@ export default defineConfig(({ mode }) => {
       dedupe: ["react", "react-dom", "lucide-react", "react-i18next", "qrcode"],
     },
     optimizeDeps: {
-      // Radix Dialog can rewrite its optimized chunk while a dev tab is open.
-      // Syntax highlighting must remain pre-bundled because Refractor's core
-      // still uses CommonJS internally.
-      exclude: ["@radix-ui/react-dialog"],
+      // Pre-bundle Dialog up front, including lazy settings/sheets. Excluding
+      // it splits its layer/focus state from optimized Popover and DropdownMenu,
+      // so nested overlays can dismiss the wrong layer in development.
+      include: ["@radix-ui/react-dialog"],
     },
     build: {
       outDir: path.resolve(__dirname, "../nanobot/web/dist"),
@@ -169,6 +169,10 @@ export default defineConfig(({ mode }) => {
       environment: "happy-dom",
       globals: true,
       setupFiles: ["./src/tests/setup.ts"],
+      include: [
+        "src/**/*.{test,spec}.{ts,tsx}",
+        "../nanobot/channels/*/tests/webui/**/*.{test,spec}.{ts,tsx}",
+      ],
       coverage: {
         provider: "v8",
         include: ["src/**/*.{ts,tsx}"],

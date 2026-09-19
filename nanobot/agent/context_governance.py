@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -200,6 +200,7 @@ class ModelRequestState:
     tool_definitions: list[dict[str, Any]] | None = None
     compaction: ContextCompactionState | None = None
     provider_compaction_applied: bool = False
+    compacted_tool_results: set[str] = field(default_factory=set)
     events: EventSink = NO_EVENTS
 
 
@@ -444,6 +445,19 @@ class ContextGovernor:
     ) -> None:
         """Materialize the exact input replaced by provider-native compaction."""
         compaction = state.compaction
+        if response.provider_compaction_applied:
+            # Native compaction can omit results while the local transcript keeps
+            # their full text. They no longer prove what the model can read.
+            replaced_messages = (
+                compaction.accepted_messages
+                if response.provider_compaction_scope == "prior_context" and compaction is not None
+                else state.messages or []
+            )
+            state.compacted_tool_results.update(
+                message["tool_call_id"] for message in replaced_messages
+                if message.get("role") == "tool"
+                and isinstance(message.get("tool_call_id"), str)
+            )
         if (
             not response.provider_compaction_applied
             or response.provider_compaction_state is None
@@ -538,11 +552,18 @@ class ContextGovernor:
                 )
 
             compaction.active_summary = summary
+            # Fresh user input defines the next task. Only ongoing work without
+            # new user input needs a temporary instruction to resume after H is replaced.
+            continuation = (
+                []
+                if any(message.get("role") == "user" for message in delta_messages)
+                else [{"role": "user", "content": SUMMARY_CONTINUATION_TEXT}]
+            )
             prepared = self.prepare_messages_for_model(
                 state.config,
                 [
                     *self._summary_transcript(compaction, summary),
-                    {"role": "user", "content": SUMMARY_CONTINUATION_TEXT},
+                    *continuation,
                     *delta_messages,
                 ],
             )
