@@ -74,6 +74,7 @@ function channelSetupContract(
           field("allowFrom", "list"),
           field("verifyDkim", "bool", { defaultValue: "true" }),
           field("verifySpf", "bool", { defaultValue: "true" }),
+          field("trustedAuthservIds", "list"),
         ],
         requirements: [
           { alternatives: [["channels.email.consentGranted"]] },
@@ -365,6 +366,29 @@ describe("Settings channels", () => {
 
     expect(await screen.findByRole("button", { name: "View First channel settings" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "View Second channel settings" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("shows all channels by default when only the always-enabled WebUI is enabled", async () => {
+    const websocket = {
+      ...catalogFeature("websocket", true),
+      display_name: "nanobot WebUI",
+      capabilities: ["always_enabled"],
+    };
+    const disabled = catalogFeature("Disabled channel", false);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return jsonResponse(settingsPayload());
+      if (url === "/api/settings/nanobot-features") {
+        return jsonResponse({ features: [websocket, disabled], enabled_count: 1 });
+      }
+      return jsonResponse({});
+    }));
+
+    renderSettingsView({ initialSection: "channels" });
+
+    expect(await screen.findByText("nanobot WebUI")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View Disabled channel settings" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
   });
 
@@ -1599,6 +1623,9 @@ describe("Settings channels", () => {
     expect(screen.queryByRole("button", { name: "Gmail" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Advanced" }));
     expect(screen.getByText("Quick fill")).toBeVisible();
+    const trustedServices = screen.getByLabelText("Trusted authentication services");
+    expect(trustedServices).toBeVisible();
+    fireEvent.change(trustedServices, { target: { value: "mx.receiver.example" } });
     fireEvent.change(screen.getByLabelText("IMAP host"), { target: { value: "imap.custom.test" } });
     fireEvent.click(screen.getByRole("button", { name: "Gmail" }));
     expect(screen.getByLabelText("IMAP host")).toHaveValue("imap.custom.test");
@@ -1643,6 +1670,7 @@ describe("Settings channels", () => {
           name: "email",
           values: expect.objectContaining({
             "channels.email.consentGranted": "true",
+            "channels.email.trustedAuthservIds": "mx.receiver.example",
           }),
         }),
         20_000,

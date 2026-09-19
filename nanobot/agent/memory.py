@@ -23,12 +23,14 @@ from loguru import logger
 
 from nanobot.events import NO_EVENTS, ContextCompactionEvent, EventSink
 from nanobot.llm_usage.context import llm_usage_source
-from nanobot.providers.base import ProviderCallContext, ProviderConversationState
+from nanobot.providers.base import LLMResponse, ProviderConversationState
+from nanobot.providers.conversation_state import ProviderConversationStateController
 from nanobot.runtime_context import public_history_messages
 from nanobot.session.manager import Session, SessionManager
 from nanobot.session.summary import is_summary_checkpoint, session_summary_from_metadata
 from nanobot.utils.gitstore import GitStore
 from nanobot.utils.helpers import (
+    build_assistant_message,
     content_with_media_breadcrumbs,
     ensure_dir,
     estimate_prompt_tokens_chain,
@@ -298,19 +300,21 @@ class MemoryStore:
         content more tightly; this default only exists to catch unintentional
         large writes (e.g. an LLM echoing its input back as a "summary").
         """
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-        raw = entry.rstrip()
         content = self._normalize_history_entry(entry, max_chars=max_chars)
+        if entry.rstrip() and not content:
+            logger.debug(
+                "history entry stripped to empty (likely template leak); "
+                "persisting empty content to avoid re-polluting Dream input",
+            )
+        return self._append_history_record(content, session_key=session_key)
+
+    def _append_history_record(self, content: str, *, session_key: str | None = None) -> int:
+        """Persist already sanitized, bounded content without rewriting chunk edges."""
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M")
         # Cursor allocation and the append must be atomic: concurrent writers
         # could otherwise read the same current cursor and emit duplicates.
         with self._append_lock:
             cursor = self._next_cursor()
-            if raw and not content:
-                logger.debug(
-                    "history entry {} stripped to empty (likely template leak); "
-                    "persisting empty content to avoid re-polluting Dream input",
-                    cursor,
-                )
             record = {"cursor": cursor, "timestamp": ts, "content": content}
             if session_key:
                 record["session_key"] = session_key
@@ -667,11 +671,31 @@ class MemoryStore:
         max_chars: int | None = None,
         session_key: str | None = None,
     ) -> str:
-        """Persist and return a bounded raw checkpoint when summarization degrades."""
-        checkpoint = self._build_raw_checkpoint(messages, max_chars=max_chars)
-        self.append_history(checkpoint, session_key=session_key)
+        """Persist raw messages in bounded chunks and return a checkpoint."""
+        limit = max_chars if max_chars is not None else _RAW_ARCHIVE_MAX_CHARS
+        chunk_size = min(max(1, limit), _HISTORY_ENTRY_HARD_CAP - 1_000)
+        # Clean the complete text first: a thinking block may span chunk boundaries.
+        formatted = strip_think(self._format_messages(public_history_messages(messages)))
+        chunks = [
+            formatted[start:start + chunk_size]
+            for start in range(0, len(formatted), chunk_size)
+        ] or [""]
+        for part, chunk in enumerate(chunks, start=1):
+            suffix = f" (part {part}/{len(chunks)})" if len(chunks) > 1 else ""
+            # The whole text is sanitized and each record fits the hard cap.
+            # Normalizing again would trim meaningful whitespace at chunk edges.
+            self._append_history_record(
+                f"[RAW] {len(messages)} messages{suffix}\n{chunk}",
+                session_key=session_key,
+            )
         logger.warning(
-            "Memory consolidation degraded: raw-archived {} messages", len(messages)
+            "Memory consolidation degraded: raw-archived {} messages in {} entries",
+            len(messages),
+            len(chunks),
+        )
+        checkpoint = self._normalize_history_entry(
+            f"[RAW] {len(messages)} messages\n{formatted}",
+            max_chars=limit,
         )
         return checkpoint
 
@@ -747,6 +771,10 @@ class MemoryStore:
 # emergency hard cap against pathological provider output.
 _RAW_ARCHIVE_MAX_CHARS = 16_000   # fallback dump (LLM failed)
 _HISTORY_ENTRY_HARD_CAP = 64_000  # emergency cap in append_history
+_ARCHIVE_TOOL_RESULT = (
+    "Session archival does not execute tools. Use only the supplied conversation and "
+    "return the requested compact checkpoint now; do not call another tool."
+)
 
 
 class MemoryArchiver:
@@ -853,27 +881,30 @@ class MemoryArchiver:
         )
         prompt_message = {"role": "user", "content": prompt}
         provider_context = None
+        state_controller: ProviderConversationStateController | None = None
+        state_messages: list[dict[str, Any]] = []
         call_tools = request_tools
         if provider_state is not None:
-            if not runtime.provider.can_resume_conversation_state(
-                provider_state,
-                runtime.model,
-            ):
-                return raw_fallback()
             instruction_messages: list[dict[str, Any]] = []
             for message in history:
                 if message.get("role") not in {"system", "developer"}:
                     break
                 instruction_messages.append(dict(message))
             request_messages = [*instruction_messages, prompt_message]
-            provider_context = ProviderCallContext(
-                conversation_state=provider_state.with_pending_messages([
-                    *provider_state.pending_messages,
-                    prompt_message,
-                ]),
-                context_window_tokens=runtime.context_window_tokens,
+            state_controller = ProviderConversationStateController(
+                provider=runtime.provider,
+                model=runtime.model,
+                messages=state_messages,
+                state=provider_state,
                 session_id=session_key,
             )
+            state_messages.append(dict(prompt_message))
+            provider_context = state_controller.prepare_request(
+                state_messages,
+                context_window_tokens=runtime.context_window_tokens,
+            )
+            if provider_context is None or provider_context.conversation_state is None:
+                return raw_fallback()
             call_tools = []
         else:
             request_messages = [
@@ -897,20 +928,72 @@ class MemoryArchiver:
                 )
                 return raw_fallback()
 
-        try:
-            with llm_usage_source("dream"):
-                response = await runtime.provider.chat_stream_with_retry(
-                    model=runtime.model,
-                    messages=request_messages,
-                    tools=call_tools,
-                    temperature=runtime.generation.temperature,
-                    max_tokens=runtime.generation.max_tokens,
-                    reasoning_effort=runtime.generation.reasoning_effort,
-                    provider_context=provider_context,
+        response: LLMResponse | None = None
+        for attempt in range(2):
+            try:
+                with llm_usage_source("dream"):
+                    response = await runtime.provider.chat_stream_with_retry(
+                        model=runtime.model,
+                        messages=request_messages,
+                        tools=call_tools,
+                        temperature=runtime.generation.temperature,
+                        max_tokens=runtime.generation.max_tokens,
+                        reasoning_effort=runtime.generation.reasoning_effort,
+                        provider_context=provider_context,
+                    )
+            except Exception:
+                phase = "provider call" if attempt == 0 else "tool-call recovery"
+                logger.warning(
+                    "Memory archive {} failed, raw-dumping to history",
+                    phase,
                 )
-        except Exception:
-            logger.warning("Memory archive provider call failed, raw-dumping to history")
-            return raw_fallback()
+                return raw_fallback()
+            if response.should_execute_tools is not True or attempt == 1:
+                break
+
+            logger.info(
+                "Memory archive provider returned {} tool call(s); requesting checkpoint",
+                len(response.tool_calls),
+            )
+            assistant_message = build_assistant_message(
+                response.content,
+                tool_calls=[call.to_openai_tool_call() for call in response.tool_calls],
+                reasoning_content=response.reasoning_content,
+                thinking_blocks=response.thinking_blocks,
+            )
+            tool_messages = [
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "name": call.name,
+                    "content": _ARCHIVE_TOOL_RESULT,
+                }
+                for call in response.tool_calls
+            ]
+            request_messages = [
+                *request_messages,
+                assistant_message,
+                *tool_messages,
+            ]
+            if state_controller is not None:
+                state_controller.observe_response(
+                    response,
+                    state_messages,
+                )
+                state_messages.extend([
+                    state_controller.project_response_message(
+                        dict(assistant_message),
+                        response,
+                    ),
+                    *[dict(message) for message in tool_messages],
+                ])
+                provider_context = state_controller.prepare_request(
+                    state_messages,
+                    context_window_tokens=runtime.context_window_tokens,
+                )
+                if provider_context is None or provider_context.conversation_state is None:
+                    return raw_fallback()
+        assert response is not None
         if response.finish_reason in {"error", "length"}:
             logger.warning(
                 "Memory archive provider did not complete ({}), raw-dumping to history",

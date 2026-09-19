@@ -604,6 +604,17 @@
     }
   }
 
+  .thread-workspace {
+    container: thread-workspace / inline-size;
+  }
+  /* Keep room for the 49.5rem message column and controls in the side margin. */
+  @container thread-workspace (max-width: 72rem) {
+    .thread-workspace > * {
+      --thread-header-position: relative;
+      --thread-prompt-inset: 1rem;
+    }
+  }
+
   .workbench-pane {
     transform-origin: top left;
   }
@@ -701,6 +712,11 @@
     overflow-x: auto;
   }
 
+  /* Prism's Markdown table tokens must not pick up Tailwind's table layout. */
+  .not-prose pre .token.table {
+    display: inline;
+  }
+
   /* Wide markdown tables scroll horizontally within the conversation column.
      Tables are wrapped in an overflow-x:auto <div> by the markdown renderer's
      custom `table` component (see MarkdownTextRenderer); min-w-max on the
@@ -758,9 +774,8 @@
 }
 
 /*
- * Composer controls compress against their actual container, not the viewport.
- * Permission state has priority over the model label; both retain their full
- * accessible names and tooltip text when their visible labels are shortened.
+ * Composer controls adapt to their actual container, not just the viewport.
+ * Narrow layouts move access and usage into a separate metadata row.
  */
 .thread-composer-surface {
   container-name: thread-composer;
@@ -919,89 +934,85 @@
   }
 }
 
-@container thread-composer (max-width: 21rem) {
-  .thread-composer-footer {
-    column-gap: 0.25rem;
-    padding-inline: 0.5rem;
-  }
-
-  .thread-composer-footer-primary,
-  .thread-composer-footer-actions {
-    gap: 0.25rem;
-  }
-
-  .thread-composer-access {
-    max-width: 6.5rem;
-    padding-inline: 0.5rem;
-    font-size: 0.71875rem;
-  }
-
-  .thread-composer-access-icon {
-    margin-right: 0.25rem;
-  }
-
-  .thread-composer-access-chevron {
-    margin-left: 0.25rem;
-  }
-
-  .thread-composer-access-label-full {
-    display: none;
-  }
-
-  .thread-composer-access-label-short {
-    display: inline;
-  }
+/* Narrow composers separate message actions from permissions and usage instead
+ * of shrinking touch targets or hiding the active model and access state. */
+[data-compact-controls] .thread-composer-footer {
+  column-gap: 0.25rem;
+  padding: 0 0.5rem 0.5rem;
 }
 
-@container thread-composer (max-width: 19rem) {
-  .thread-composer-model-badge {
-    width: 2rem;
-    flex: none;
-  }
-
-  .thread-composer-model-badge .composer-model-pill {
-    width: 100%;
-    justify-content: center;
-    gap: 0;
-    padding-inline: 0;
-  }
-
-  .thread-composer-model-label {
-    display: none;
-  }
+[data-compact-controls] .thread-composer-footer-primary,
+[data-compact-controls] .thread-composer-footer-actions {
+  gap: 0.25rem;
 }
 
-@container thread-composer (max-width: 16rem) {
-  .thread-composer-access {
-    width: 2rem;
-    flex: none;
-    justify-content: center;
-    padding-inline: 0;
-  }
-
-  .thread-composer-access-icon {
-    margin-right: 0;
-  }
-
-  .thread-composer-access-label-short,
-  .thread-composer-access-chevron {
-    display: none;
-  }
+[data-compact-controls] .thread-composer-footer-actions {
+  flex: none;
+  max-width: none;
 }
 
-@container thread-composer (max-width: 15rem) {
-  .thread-composer-action.touch-target,
-  .thread-composer-access.touch-target {
-    width: 2rem;
-    min-width: 2rem;
-    height: 2rem;
-    min-height: 2rem;
-  }
+[data-compact-controls] .thread-composer-action.touch-target {
+  flex: none;
+  width: 2.75rem;
+  height: 2.75rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+}
+
+[data-compact-controls] .thread-composer-model-badge {
+  max-width: 100%;
+  min-height: 2.75rem;
+  align-items: center;
+}
+
+/* Keep a 44px hit area around the quieter 36px attachment/send circles.
+ * The transparent pseudo-element belongs to the button, including its disabled
+ * state; margins reserve its space so adjacent controls never overlap it. */
+[data-compact-controls] .thread-composer-round-action.touch-target {
+  position: relative;
+  width: 2.25rem;
+  height: 2.25rem;
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+  margin: 0.25rem;
+}
+
+[data-compact-controls] .thread-composer-round-action::before {
+  content: "";
+  position: absolute;
+  inset: -0.3125rem;
+  border-radius: inherit;
+}
+
+[data-compact-controls] .composer-model-pill {
+  height: 2.25rem;
+}
+
+.thread-composer-meta .touch-target {
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+}
+
+.thread-composer-meta .thread-composer-access {
+  max-width: 100%;
+  padding-inline: 0.5rem;
 }
 @media (forced-colors: active) {
   [data-workbench-move-handle]:focus-visible {
     outline: 2px solid CanvasText;
     outline-offset: 2px;
+  }
+}
+
+@layer components {
+  @media (prefers-reduced-motion: no-preference) {
+    .segmented-control-indicator[data-animate="true"] {
+      transition-property: transform, width;
+      transition-duration: 220ms, 160ms;
+      transition-timing-function:
+        cubic-bezier(0.2, 0.95, 0.25, 1.08),
+        cubic-bezier(0.2, 0, 0, 1);
+    }
   }
 }
 
