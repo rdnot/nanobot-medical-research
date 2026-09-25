@@ -557,13 +557,18 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict[st
     """
     is_reddit = "reddit.com" in url.lower()
     is_pubmed = "pubmed.ncbi.nlm.nih.gov" in url.lower() or "pmc.ncbi.nlm.nih.gov" in url.lower()
+    # FORK (Sep 2026): NCBI Bookshelf (/books/NBK*/) now serves the same Google
+    # reCAPTCHA Enterprise interstitial as PubMed/PMC. Route it through the same
+    # browser-tier bypass: skip curl_cffi (challenge page), wait for real content
+    # markers, validate, retry.
+    is_bookshelf = "ncbi.nlm.nih.gov/books/" in url.lower()
     curl_cffi_status: int | None = None
     curl_cffi_content: bytes | None = None
 
     # --- Tier 1: curl_cffi (Chrome TLS fingerprint, fast, no browser) ---
     # Skipped for Reddit: always returns a JS shell or triggers "prove you are human"
     # Skipped for PubMed/PMC: reCAPTCHA Enterprise challenge page (HTTP 200)
-    if not is_reddit and not is_pubmed:
+    if not is_reddit and not is_pubmed and not is_bookshelf:
         try:
             from curl_cffi.requests import AsyncSession  # noqa: I001  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
             logger.debug("curl_cffi fetch: {}", "proxy enabled" if proxy else "direct connection")
@@ -621,6 +626,53 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict[st
             # detects the reCAPTCHA challenge page, waits for the cookie, and lets
             # the page reload before Scrapling captures the response.
             _pubmed_recaptcha_action = None
+            if is_bookshelf:
+                # FORK (Sep 2026): Bookshelf reCAPTCHA — wait until the interstitial
+                # title clears and real body text renders. The invisible reCAPTCHA
+                # auto-solves (~15s observed) and reloads into the real page; there
+                # is no stable cookie signal, so poll DOM state directly.
+                async def _bookshelf_recaptcha_action(page):
+                    """Wait for Bookshelf reCAPTCHA interstitial to yield real content."""
+                    try:
+                        async def _page_is_interstitial() -> bool:
+                            page_html = await page.content()
+                            return _is_recaptcha_challenge(page_html.encode("utf-8", errors="replace"))
+
+                        async def _page_has_body_text(min_chars: int = 500) -> bool:
+                            # The interstitial has ~200 chars of text; real Bookshelf
+                            # pages have thousands. Require real rendered body text so
+                            # we don't capture a skeleton mid-load.
+                            try:
+                                n = await page.evaluate("() => document.body ? document.body.innerText.length : 0")
+                                return bool(n and int(n) >= min_chars)
+                            except Exception:
+                                return False
+
+                        if not await _page_is_interstitial():
+                            logger.debug("Bookshelf: content already present after navigation")
+                            return
+
+                        logger.info("Bookshelf reCAPTCHA challenge detected — waiting for real content")
+                        for _ in range(250):  # up to ~25s
+                            if not await _page_is_interstitial() and await _page_has_body_text():
+                                logger.info("Bookshelf: reCAPTCHA cleared, real content loaded")
+                                return
+                            await page.wait_for_timeout(100)
+                        # Cookie/content not seen — try manual reload (mirrors PubMed path),
+                        # the interstitial redirect may need a nudge.
+                        logger.debug("Bookshelf: interstitial persists, attempting page.reload()")
+                        try:
+                            await page.reload(wait_until="domcontentloaded", timeout=15000)
+                        except Exception:
+                            pass
+                        for _ in range(100):  # up to ~10s more
+                            if not await _page_is_interstitial() and await _page_has_body_text():
+                                logger.info("Bookshelf: reCAPTCHA cleared after reload")
+                                return
+                            await page.wait_for_timeout(100)
+                        logger.debug("Bookshelf: interstitial still present after wait + reload")
+                    except Exception as rc_err:
+                        logger.debug("Bookshelf reCAPTCHA page_action failed: {}", rc_err)
             if is_pubmed:
 
                 async def _pubmed_recaptcha_action(page):
@@ -689,8 +741,8 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict[st
             # takes ~12s, so without a cap it loops forever on unsolvable challenges.
             _scrapling_hard_timeout = 45 if solve_cf else 60
 
-            # PubMed/PMC: retry up to 2 attempts if reCAPTCHA challenge persists
-            _pubmed_max_attempts = 2 if is_pubmed else 1
+            # PubMed/PMC + Bookshelf: retry up to 2 attempts if reCAPTCHA challenge persists
+            _pubmed_max_attempts = 2 if (is_pubmed or is_bookshelf) else 1
 
             for _pubmed_attempt in range(_pubmed_max_attempts):
                 logger.debug(
@@ -715,6 +767,8 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict[st
                     # The page_action plus post-fetch content validation below are the gates.
                     if _pubmed_recaptcha_action is not None:
                         fetch_kwargs["page_action"] = _pubmed_recaptcha_action
+                    elif _bookshelf_recaptcha_action is not None:
+                        fetch_kwargs["page_action"] = _bookshelf_recaptcha_action
                     try:
                         page = await asyncio.wait_for(
                             session.fetch(**fetch_kwargs),
@@ -743,6 +797,22 @@ async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict[st
                             # Reject PubMed/PMC title-only shells or unresolved challenge pages.
                             # Scrapling can return HTTP 200 before the real article body exists;
                             # accepting that poisons WebFetchTool's session cache with 40-word output.
+                            _bookshelf_shell = (
+                                is_bookshelf
+                                and _is_recaptcha_challenge(html_bytes)
+                            )
+                            if _bookshelf_shell and _pubmed_attempt < _pubmed_max_attempts - 1:
+                                logger.info(
+                                    "Bookshelf: Scrapling returned reCAPTCHA shell after attempt {}/{}, retrying…",
+                                    _pubmed_attempt + 1, _pubmed_max_attempts,
+                                )
+                                continue
+                            if _bookshelf_shell:
+                                logger.warning(
+                                    "Bookshelf: Scrapling returned reCAPTCHA shell after {} attempts, skipping to next tier",
+                                    _pubmed_max_attempts,
+                                )
+                                break
                             if is_pubmed and not _has_pubmed_article_content(html_bytes):
                                 if _is_recaptcha_challenge(html_bytes):
                                     reason = "reCAPTCHA still present"
