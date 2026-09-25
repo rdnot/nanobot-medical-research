@@ -88,7 +88,15 @@ def test_clean_url_passes_validation():
 )
 async def test_execute_accepts_cleanable_http_urls(url):
     tool = WebFetchTool()
-    with _patched_web_fetch():
+
+    # FORK: fork's tiered fetcher (curl_cffi -> httpx) bypasses the httpx mock,
+    # so also patch _fetch_raw to keep these tests hermetic (no real network).
+    async def _fake_fetch_raw(fetch_url, proxy=None):
+        return b"<html><body>Example</body></html>", {"content-type": "text/html"}, 200, "curl_cffi"
+
+    with _patched_web_fetch(), patch(
+        "nanobot.agent.tools.web._fetch_raw", _fake_fetch_raw
+    ):
         result = await tool.execute(url=url)
     data = json.loads(result)
     assert data["status"] == 200
