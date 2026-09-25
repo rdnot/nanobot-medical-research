@@ -42,10 +42,12 @@ class AgentTurnHookSpec:
     ephemeral: bool = False
     run_extra_hooks_for_ephemeral: bool = False
     attributes: dict[str, Any] | None = None
+    log_content: bool = True
 
 
 def build_agent_turn_hook(spec: AgentTurnHookSpec) -> AgentHook:
     """Build the hook chain used by ``AgentRunner`` for one turn."""
+    log_content = spec.log_content and not spec.ephemeral
     # FORK: use pre-built progress hook (subclass) when provided.
     if spec.progress_hook is not None:
         progress_hook = spec.progress_hook
@@ -55,6 +57,7 @@ def build_agent_turn_hook(spec: AgentTurnHookSpec) -> AgentHook:
             streaming=spec.streaming,
             session_key=spec.session_key,
             tool_hint_max_length=spec.tool_hint_max_length,
+            log_content=log_content,
         )
     if spec.ephemeral and not spec.run_extra_hooks_for_ephemeral:
         return progress_hook
@@ -76,7 +79,10 @@ def build_agent_turn_hook(spec: AgentTurnHookSpec) -> AgentHook:
         try:
             created_hook = factory(turn_context)
         except Exception:
-            logger.exception("Agent turn hook factory failed: {}", factory)
+            logger.opt(exception=log_content).error(
+                "Agent turn hook factory failed: {}",
+                factory if log_content else type(factory).__name__,
+            )
             continue
         if created_hook is not None:
             hook_chain.append(created_hook)
@@ -87,7 +93,10 @@ def build_agent_turn_hook(spec: AgentTurnHookSpec) -> AgentHook:
         try:
             created_hook = factory(turn_context)
         except Exception:
-            logger.exception("Agent turn hook factory failed: {}", factory)
+            logger.opt(exception=log_content).error(
+                "Agent turn hook factory failed: {}",
+                factory if log_content else type(factory).__name__,
+            )
             continue
         if created_hook is not None:
             hook_chain.append(created_hook)
