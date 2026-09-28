@@ -2107,3 +2107,43 @@ def test_long_server_name_tools_are_matched_by_server_name() -> None:
     assert removed == 1
     assert wrapper.name not in registry.tool_names
     assert other_wrapper.name in registry.tool_names
+
+
+@pytest.mark.parametrize("params, error", [
+    ({"team": "nanobot", "query": "bug"}, None),
+    ({"team": "nanobot", "customView": "saved-view"}, None),
+    ({"query": "bug"}, "missing required team"),
+    ({"team": "nanobot", "customView": ""}, "customView must be at least 1 chars"),
+])
+async def test_optional_mcp_filters_reach_server_unchanged(params, error):
+    async def call_tool(name, arguments):
+        assert name == "list_issues"
+        assert not ({"query", "customView"} <= arguments.keys())
+        return SimpleNamespace(content=[_FakeTextContent("ok")])
+
+    session = SimpleNamespace(call_tool=AsyncMock(side_effect=call_tool))
+    wrapper = MCPToolWrapper(session, "linear", SimpleNamespace(
+        name="list_issues",
+        description="Search issues or use a saved view",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "team": {"type": "string"},
+                "query": {"type": "string"},
+                "customView": {"type": "string", "minLength": 1},
+            },
+            "required": ["team"],
+        },
+    ))
+    registry = ToolRegistry()
+    registry.register(wrapper)
+
+    result = await registry.execute(wrapper.name, params)
+
+    if error:
+        assert is_tool_error_result(result)
+        assert error in result
+        session.call_tool.assert_not_awaited()
+    else:
+        assert result == "ok"
+        session.call_tool.assert_awaited_once_with("list_issues", arguments=params)

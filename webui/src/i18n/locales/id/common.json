@@ -31,11 +31,13 @@
   },
   "starPrompt": {
     "footerAction": "Beri bintang untuk nanobot",
-    "title": "Terima kasih telah menggunakan nanobot",
-    "description": "Beri bintang di GitHub untuk membantu kami terus menyempurnakan nanobot.",
+    "title": "Senang bisa membantu.",
+    "intro": "Kalau nanobot membuat harimu sedikit lebih mudah,",
+    "invitation": "yuk, beri kami bintang di GitHub.",
+    "thanks": "Dukungan kecilmu sangat berarti bagi kami.",
     "action": "Beri bintang",
-    "later": "Tidak sekarang",
-    "never": "Jangan tanyakan lagi",
+    "later": "Lain kali",
+    "never": "Jangan ingatkan lagi",
     "saveError": "Mungkin ada masalah jaringan. Pengingat ini mungkin muncul lagi."
   },
   "app": {
@@ -1615,6 +1617,11 @@
     },
     "scrollToBottom": "Gulir ke bawah",
     "loadEarlier": "Muat pesan sebelumnya",
+    "history": {
+      "loading": "Memuat pesan sebelumnya…",
+      "error": "Gagal memuat.",
+      "retry": "Coba lagi"
+    },
     "forkedFromHistory": "Cabang dari riwayat",
     "promptNavigator": {
       "open": "Buka navigasi instruksi",
@@ -1688,8 +1695,8 @@
       "searchedFiles": "Pencarian file selesai",
       "searchFilesFailed": "Tidak dapat mencari di file",
       "findingFiles": "Mencari file",
-      "foundFiles": "File ditemukan",
-      "findFilesFailed": "Tidak dapat menemukan file",
+      "foundFiles": "Pencarian file selesai",
+      "findFilesFailed": "Pencarian file gagal",
       "listingFiles": "Membuat daftar file",
       "listedFiles": "File terdaftar",
       "listFilesFailed": "Tidak dapat membuat daftar file",

@@ -1354,7 +1354,7 @@ class WebFetchTool(Tool):
         max_chars = cast(int, kwargs.pop("maxChars", max_chars) or self.max_chars)
         is_valid, error_msg = _validate_url_safe(url)
         if not is_valid:
-            return json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False)
+            return ToolResult.error(json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False))
 
         # FORK: Skip upstream's httpx-based image pre-fetch detection.
         # The fork's tiered fetcher (`_fetch_raw`: curl_cffi → httpx) below already
@@ -1589,9 +1589,9 @@ class WebFetchTool(Tool):
                     headers={"User-Agent": self.user_agent},
                 )
                 if redirect_error:
-                    return json.dumps({"error": redirect_error, "url": url}, ensure_ascii=False)
+                    return ToolResult.error(json.dumps({"error": redirect_error, "url": url}, ensure_ascii=False))
                 if r is None:
-                    return json.dumps({"error": "Fetch failed", "url": url}, ensure_ascii=False)
+                    return ToolResult.error(json.dumps({"error": "Fetch failed", "url": url}, ensure_ascii=False))
                 r.raise_for_status()
 
             ctype = r.headers.get("content-type", "")
@@ -1630,14 +1630,14 @@ class WebFetchTool(Tool):
                 _redact_url_for_log(url),
                 type(e).__name__,
             )
-            return json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False)
+            return ToolResult.error(json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False))
         except Exception as e:
             logger.warning(
                 "WebFetch error for {} ({})",
                 _redact_url_for_log(url),
                 type(e).__name__,
             )
-            return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
+            return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
 
     def _extract_readable_html(self, html_content: str, extract_mode: str) -> str:
         from readability import Document as _RDoc  # noqa: I001  # type: ignore[import-untyped]  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]

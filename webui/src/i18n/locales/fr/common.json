@@ -31,11 +31,13 @@
   },
   "starPrompt": {
     "footerAction": "Ajouter une étoile à nanobot",
-    "title": "Merci d’utiliser nanobot",
-    "description": "Ajoutez une étoile sur GitHub pour nous aider à continuer à améliorer nanobot.",
-    "action": "Mettre une étoile",
-    "later": "Pas maintenant",
-    "never": "Ne plus demander",
+    "title": "Ravis de vous aider.",
+    "intro": "Si nanobot vous simplifie un peu le quotidien,",
+    "invitation": "offrez-nous une étoile sur GitHub.",
+    "thanks": "Ce petit encouragement compte beaucoup pour nous.",
+    "action": "Offrir une étoile",
+    "later": "Plus tard",
+    "never": "Ne plus me le proposer",
     "saveError": "Il y a peut-être un problème de connexion. Ce rappel pourrait réapparaître."
   },
   "app": {
@@ -1615,6 +1617,11 @@
     },
     "scrollToBottom": "Faire défiler vers le bas",
     "loadEarlier": "Charger les messages précédents",
+    "history": {
+      "loading": "Chargement des messages précédents…",
+      "error": "Échec du chargement.",
+      "retry": "Réessayer"
+    },
     "forkedFromHistory": "Bifurqué depuis l'historique",
     "promptNavigator": {
       "open": "Ouvrir le navigateur d’instructions",
@@ -1688,8 +1695,8 @@
       "searchedFiles": "Recherche terminée dans les fichiers",
       "searchFilesFailed": "Impossible de rechercher dans les fichiers",
       "findingFiles": "Recherche de fichiers",
-      "foundFiles": "Fichiers trouvés",
-      "findFilesFailed": "Impossible de trouver les fichiers",
+      "foundFiles": "Recherche de fichiers terminée",
+      "findFilesFailed": "Impossible de rechercher des fichiers",
       "listingFiles": "Liste des fichiers",
       "listedFiles": "Fichiers listés",
       "listFilesFailed": "Impossible de lister les fichiers",

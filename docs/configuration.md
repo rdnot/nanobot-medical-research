@@ -42,6 +42,7 @@ the focused guides first and come back here for exact fields and defaults.
 | Add fallback chains | [Model Fallbacks](#model-fallbacks) |
 | Configure voice transcription | [Transcription Settings](#transcription-settings) |
 | Tune channel defaults | [Channel Settings](#channel-settings) |
+| Configure local file search | [File Search](#file-search) |
 | Configure web search and fetch | [Web Tools](#web-tools) |
 | Enable image generation | [Image Generation](#image-generation) |
 | Add MCP servers | [MCP](#mcp-model-context-protocol) |
@@ -1687,6 +1688,10 @@ When a channel `send()` raises, nanobot retries at the channel-manager layer. By
 > Some channels may still apply small API-specific retries internally. For example, Telegram separately retries timeout and flood-control errors before surfacing a final failure to the manager.
 >
 > If a channel is completely unreachable, nanobot cannot notify the user through that same channel. Watch logs for `Failed to send to {channel} after N attempts` to spot persistent delivery failures.
+
+## File Search
+
+When ripgrep (`rg`) is installed, nanobot automatically uses it in place of the built-in `grep` and `find_files` tools.
 
 ## Web Tools
 

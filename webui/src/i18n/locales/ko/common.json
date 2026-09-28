@@ -31,11 +31,13 @@
   },
   "starPrompt": {
     "footerAction": "nanobot에 스타 남기기",
-    "title": "nanobot을 사용해 주셔서 감사합니다",
-    "description": "GitHub에서 스타를 눌러 nanobot을 계속 개선할 수 있도록 응원해 주세요.",
-    "action": "스타 남기기",
-    "later": "나중에",
-    "never": "다시 표시하지 않기",
+    "title": "도움이 되어 기뻐요.",
+    "intro": "nanobot 덕분에 일상이 조금 더 편해졌다면,",
+    "invitation": "GitHub에 Star 하나 남겨 주세요.",
+    "thanks": "작은 응원이 저희에겐 큰 힘이 돼요.",
+    "action": "Star로 응원하기",
+    "later": "다음에 할게요",
+    "never": "다시 보지 않기",
     "saveError": "네트워크에 문제가 있는 것 같습니다. 이 알림이 다시 표시될 수 있습니다."
   },
   "app": {
@@ -1615,6 +1617,11 @@
     },
     "scrollToBottom": "맨 아래로 스크롤",
     "loadEarlier": "이전 메시지 불러오기",
+    "history": {
+      "loading": "이전 메시지를 불러오는 중…",
+      "error": "불러오지 못했습니다.",
+      "retry": "다시 시도"
+    },
     "forkedFromHistory": "기록에서 분기됨",
     "promptNavigator": {
       "open": "프롬프트 탐색기 열기",
@@ -1688,8 +1695,8 @@
       "searchedFiles": "파일 검색 완료",
       "searchFilesFailed": "파일을 검색하지 못함",
       "findingFiles": "파일 찾는 중",
-      "foundFiles": "파일 찾음",
-      "findFilesFailed": "파일을 찾지 못함",
+      "foundFiles": "파일 검색 완료",
+      "findFilesFailed": "파일 검색 실패",
       "listingFiles": "파일 목록 작성 중",
       "listedFiles": "파일 목록 작성 완료",
       "listFilesFailed": "파일 목록을 작성하지 못함",
