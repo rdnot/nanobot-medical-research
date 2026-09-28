@@ -1519,10 +1519,10 @@ class WebFetchTool(Tool):
 
         except httpx.ProxyError as e:
             logger.error("WebFetch proxy error for {}: {}", _redact_url_for_log(url), e)
-            return json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False)
+            return ToolResult.error(json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False))
         except Exception as e:
             logger.error("WebFetch error for {}: {}", _redact_url_for_log(url), e)
-            return json.dumps({"error": str(e), "url": url}, ensure_ascii=False)
+            return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
 
     # --- UPSTREAM: Optional Jina Reader support ---
     async def _fetch_jina(self, url: str, max_chars: int) -> str | None:
