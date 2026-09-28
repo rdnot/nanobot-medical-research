@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.request import getproxies_environment
 
 import httpx
 import pytest
 
 from nanobot.agent.tools import web as web_module
+from nanobot.agent.tools.registry import is_tool_error_result
 from nanobot.agent.tools.web import WebFetchTool, _get_with_safe_redirects
 from nanobot.config.schema import WebFetchConfig
 from nanobot.security.network import PinnedDNSAsyncTransport
@@ -91,6 +92,7 @@ async def test_web_fetch_blocks_private_ip():
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_private):
         result = await tool.execute(url="http://169.254.169.254/computeMetadata/v1/")
     data = json.loads(result)
+    assert is_tool_error_result(result)
     assert "error" in data
     assert "private" in data["error"].lower() or "blocked" in data["error"].lower()
 
@@ -103,6 +105,7 @@ async def test_web_fetch_blocks_localhost():
     with patch("nanobot.security.network.socket.getaddrinfo", _resolve_localhost):
         result = await tool.execute(url="http://localhost/admin")
     data = json.loads(result)
+    assert is_tool_error_result(result)
     assert "error" in data
 
 
@@ -121,6 +124,7 @@ async def test_web_fetch_blocks_localhost_even_in_full_workspace_scope(tmp_path)
     finally:
         reset_workspace_scope(token)
     data = json.loads(result)
+    assert is_tool_error_result(result)
     assert "error" in data
 
 
@@ -138,6 +142,7 @@ async def test_web_fetch_result_contains_untrusted_flag():
         result = await tool.execute(url="https://example.com/page")
 
     data = json.loads(result)
+    assert not is_tool_error_result(result)
     assert data.get("untrusted") is True
     assert "[External content" in data.get("text", "")
 
@@ -279,7 +284,9 @@ async def test_web_fetch_does_not_fallback_after_pinned_dns_rebind_rejection(mon
         result = await tool.execute(url="http://evil.example/page")
 
     data = json.loads(result)
-    # FORK: error is present (DNS resolution failure or SSRF block)
+    # FORK: the error comes from _validate_url_safe or the tiered fetcher's
+    # exception path — both return ToolResult.error.
+    assert is_tool_error_result(result)
     assert "error" in data
 
 
@@ -375,10 +382,68 @@ async def test_web_fetch_blocks_private_redirect_before_returning_image():
     assert "data:image/png" in result[0]["image_url"]["url"]
 
 
-# NOTE: Upstream PR #3928 added tests for its httpx-based image pre-fetch block
-# (`test_web_fetch_blocks_private_redirect_before_readability_request` and an
-# httpx-MockTransport variant of `test_web_fetch_blocks_private_redirect_before_returning_image`).
-# Those tests assume `execute()` calls `_stream_with_safe_redirects` directly,
-# which the fork's tiered fetcher (`_fetch_raw`) bypasses. They are intentionally
-# omitted in this fork. The underlying SSRF helpers `_get_with_safe_redirects` and
-# `_stream_with_safe_redirects` are still present and used by `_fetch_readability`.
+
+# UPSTREAM tests for the httpx pre-fetch image/redirect block
+# (`test_web_fetch_blocks_private_redirect_before_readability_request`,
+# `test_web_fetch_does_not_request_private_redirect_target`) assume execute()
+# calls `_stream_with_safe_redirects` directly, which the fork's tiered fetcher
+# (`_fetch_raw`) bypasses. They are intentionally omitted in this fork.
+# The two architecture-agnostic upstream tests below ARE kept, adapted to mock
+# `_fetch_raw` instead of the httpx transport:
+#
+# FORK-adapted from upstream: terminal fetch failures must surface as structured
+# tool errors (ToolResult.error), not as successful payloads.
+@pytest.mark.parametrize(
+    ("failure", "error_text"),
+    [("http", "404"), ("timeout", "request timed out"), ("proxy", "Proxy error: proxy unavailable")],
+)
+async def test_web_fetch_marks_terminal_fetch_failures_as_errors(monkeypatch, failure, error_text):
+    url = "https://93.184.216.34/page"
+    tool = WebFetchTool(config=WebFetchConfig(use_jina_reader=False))
+
+    async def _failing_fetch_raw(url, proxy=None, **kwargs):
+        if failure == "timeout":
+            raise httpx.ReadTimeout("request timed out")
+        if failure == "proxy":
+            raise httpx.ProxyError("proxy unavailable")
+        raise Exception("404 Not Found")
+
+    monkeypatch.setattr(web_module, "_fetch_raw", _failing_fetch_raw)
+
+    result = await tool.execute(url=url)
+
+    assert is_tool_error_result(result)
+    data = json.loads(result)
+    assert data["url"] == url
+    assert error_text in data["error"]
+
+
+# FORK-adapted from upstream: JSON documents whose CONTENT contains an "error"
+# key are successful fetches, not tool failures. Fork defaults Jina off and
+# fetches via the tiered fetcher, so enable Jina explicitly and mock _fetch_raw.
+async def test_web_fetch_jina_fallback_keeps_json_error_content_successful(monkeypatch):
+    url = "https://93.184.216.34/page"
+    tool = WebFetchTool(config=WebFetchConfig(use_jina_reader=True))
+    jina = AsyncMock(return_value=None)
+    source = {"error": "This is fetched document content, not a tool failure."}
+
+    async def _fake_fetch_raw(url, proxy=None, **kwargs):
+        return (
+            json.dumps(source).encode("utf-8"),
+            {"content-type": "application/json"},
+            200,
+            "httpx",
+        )
+
+    monkeypatch.setattr(web_module, "_fetch_raw", _fake_fetch_raw)
+    monkeypatch.setattr(tool, "_fetch_jina", jina)
+
+    result = await tool.execute(url=url)
+
+    jina.assert_awaited_once()
+    assert not is_tool_error_result(result)
+    data = json.loads(result)
+    assert data["status"] == 200
+    assert data["extractor"] == "json"
+    assert data["untrusted"] is True
+    assert json.dumps(source, indent=2) in data["text"]

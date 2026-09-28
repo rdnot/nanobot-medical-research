@@ -31,11 +31,13 @@
   },
   "starPrompt": {
     "footerAction": "nanobot にスターを付ける",
-    "title": "nanobot のご利用ありがとうございます",
-    "description": "GitHub でスターを付けて、nanobot をより良くしていく取り組みを応援してください。",
-    "action": "スターを付ける",
-    "later": "今はしない",
-    "never": "今後表示しない",
+    "title": "お役に立てて、うれしいです。",
+    "intro": "nanobot で毎日が少しでも楽になったら、",
+    "invitation": "GitHub で Star をいただけるとうれしいです。",
+    "thanks": "その小さな応援が、私たちの励みになります。",
+    "action": "Star で応援する",
+    "later": "また今度",
+    "never": "今後は表示しない",
     "saveError": "ネットワークに問題が発生した可能性があります。この案内が再び表示されることがあります。"
   },
   "app": {
@@ -1615,6 +1617,11 @@
     },
     "scrollToBottom": "一番下へスクロール",
     "loadEarlier": "以前のメッセージを読み込む",
+    "history": {
+      "loading": "以前のメッセージを読み込み中…",
+      "error": "読み込みに失敗しました。",
+      "retry": "再試行"
+    },
     "forkedFromHistory": "履歴から分岐",
     "promptNavigator": {
       "open": "プロンプトナビゲーターを開く",
@@ -1685,11 +1692,11 @@
       "reviewedSources": "ソースを確認しました",
       "reviewSourcesFailed": "ソースを確認できませんでした",
       "searchingFiles": "ファイルを検索中",
-      "searchedFiles": "ファイルを検索しました",
+      "searchedFiles": "ファイル検索完了",
       "searchFilesFailed": "ファイルを検索できませんでした",
-      "findingFiles": "ファイルを探索中",
-      "foundFiles": "ファイルを見つけました",
-      "findFilesFailed": "ファイルを見つけられませんでした",
+      "findingFiles": "ファイルを検索中",
+      "foundFiles": "ファイル検索完了",
+      "findFilesFailed": "ファイルの検索に失敗しました",
       "listingFiles": "ファイルを一覧表示中",
       "listedFiles": "ファイルを一覧表示しました",
       "listFilesFailed": "ファイルを一覧表示できませんでした",

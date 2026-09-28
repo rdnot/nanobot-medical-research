@@ -31,11 +31,13 @@
   },
   "starPrompt": {
     "footerAction": "Dê uma estrela ao nanobot",
-    "title": "Obrigado por usar o nanobot",
-    "description": "Dê uma estrela no GitHub para nos ajudar a continuar melhorando o nanobot.",
+    "title": "Que bom poder ajudar.",
+    "intro": "Se o nanobot deixou seu dia a dia um pouco mais leve,",
+    "invitation": "que tal deixar uma estrela no GitHub?",
+    "thanks": "Esse pequeno gesto significa muito para nós.",
     "action": "Dar uma estrela",
-    "later": "Agora não",
-    "never": "Não perguntar novamente",
+    "later": "Mais tarde",
+    "never": "Não perguntar de novo",
     "saveError": "Pode haver um problema de conexão. Este lembrete pode aparecer novamente."
   },
   "app": {
@@ -1629,6 +1631,11 @@
     },
     "scrollToBottom": "Rolar para o final",
     "loadEarlier": "Carregar mensagens anteriores",
+    "history": {
+      "loading": "Carregando mensagens anteriores…",
+      "error": "Falha ao carregar.",
+      "retry": "Tentar novamente"
+    },
     "forkedFromHistory": "Bifurcado a partir do histórico",
     "promptNavigator": {
       "open": "Abrir navegador de instruções",
@@ -1674,8 +1681,8 @@
       "searchedFiles": "Pesquisa nos arquivos concluída",
       "searchFilesFailed": "Não foi possível pesquisar nos arquivos",
       "findingFiles": "Procurando arquivos",
-      "foundFiles": "Arquivos encontrados",
-      "findFilesFailed": "Não foi possível encontrar arquivos",
+      "foundFiles": "Busca de arquivos concluída",
+      "findFilesFailed": "Não foi possível buscar arquivos",
       "listingFiles": "Listando arquivos",
       "listedFiles": "Arquivos listados",
       "listFilesFailed": "Não foi possível listar os arquivos",

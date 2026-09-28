@@ -683,6 +683,7 @@ export function ThreadShell({
     loading,
     error: historyError,
     loadingOlder,
+    olderError,
     loadOlder,
     hasMoreBefore,
     userMessageOffset,
@@ -1922,6 +1923,7 @@ export function ThreadShell({
             forkBoundaryMessageCount={forkBoundaryMessageCount}
             hasMoreBefore={hasMoreBefore}
             loadingOlder={loadingOlder}
+            olderError={olderError}
             userMessageOffset={userMessageOffset}
             onLoadOlder={loadOlder}
             traceDetailScope={historyKey}

@@ -31,10 +31,12 @@
   },
   "starPrompt": {
     "footerAction": "Tặng nanobot một sao",
-    "title": "Cảm ơn bạn đã dùng nanobot",
-    "description": "Hãy tặng một sao trên GitHub để ủng hộ chúng tôi tiếp tục cải thiện nanobot.",
-    "action": "Tặng sao",
-    "later": "Để sau",
+    "title": "Thật vui khi giúp được bạn.",
+    "intro": "Nếu nanobot giúp mỗi ngày của bạn nhẹ nhàng hơn một chút,",
+    "invitation": "hãy tặng chúng mình một sao trên GitHub nhé.",
+    "thanks": "Sự động viên nhỏ ấy có ý nghĩa rất lớn với chúng mình.",
+    "action": "Tặng một sao",
+    "later": "Để lần sau",
     "never": "Không nhắc lại",
     "saveError": "Có thể đã xảy ra sự cố mạng. Lời nhắc này có thể xuất hiện lại."
   },
@@ -1615,6 +1617,11 @@
     },
     "scrollToBottom": "Cuộn xuống cuối",
     "loadEarlier": "Tải tin nhắn trước đó",
+    "history": {
+      "loading": "Đang tải tin nhắn trước đó…",
+      "error": "Tải thất bại.",
+      "retry": "Thử lại"
+    },
     "forkedFromHistory": "Tách nhánh từ lịch sử",
     "promptNavigator": {
       "open": "Mở trình điều hướng lời nhắc",
@@ -1685,11 +1692,11 @@
       "reviewedSources": "Đã xem lại nguồn",
       "reviewSourcesFailed": "Không thể xem lại nguồn",
       "searchingFiles": "Đang tìm trong tệp",
-      "searchedFiles": "Đã tìm trong tệp",
+      "searchedFiles": "Đã hoàn tất tìm kiếm trong tệp",
       "searchFilesFailed": "Không thể tìm trong tệp",
       "findingFiles": "Đang tìm tệp",
-      "foundFiles": "Đã tìm thấy tệp",
-      "findFilesFailed": "Không thể tìm thấy tệp",
+      "foundFiles": "Đã hoàn tất tìm kiếm tệp",
+      "findFilesFailed": "Không thể tìm kiếm tệp",
       "listingFiles": "Đang liệt kê tệp",
       "listedFiles": "Đã liệt kê tệp",
       "listFilesFailed": "Không thể liệt kê tệp",
