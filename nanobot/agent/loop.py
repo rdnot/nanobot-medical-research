@@ -25,6 +25,7 @@ from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.autocompact import AutoCompact
 from nanobot.agent.context import ContextBuilder, PersistedPromptContextResolver, TranscriptInput
 from nanobot.agent.cron_turns import CronTurnCoordinator
+from nanobot.agent.goal_permission import GoalInputScope
 from nanobot.agent.hook import AgentHook, AgentHookContext, AgentTurnHookFactory
 from nanobot.agent.memory import Consolidator
 from nanobot.agent.model_runtime import ModelRuntimeResolver
@@ -51,7 +52,7 @@ from nanobot.bus.outbound_events import (
 )
 from nanobot.bus.queue import MessageBus
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
-from nanobot.command.router import normalize_command_text
+from nanobot.command.router import command_text, normalize_command_text
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.events import NO_EVENTS, AgentEvent, EventSink
 from nanobot.llm_usage.context import source_from_request
@@ -871,6 +872,8 @@ class AgentLoop:
         if has_text or media_paths or runtime_context_blocks:
             extra: dict[str, Any] = ({"media": list(media_paths)} if media_paths else {}) | agent_context.session_extra(msg.metadata)
             extra.update(kwargs)
+            if HIDDEN_HISTORY_META in msg.metadata:
+                extra[HIDDEN_HISTORY_META] = msg.metadata[HIDDEN_HISTORY_META]
             text = content_value if isinstance(content_value, str) else ""
             text_override, automation_extra = automation_history_overrides(msg.metadata)
             if text_override is not None:
@@ -957,7 +960,7 @@ class AgentLoop:
         msg: InboundMessage,
         key: str,
         raw: str,
-        dispatch_fn: Callable[[CommandContext], Awaitable[OutboundMessage | None]],
+        dispatch_fn: Callable[[CommandContext], Awaitable[InboundMessage | OutboundMessage | None]],
     ) -> None:
         """Dispatch a command directly from the run() loop and publish the result."""
         if normalize_command_text(raw).lower() == "/compact":
@@ -966,9 +969,19 @@ class AgentLoop:
             return
 
         async def dispatch_and_publish() -> None:
-            ctx = CommandContext(msg=msg, session=None, key=key, raw=raw, loop=self)
+            _, automation_metadata = automation_history_overrides(msg.metadata)
+            ctx = CommandContext(
+                msg=msg, session=None, key=key, raw=raw, loop=self,
+                is_user_turn=(
+                    msg.is_user_input and msg.channel != "system"
+                    and msg.sender_id != "subagent" and not automation_metadata
+                    and not turn_continuation.internal_continuation_inbound(msg.metadata)
+                ),
+            )
             result = await dispatch_fn(ctx)
-            if result:
+            if isinstance(result, InboundMessage):
+                self._enqueue_session_message(result)
+            elif result:
                 await self.bus.publish_outbound(result)
             else:
                 logger.warning("Command '{}' matched but dispatch returned None", raw)
@@ -1110,7 +1123,7 @@ class AgentLoop:
         ):
             return False
         return msg.channel == "system" or not self.commands.is_dispatchable_command(
-            msg.content.strip()
+            command_text(msg)
         )
 
     def _idle_events(
@@ -1230,6 +1243,8 @@ class AgentLoop:
                     image_paths=image_paths,
                 )
                 row: dict[str, Any] = {"role": "user", "content": user_content}
+                if HIDDEN_HISTORY_META in pending_msg.metadata:
+                    row[HIDDEN_HISTORY_META] = pending_msg.metadata[HIDDEN_HISTORY_META]
                 metadata_value = cast(object, pending_msg.metadata)
                 metadata = (
                     pending_msg.metadata
@@ -1293,6 +1308,7 @@ class AgentLoop:
                     if not self._can_inject_message(pending_msg):
                         break
                     converted.append(await _to_user_message(pending_msg))
+                goal_inputs.consume_inputs(pending_messages[:len(converted)])
                 consumed = len(converted)
                 return converted
             finally:
@@ -1402,6 +1418,7 @@ class AgentLoop:
 
         session_metadata = session.metadata if session is not None else None
         try:
+            goal_inputs = turn_scope_stack.enter_context(GoalInputScope())
             for scope in turn_scopes or ():
                 turn_scope_stack.enter_context(scope)
             hook = build_agent_turn_hook(AgentTurnHookSpec(
@@ -1540,7 +1557,7 @@ class AgentLoop:
                     logger.warning("Error consuming inbound message: {}, continuing...", e)
                     continue
 
-                raw = msg.content.strip()
+                raw = command_text(msg)
                 effective_key = self._effective_session_key(msg)
                 if await agent_context.handle_runtime_control(self, msg, self.tools):
                     continue
@@ -1578,8 +1595,6 @@ class AgentLoop:
                 # is processing this session), route the message there for mid-turn
                 # injection instead of creating a competing task.
                 if effective_key in self._pending_queues:
-                    # Non-priority commands must not be queued for injection;
-                    # dispatch them directly (same pattern as priority commands).
                     if msg.channel != "system" and self.commands.is_dispatchable_command(raw):
                         await self._dispatch_command_inline(
                             msg, effective_key, raw,
@@ -2184,7 +2199,7 @@ class AgentLoop:
         if ctx.kind is TurnKind.SYSTEM or ctx.msg.channel == "system":
             return False
         session = ctx.require_session()
-        raw = ctx.msg.content.strip()
+        raw = command_text(ctx.msg)
         _, automation_metadata = automation_history_overrides(ctx.msg.metadata)
         is_user_turn = (
             ctx.original_user_text is not None
@@ -2203,6 +2218,10 @@ class AgentLoop:
             turn_scopes=ctx.turn_scopes,
         )
         result = await self.commands.dispatch(cmd_ctx)
+        if isinstance(result, InboundMessage):
+            ctx.msg = result
+            result = None
+        ctx.turn_scopes.append(GoalInputScope(ctx.msg))
         if cmd_ctx.raw.lower() == "/compact":
             # Compaction reports through events, not an archiveable command reply.
             return True
