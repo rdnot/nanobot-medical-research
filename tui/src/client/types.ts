@@ -119,7 +119,7 @@ export type InboundEvent =
       event: "message"
       chat_id: string
       text: string
-      kind?: "tool_hint" | "progress" | "reasoning"
+      kind?: "tool_hint" | "progress" | "reasoning" | "tools_summary"
       tool_events?: ToolProgressEvent[]
       turn_id?: string
     }

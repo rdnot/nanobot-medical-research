@@ -175,7 +175,12 @@ function projectOrderedTurn(
   };
 
   for (const message of messages) {
-    if (message.kind === "compaction") {
+    if (message.kind === "compaction" || message.kind === "tools_summary") {
+      // FORK: the tools-summary recap is a standalone assistant bubble, not
+      // part of the answer. It must be a hard boundary like compaction
+      // notices — otherwise mergeAssistantAnswers would fold it into the
+      // real answer immediately preceding it (both satisfy isAssistantAnswer
+      // with turnPhase "answer"), corrupting the answer's content and kind.
       flushActivity();
       flushAnswers();
       units.push({

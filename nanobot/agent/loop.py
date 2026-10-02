@@ -752,6 +752,14 @@ class AgentLoop:
             single = " ".join(text.split())
             return single[:max_len] + "…" if len(single) > max_len else single
 
+        def _code(value: Any) -> str:
+            """FORK: wrap a value in inline code so Markdown never auto-links or
+            otherwise reinterprets it. Backticks inside the value are stripped
+            so they cannot break out of the code span."""
+            text = value if isinstance(value, str) else str(value) if value else ""
+            text = text.replace("`", "'")
+            return f"`{text}`"
+
         lines = ["**Tools used:**"]
         for item in all_tool_calls:
             name: Any = item.get("name", "")
@@ -760,20 +768,20 @@ class AgentLoop:
             args_str = str(cast(object, args))[:60]
             if name == "web_search":
                 query = args_dict.get("query", "")
-                lines.append(f"- search({query})")
+                lines.append(f"- search({_code(query)})")
             elif name in ("web_fetch", "fetch"):
                 url = args_dict.get("url", "")
-                lines.append(f'- fetch("{url}")')
+                lines.append(f"- fetch({_code(url)})")
             elif name in ("read_file",):
                 path = args_dict.get("path", "***") if args_dict else args_str
                 path = _shorten_path(path)
-                lines.append(f"- read_file({path})")
+                lines.append(f"- read_file({_code(path)})")
             elif name in ("write_file",):
                 if args_dict:
                     path = _shorten_path(args_dict.get("path", ""))
                     content = args_dict.get("content", "")
                     first_line = _to_single_line(content, 60)
-                    lines.append(f"- write_file({path}: {first_line})")
+                    lines.append(f"- write_file({_code(path)}: {first_line})")
                 else:
                     lines.append("- write_file(...)")
             elif name in ("edit_file",):
@@ -781,7 +789,7 @@ class AgentLoop:
                     path = _shorten_path(args_dict.get("path", ""))
                     old_text = args_dict.get("old_text", "")
                     first_line = _to_single_line(old_text, 60)
-                    lines.append(f"- edit_file({path}: {first_line})")
+                    lines.append(f"- edit_file({_code(path)}: {first_line})")
                 else:
                     lines.append("- edit_file(...)")
             elif name in ("message",):

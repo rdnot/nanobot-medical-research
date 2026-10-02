@@ -933,6 +933,24 @@ export function projectThreadEvent(
       projectToolActivity(state, event, options);
       return state;
     }
+    if (event.kind === "tools_summary") {
+      // FORK: the fork's "Tools used:" recap is a second assistant message in
+      // the same turn, published right after the real answer finishes
+      // streaming. Append it as its own bubble without touching
+      // activeAssistantId/activitySegmentId/fileEditSegmentId — running the
+      // generic close-and-filter path below would either delete the
+      // just-finished answer (if it were still "active") or reset the
+      // activity segment under the summary instead of the real answer.
+      // ThreadMessages.tsx keeps this kind out of the activity-to-answer
+      // grouping, the same way it already excludes "compaction".
+      const summaryProjected = {
+        content: event.text,
+        kind: "tools_summary" as const,
+        ...turnFieldsForProjection(state, event, "answer"),
+      };
+      absorbProjectedAssistantMessage(state, event, summaryProjected, options);
+      return state;
+    }
 
     const media = event.media_urls?.map((item) => toMediaAttachment(item))
       ?? event.media?.map((url) => toMediaAttachment({ url }));

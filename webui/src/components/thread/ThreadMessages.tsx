@@ -59,10 +59,11 @@ export function assistantForkFlags(units: DisplayUnit[]): boolean[] {
     if (
       unit.type === "message"
       && unit.message.role === "assistant"
-      && unit.message.kind === "compaction"
+      && (unit.message.kind === "compaction" || unit.message.kind === "tools_summary")
     ) {
-      // Compaction notices are session lifecycle markers, not assistant answers.
-      // They must neither expose nor displace the answer-level fork action.
+      // Compaction notices and the fork's tools-summary recap are session/turn
+      // lifecycle markers, not assistant answers. They must neither expose nor
+      // displace the answer-level fork action.
       flags[i] = false;
       continue;
     }
@@ -738,6 +739,7 @@ const ThreadDisplayUnit = memo(function ThreadDisplayUnit({
             {mobileActions ? blockMenu : null}
             {unit.message.role === "assistant"
             && unit.message.kind !== "compaction"
+            && unit.message.kind !== "tools_summary"
             && contextBlockKey === undefined ? (
               <FallbackResponseSources
                 sources={unit.message.responseSources}
@@ -999,7 +1001,8 @@ function completedMessageBlocks(
       const unit = units[index];
       return unit.type === "message"
         && unit.message.role === "assistant"
-        && unit.message.kind !== "compaction";
+        && unit.message.kind !== "compaction"
+        && unit.message.kind !== "tools_summary";
     });
     for (const index of blockIndices) {
       result.blockIndices.add(index);

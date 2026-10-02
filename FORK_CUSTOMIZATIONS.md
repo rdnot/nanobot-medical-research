@@ -41,6 +41,20 @@ is marked `# UPSTREAM` where that helps during merges.
   `_run_agent_loop(tool_calls_log=...)`.
 - `AgentLoop.__init__(max_tokens=...)` (from `agents.defaults.max_tokens`) is forwarded to
   `ToolContext.max_output_tokens` for the write/edit size limits.
+- `_build_tools_summary` puts search queries, URLs and file paths in inline code (backticks
+  inside a value are replaced) so the WebUI never auto-links a URL into a text-less link.
+
+### `nanobot/channels/websocket/runtime.py`, WebUI and TUI (`tools_summary` kind)
+- `send_projected_message` tags the summary (`_tools_summary` metadata) with
+  `kind: "tools_summary"`, persisted with phase `answer`. WebSocket only; other channels
+  receive a normal message.
+- WebUI: `types.ts` (kind unions), `thread-event-projection.ts` (own assistant bubble, does not
+  close the active answer), `activity-timeline.ts` (hard boundary like `compaction`, so the
+  summary is never merged into the answer) and `components/thread/ThreadMessages.tsx`
+  (excluded from `completedMessageBlocks` next to `compaction`, so the folded activity trace
+  stays on the real answer; no fork action or source badges on the summary).
+- TUI: `client/types.ts`, `client/api.ts` (history: own row, never overwrites the answer) and
+  `app/app.ts` (live: own row, never `finalMessage`).
 
 ### `nanobot/agent/turn_hooks.py`
 - `AgentTurnHookSpec.progress_hook` lets the loop supply the fork hook subclass.
@@ -93,7 +107,9 @@ is marked `# UPSTREAM` where that helps during merges.
 ### Tests
 - Fork-specific: `tests/tools/test_web_fetch_fork.py`, `tests/tools/test_fork_fs_limits.py`,
   `tests/agent/test_fork_loop_hook.py`,
-  `nanobot/channels/whatsapp/tests/test_markdown_to_whatsapp.py`.
+  `nanobot/channels/whatsapp/tests/test_markdown_to_whatsapp.py`,
+  `tests/channels/test_fork_tools_summary_ws.py`, `webui/src/tests/fork-tools-summary.test.tsx`,
+  `tui/src/client/fork-tools-summary.test.ts`, `tui/src/app/fork-tools-summary.test.ts`.
 - Adapted upstream tests: `tests/tools/test_web_fetch_security.py` (curl_cffi tier pinned
   to unavailable; upstream redirect/SSRF tests restored), `test_web_fetch_jina_privacy.py`,
   `test_web_fetch_url_sanitization.py`, `test_private_tool_logging.py`,

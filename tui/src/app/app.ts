@@ -739,6 +739,10 @@ export class NanobotTui {
         if (event.kind) {
           this.retryStatus = null
           this.activeLabel = event.kind === "tool_hint" ? "Working" : "Thinking"
+          // FORK: kind "tools_summary" (the "Tools used:" recap, sent after the
+          // answer streamed) takes this branch on purpose: it renders as its own
+          // row and must never become finalMessage, which is only shown when
+          // nothing streamed. A kind-less message would take the else branch.
           this.transcript.progress(event.text, event.tool_events)
           this.setActive(true)
         } else {
