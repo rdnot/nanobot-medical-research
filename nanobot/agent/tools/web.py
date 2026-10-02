@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import html
+import io
 import json
+import mimetypes
 import os
 import re
 from collections.abc import Callable
@@ -131,23 +133,51 @@ def _smart_truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + " [...truncated...]"
 
 
-# FORK: PDF text extraction using PyMuPDF
+class RedirectBlockedError(Exception):
+    """A redirect target failed URL safety validation (SSRF guard)."""
+
+
+# FORK: PDF text extraction (PyMuPDF, falling back to the bundled pypdf)
 def _extract_pdf_text(pdf_data: bytes) -> str:
-    """Extract text from PDF using PyMuPDF."""
+    """Extract page-delimited text from PDF bytes.
+
+    Raises ``RuntimeError`` when no extractor is available or extraction fails so the
+    caller can report a tool error instead of returning the error text as document content.
+    """
+    pymupdf: Any = None
     try:
-        import fitz  # PyMuPDF  # pyright: ignore[reportMissingTypeStubs]
-        doc = fitz.open(stream=pdf_data, filetype="pdf")
-        text_lines: list[str] = []
-        for page_num in range(len(doc)):
-            page = cast(Any, doc[page_num])
-            text = cast(str, page.get_text())
-            text_lines.append(f"--- Page {page_num + 1} ---\n{text}")
-        doc.close()
-        return "\n".join(text_lines)
+        import pymupdf  # pyright: ignore[reportMissingTypeStubs,reportMissingImports]
     except ImportError:
-        return "Error: PyMuPDF (fitz) not installed. Install with: pip install PyMuPDF"
+        try:
+            import fitz as pymupdf  # legacy PyMuPDF module name  # pyright: ignore[reportMissingTypeStubs,reportMissingImports]
+        except ImportError:
+            pymupdf = None
+    if pymupdf is not None:
+        try:
+            doc: Any = pymupdf.open(stream=pdf_data, filetype="pdf")
+            text_lines: list[str] = []
+            for page_num in range(len(doc)):
+                text = cast(str, doc[page_num].get_text())
+                text_lines.append(f"--- Page {page_num + 1} ---\n{text}")
+            doc.close()
+            return "\n".join(text_lines)
+        except Exception as e:
+            raise RuntimeError(f"PDF extraction failed: {e}") from e
+    try:
+        from pypdf import PdfReader
+    except ImportError as e:
+        raise RuntimeError(
+            "No PDF extractor available: install PyMuPDF (pip install pymupdf) or pypdf"
+        ) from e
+    try:
+        reader = PdfReader(io.BytesIO(pdf_data))
+        pages = [
+            f"--- Page {page_num + 1} ---\n{page.extract_text() or ''}"
+            for page_num, page in enumerate(reader.pages)
+        ]
+        return "\n".join(pages)
     except Exception as e:
-        return f"Error extracting PDF: {e}"
+        raise RuntimeError(f"PDF extraction failed: {e}") from e
 
 
 # FORK: Extract author, date, description from HTML meta tags
@@ -186,6 +216,27 @@ def _build_image_blocks(data: bytes, content_type: str, url: str) -> list[dict[s
         },
         {"type": "text", "text": f"(Image fetched from: {url})"},
     ]
+
+
+_IMAGE_URL_RE = re.compile(r"\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|$)", re.I)
+
+
+def _image_mime_for(content_type: str, url: str) -> str | None:
+    """Return the image MIME type for a response, or None when it is not an image.
+
+    The Content-Type header wins. The URL extension is only consulted when the
+    server sent no usable type, so an HTML page served at ``/chart.png`` is never
+    mislabelled as an image.
+    """
+    mime = content_type.split(";")[0].strip().lower()
+    if mime.startswith("image/"):
+        return mime
+    if mime and mime != "application/octet-stream":
+        return None
+    if not _IMAGE_URL_RE.search(url):
+        return None
+    guessed, _ = mimetypes.guess_type(urlparse(url).path)
+    return guessed if guessed and guessed.startswith("image/") else "image/jpeg"
 
 
 # UPSTREAM (pinned DNS, SSRF hardening): validate URL and return resolved IPs for pinning
@@ -309,65 +360,6 @@ async def _get_with_safe_redirects(
     return None, f"Too many redirects: exceeded limit of {MAX_REDIRECTS}"
 
 
-async def _stream_with_safe_redirects(  # pyright: ignore[reportUnusedFunction]
-    client: httpx.AsyncClient,
-    url: str,
-    headers: dict[str, str] | None = None,
-) -> tuple[httpx.Response | None, Any | None, str | None, bool]:
-    """Open a streamed response while validating every redirect target first."""
-    current_url = url
-    chain_carries_credentials = _url_carries_credentials(url)
-    for _ in range(MAX_REDIRECTS + 1):
-        is_valid, error_msg, _ = _resolve_url_safe(current_url)
-        if not is_valid:
-            return None, None, f"Redirect blocked: {error_msg}", chain_carries_credentials
-
-        stream = client.stream(
-            "GET",
-            current_url,
-            headers=headers,
-            follow_redirects=False,
-        )
-        try:
-            response = await stream.__aenter__()
-        except httpx.RequestError as exc:
-            unsafe_error = _unsafe_url_request_error(exc)
-            if unsafe_error is not None:
-                return (
-                    None,
-                    None,
-                    f"Redirect blocked: {unsafe_error}",
-                    chain_carries_credentials,
-                )
-            raise
-        is_redirect = 300 <= response.status_code < 400
-        if not is_redirect:
-            return response, stream, None, chain_carries_credentials
-
-        location = response.headers.get("location")
-        if not location:
-            return response, stream, None, chain_carries_credentials
-
-        next_url = urljoin(str(response.url), location)
-        chain_carries_credentials = (
-            chain_carries_credentials or _url_carries_credentials(next_url)
-        )
-        is_valid, error_msg = _validate_url_safe(next_url)
-        if not is_valid:
-            await stream.__aexit__(None, None, None)
-            return None, None, f"Redirect blocked: {error_msg}", chain_carries_credentials
-
-        await stream.__aexit__(None, None, None)
-        current_url = next_url
-
-    return (
-        None,
-        None,
-        f"Too many redirects: exceeded limit of {MAX_REDIRECTS}",
-        chain_carries_credentials,
-    )
-
-
 def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
     """Format provider results into shared plaintext output."""
     if not items:
@@ -408,48 +400,101 @@ def _normalize_volcengine_auth_level(value: Any) -> int | None:
     return auth_level
 
 
-async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict[str, Any], int, str]:
+_FetchResult = tuple[bytes, dict[str, Any], int, str]
+
+
+def _fetch_headers(user_agent: str, *, impersonating: bool) -> dict[str, str]:
+    """Request headers for a raw fetch.
+
+    When curl_cffi impersonates Chrome it supplies a matching User-Agent; only
+    override it when the operator configured a custom ``web.user_agent``.
     """
-    Fetch URL bytes. Tries curl_cffi (Chrome impersonation) first,
-    falls back to httpx if curl_cffi is not installed or fails.
-    Returns (content_bytes, headers_dict, status_code, fetcher_name)
+    if impersonating and user_agent == _DEFAULT_USER_AGENT:
+        return {}
+    return {"User-Agent": user_agent}
+
+
+async def _fetch_curl_cffi(
+    url: str, proxy: str | None, user_agent: str
+) -> _FetchResult | None:
+    """Tier 1: curl_cffi with Chrome TLS impersonation.
+
+    Redirects are followed manually so every hop is validated against the SSRF
+    policy before it is requested. Returns ``None`` when curl_cffi is not
+    installed or the request fails, so the caller can fall through to httpx.
+    Raises ``RedirectBlockedError`` for an unsafe redirect target; that is a
+    final verdict and must not be retried by another tier.
     """
-    # --- Primary: curl_cffi (bypasses Cloudflare, TLS fingerprinting) ---
     try:
         from curl_cffi.requests import AsyncSession  # noqa: I001  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
-        logger.debug("curl_cffi fetch: {}", "proxy enabled" if proxy else "direct connection")
-        async with AsyncSession() as session:  # pyright: ignore[reportUnknownVariableType]
-            r: Any = await session.get(  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
-                url,
-                impersonate="chrome",
-                allow_redirects=True,
-                max_redirects=MAX_REDIRECTS,
-                timeout=30,
-                proxy=proxy,
-            )
-            r_headers = cast(dict[str, Any], r.headers)
-            return (
-                cast(bytes, r.content),
-                r_headers,
-                cast(int, r.status_code),
-                "curl_cffi",
-            )
     except ImportError:
-        logger.debug("curl_cffi not installed \u2013 install with: pip install curl_cffi")
-    except Exception as e:
-        logger.debug("curl_cffi failed: {}, falling back to httpx", e)
+        logger.debug("curl_cffi not installed – install with: pip install curl_cffi")
+        return None
 
-    # --- Fallback: httpx ---
+    headers = _fetch_headers(user_agent, impersonating=True)
+    logger.debug("curl_cffi fetch: {}", "proxy enabled" if proxy else "direct connection")
+    try:
+        async with AsyncSession() as session:  # pyright: ignore[reportUnknownVariableType]
+            current_url = url
+            for _ in range(MAX_REDIRECTS + 1):
+                is_valid, error_msg, _ips = _resolve_url_safe(current_url)
+                if not is_valid:
+                    raise RedirectBlockedError(f"Redirect blocked: {error_msg}")
+                r: Any = await session.get(  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+                    current_url,
+                    impersonate="chrome",
+                    allow_redirects=False,
+                    timeout=30,
+                    headers=headers or None,
+                    proxy=proxy,
+                )
+                status = cast(int, r.status_code)
+                r_headers = {str(k).lower(): str(v) for k, v in cast(dict[str, Any], dict(r.headers)).items()}
+                if 300 <= status < 400 and r_headers.get("location"):
+                    next_url = urljoin(current_url, r_headers["location"])
+                    is_valid, error_msg = _validate_url_safe(next_url)
+                    if not is_valid:
+                        raise RedirectBlockedError(f"Redirect blocked: {error_msg}")
+                    current_url = next_url
+                    continue
+                return cast(bytes, r.content), r_headers, status, "curl_cffi"
+            raise RedirectBlockedError(f"Too many redirects: exceeded limit of {MAX_REDIRECTS}")
+    except RedirectBlockedError:
+        raise
+    except Exception as e:
+        logger.debug("curl_cffi failed ({}), falling back to httpx", type(e).__name__)
+        return None
+
+
+async def _fetch_httpx(url: str, proxy: str | None, user_agent: str) -> _FetchResult:
+    """Tier 2: httpx with the upstream pinned-DNS transport and per-hop redirect checks."""
     logger.debug("httpx fetch: {}", "proxy enabled" if proxy else "direct connection")
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        max_redirects=MAX_REDIRECTS,
-        timeout=30.0,
-        proxy=proxy,
-    ) as client:
-        r = await client.get(url, headers={"User-Agent": _DEFAULT_USER_AGENT})
-        r.raise_for_status()
-        return r.content, dict(r.headers), r.status_code, "httpx"
+    async with httpx.AsyncClient(**_fetch_client_kwargs(proxy, 30.0)) as client:
+        r, redirect_error = await _get_with_safe_redirects(
+            client, url, headers=_fetch_headers(user_agent, impersonating=False),
+        )
+        if redirect_error:
+            raise RedirectBlockedError(redirect_error)
+        if r is None:
+            raise RuntimeError("Fetch failed")
+        return r.content, {k.lower(): v for k, v in r.headers.items()}, r.status_code, "httpx"
+
+
+async def _fetch_raw(
+    url: str, proxy: str | None = None, user_agent: str | None = None
+) -> _FetchResult:
+    """Fetch URL bytes: curl_cffi (Chrome impersonation) first, httpx fallback.
+
+    Every redirect hop in either tier is validated by the SSRF policy. The httpx
+    tier additionally pins DNS to the validated addresses.
+    Returns ``(content_bytes, headers, status_code, fetcher_name)``; HTTP error
+    statuses are returned, not raised, so the caller decides how to report them.
+    """
+    ua = user_agent or _DEFAULT_USER_AGENT
+    result = await _fetch_curl_cffi(url, proxy, ua)
+    if result is not None:
+        return result
+    return await _fetch_httpx(url, proxy, ua)
 
 
 def _html_to_text(raw_html: str, extract_mode: str = "markdown") -> tuple[str, str]:
@@ -500,7 +545,7 @@ def _readability_to_markdown(raw_html: str) -> str:
     # Try markdownify first
     try:
         from markdownify import markdownify as md  # noqa: I001  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
-        return _normalize(cast(str, md(raw_html, heading_style="ATX", strip=[])))
+        return _normalize(str(md(raw_html, heading_style="ATX", strip=[])))
     except ImportError:
         logger.debug("markdownify not installed  \u2013  pip install markdownify")
     except Exception as e:
@@ -1312,6 +1357,9 @@ class WebFetchTool(Tool):
     name = "web_fetch"  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
     description = (  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
         "Fetch a URL and extract readable content (HTML → markdown/text). "
+        "Also extracts PDF text and returns images for visual analysis. "
+        "Output is capped at maxChars (default 500 000); HTTP errors and "
+        "blocked redirects are returned as tool errors."
     )
 
     config_key = "web"
@@ -1356,20 +1404,9 @@ class WebFetchTool(Tool):
         if not is_valid:
             return ToolResult.error(json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False))
 
-        # FORK: Skip upstream's httpx-based image pre-fetch detection.
-        # The fork's tiered fetcher (`_fetch_raw`: curl_cffi → httpx) below already
-        # detects images by content-type / URL extension and returns image blocks via
-        # `_build_image_blocks()`. Re-running the pre-fetch via httpx would
-        # double-request every URL (curl_cffi can fetch sites httpx cannot, so the
-        # pre-fetch would also leak fetch attempts past curl_cffi's stealth layer).
-        # The pinned-DNS SSRF helpers (`_get_with_safe_redirects`,
-        # `_stream_with_safe_redirects`, `_resolve_url_safe`, `_fetch_client_kwargs`)
-        # are still defined at module scope and used by `_fetch_readability`.
-        #
-        # UPSTREAM credential check: Still gate Jina forwarding on
-        # `_url_carries_credentials()` so credential-bearing URLs never leave the
-        # machine — but skip the full httpx pre-fetch redirect chain (the tiered
-        # fetcher validates redirects via curl_cffi/scrapling instead).
+        # FORK: the tiered fetcher below (curl_cffi -> httpx) replaces upstream's
+        # httpx pre-fetch. Both tiers validate every redirect hop; the httpx tier
+        # also pins DNS. Jina forwarding stays gated on credential-bearing URLs.
         jina_remote_safe = not _url_carries_credentials(url)
 
         result = None
@@ -1380,12 +1417,20 @@ class WebFetchTool(Tool):
 
         try:
             # FORK: Tiered fetcher (curl_cffi → httpx fallback)
-            content_bytes, headers, status_code, fetcher = await _fetch_raw(url, self.proxy)
+            content_bytes, headers, status_code, fetcher = await _fetch_raw(
+                url, self.proxy, self.user_agent,
+            )
+            if status_code >= 400:
+                return ToolResult.error(json.dumps({
+                    "error": f"HTTP {status_code}", "url": url,
+                    "status": status_code, "fetcher": fetcher,
+                }, ensure_ascii=False))
             ctype = str(headers.get("content-type", "")).lower()
+            image_mime = _image_mime_for(ctype, url)
 
             # --- Image ---
-            if ctype.startswith("image/") or re.search(r'\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|$)', url, re.I):
-                return _build_image_blocks(content_bytes, ctype or "image/jpeg", url)
+            if image_mime:
+                return _build_image_blocks(content_bytes, image_mime, url)
 
             # --- PDF ---
             elif "application/pdf" in ctype or url.lower().endswith(".pdf"):
@@ -1517,11 +1562,20 @@ class WebFetchTool(Tool):
 
             return result
 
+        except RedirectBlockedError as e:
+            return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
         except httpx.ProxyError as e:
-            logger.error("WebFetch proxy error for {}: {}", _redact_url_for_log(url), e)
+            logger.warning(
+                "WebFetch proxy error for {} ({})", _redact_url_for_log(url), type(e).__name__,
+            )
             return ToolResult.error(json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False))
         except Exception as e:
-            logger.error("WebFetch error for {}: {}", _redact_url_for_log(url), e)
+            unsafe_error = _unsafe_url_request_error(e)
+            if unsafe_error is not None:
+                return ToolResult.error(json.dumps(
+                    {"error": f"Redirect blocked: {unsafe_error}", "url": url}, ensure_ascii=False,
+                ))
+            logger.warning("WebFetch error for {} ({})", _redact_url_for_log(url), type(e).__name__)
             return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
 
     # --- UPSTREAM: Optional Jina Reader support ---
@@ -1576,85 +1630,3 @@ class WebFetchTool(Tool):
                 type(e).__name__,
             )
             return None
-
-    async def _fetch_readability(self, url: str, extract_mode: str, max_chars: int) -> Any:
-        """Local fallback using readability-lxml."""
-        try:
-            async with httpx.AsyncClient(
-                **_fetch_client_kwargs(self.proxy, 30.0),
-            ) as client:
-                r, redirect_error = await _get_with_safe_redirects(
-                    client,
-                    url,
-                    headers={"User-Agent": self.user_agent},
-                )
-                if redirect_error:
-                    return ToolResult.error(json.dumps({"error": redirect_error, "url": url}, ensure_ascii=False))
-                if r is None:
-                    return ToolResult.error(json.dumps({"error": "Fetch failed", "url": url}, ensure_ascii=False))
-                r.raise_for_status()
-
-            ctype = r.headers.get("content-type", "")
-            if ctype.startswith("image/"):
-                return _build_image_blocks(r.content, ctype, url)
-
-            if "application/json" in ctype:
-                text, extractor = json.dumps(r.json(), indent=2, ensure_ascii=False), "json"
-            elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
-                try:
-                    text = self._extract_readable_html(r.text, extract_mode)
-                    extractor = "readability"
-                except Exception as e:
-                    logger.warning(
-                        "Readability failed for {}, using raw HTML fallback ({})",
-                        _redact_url_for_log(url),
-                        type(e).__name__,
-                    )
-                    text, extractor = _normalize(_strip_tags(r.text)), "html"
-            else:
-                text, extractor = r.text, "raw"
-
-            truncated = len(text) > max_chars
-            if truncated:
-                text = text[:max_chars]
-            text = f"{_UNTRUSTED_BANNER}\n\n{text}"
-
-            return json.dumps({
-                "url": url, "finalUrl": str(r.url), "status": r.status_code,
-                "extractor": extractor, "truncated": truncated, "length": len(text),
-                "untrusted": True, "text": text,
-            }, ensure_ascii=False)
-        except httpx.ProxyError as e:
-            logger.warning(
-                "WebFetch proxy error for {} ({})",
-                _redact_url_for_log(url),
-                type(e).__name__,
-            )
-            return ToolResult.error(json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False))
-        except Exception as e:
-            logger.warning(
-                "WebFetch error for {} ({})",
-                _redact_url_for_log(url),
-                type(e).__name__,
-            )
-            return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
-
-    def _extract_readable_html(self, html_content: str, extract_mode: str) -> str:
-        from readability import Document as _RDoc  # noqa: I001  # type: ignore[import-untyped]  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
-
-        doc = cast(Any, _RDoc)(html_content)
-        summary = cast(str, doc.summary())
-        content = self._to_markdown(summary) if extract_mode == "markdown" else _strip_tags(summary)
-        doc_title = cast(str | None, doc.title())
-        return f"# {doc_title}\n\n{content}" if doc_title else content
-
-    def _to_markdown(self, html_content: str) -> str:
-        """UPSTREAM: Convert HTML to markdown."""
-        text = re.sub(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>',
-                      lambda m: f'[{_strip_tags(m[2])}]({m[1]})', html_content, flags=re.I)
-        text = re.sub(r'<h([1-6])[^>]*>([\s\S]*?)</h\1>',
-                      lambda m: f'\n{"#" * int(m[1])} {_strip_tags(m[2])}\n', text, flags=re.I)
-        text = re.sub(r'<li[^>]*>([\s\S]*?)</li>', lambda m: f'\n- {_strip_tags(m[1])}', text, flags=re.I)
-        text = re.sub(r'</(p|div|section|article)>', '\n\n', text, flags=re.I)
-        text = re.sub(r'<(br|hr)\s*/?>', '\n', text, flags=re.I)
-        return _normalize(_strip_tags(text))

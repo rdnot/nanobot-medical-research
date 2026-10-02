@@ -265,11 +265,18 @@ async def cmd_restart(ctx: CommandContext) -> OutboundMessage:
 
 
 async def cmd_clear(ctx: CommandContext) -> OutboundMessage:
-    """Clear session instantly (no memory consolidation)."""
-    session = ctx.session or ctx.loop.sessions.get_or_create(ctx.key)
+    """FORK: clear the session instantly (no memory consolidation).
+
+    Mirrors ``/new``'s teardown (cancel the running turn, drop tracked file
+    state) but skips archiving/consolidation.
+    """
+    loop = ctx.loop
+    await loop._cancel_active_tasks(ctx.key)  # pyright: ignore[reportPrivateUsage]
+    loop.discard_session_file_state(ctx.key)
+    session = ctx.session or loop.sessions.get_or_create(ctx.key)
     session.clear()
-    ctx.loop.sessions.save(session)
-    ctx.loop.sessions.invalidate(session.key)
+    loop.sessions.save(session)
+    loop.sessions.invalidate(session.key)
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,

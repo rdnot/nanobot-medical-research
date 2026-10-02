@@ -116,29 +116,35 @@ if TYPE_CHECKING:
     from nanobot.cron.service import CronService
     from nanobot.triggers.local_store import LocalTriggerStore
 
+_FORCE_FINAL_PROMPT = (
+    "(Automatic notice) The tool budget for this request is almost exhausted. "
+    "Do not call any more tools. Write the final answer now from the information "
+    "already gathered."
+)
+
+
 class _ForkProgressHook(AgentProgressHook):
-    """Fork: extends upstream AgentProgressHook with medical-research customizations."""
+    """Fork: extends upstream AgentProgressHook with medical-research customizations.
+
+    * ``force_final_threshold``: once ``context.iteration`` reaches it, a single
+      user-role notice asks the model to stop calling tools and answer. It is
+      injected into the live transcript (so provider conversation-state
+      boundaries stay valid) and carries the hidden-history marker so it is not
+      rendered as a chat turn.
+    * ``all_tool_calls_log``: every tool call made during the turn, consumed by
+      :meth:`AgentLoop._build_tools_summary`.
+    """
 
     def __init__(
         self,
-        agent_loop: AgentLoop,
         events: EventSink = NO_EVENTS,
         *,
         streaming: bool = False,
-        channel: str = "cli",
-        chat_id: str = "direct",
-        message_id: str | None = None,
-        force_final_threshold: int,  # FORK
-        metadata: dict[str, Any] | None = None,
+        force_final_threshold: int,
         session_key: str | None = None,
         tool_hint_max_length: int = 40,
-        set_tool_context: Callable[..., None] | None = None,
-        on_iteration: Callable[[int], None] | None = None,
-        log_content: bool = True,  # UPSTREAM privacy flag (Sep 2026)
+        log_content: bool = True,
     ) -> None:
-        # NOTE: upstream AgentProgressHook now takes events/streaming (Sep 2026
-        # scoped runtime notifications). We still accept unused channel/chat_id/
-        # message_id/metadata/set_tool_context for call-site compatibility.
         super().__init__(
             events=events,
             streaming=streaming,
@@ -146,57 +152,40 @@ class _ForkProgressHook(AgentProgressHook):
             tool_hint_max_length=tool_hint_max_length,
             log_content=log_content,
         )
-        self._loop = agent_loop
-        self._force_final_threshold = force_final_threshold  # FORK
-        # FORK: Track all tool calls for tools summary
+        self._force_final_threshold = force_final_threshold
+        self._force_final_injected = False
         self.all_tool_calls_log: list[dict[str, Any]] = []
 
     async def before_iteration(self, context: AgentHookContext) -> None:
         await super().before_iteration(context)
-        # FORK: Force final answer after threshold iterations
-        if context.iteration >= self._force_final_threshold and context.tool_calls:
+        # The runner hands each iteration a fresh context (tool_calls is always
+        # empty here), so the threshold alone decides. Iteration 0 is the first
+        # model call and never needs the notice.
+        if (
+            not self._force_final_injected
+            and context.iteration > 0
+            and context.iteration >= self._force_final_threshold
+        ):
+            self._force_final_injected = True
             context.messages.append({
                 "role": "user",
-                "content": (
-                    "For research query, don't use any more tools. "
-                    "Provide your final answer now based on all the information gathered."
-                )
+                "content": _FORCE_FINAL_PROMPT,
+                HIDDEN_HISTORY_META: True,
             })
+            logger.info(
+                "Force-final notice injected at iteration {} (threshold {})",
+                context.iteration, self._force_final_threshold,
+            )
 
     async def before_execute_tools(self, context: AgentHookContext) -> None:
-        # FORK: Track tool calls for summary
         for tc in context.tool_calls:
             if not tc.name:
                 continue
-            self.all_tool_calls_log.append({
-                "name": tc.name,
-                "arguments": tc.arguments or {}
-            })
+            arguments: dict[str, Any] = (
+                cast(dict[str, Any], tc.arguments) if isinstance(tc.arguments, dict) else {}
+            )
+            self.all_tool_calls_log.append({"name": tc.name, "arguments": arguments})
         await super().before_execute_tools(context)
-
-    def _tool_hint(self, tool_calls: list[Any]) -> str:
-        """FORK: web_search/web_fetch get custom display labels via _PatchedTC."""
-        from nanobot.utils.tool_hints import format_tool_hints
-
-        class _PatchedTC:
-            __slots__ = ("_tc", "name", "arguments")
-            def __init__(self, tc: Any, name_override: str) -> None:
-                self._tc: Any = tc
-                self.name: str = name_override
-                self.arguments: Any = tc.arguments
-
-        patched: list[Any] = []
-        for tc in tool_calls:
-            if tc.name == "web_search":
-                patched.append(_PatchedTC(tc, "web_search"))
-            elif tc.name in ("web_fetch", "fetch"):
-                patched.append(_PatchedTC(tc, "web_fetch"))
-            else:
-                patched.append(tc)
-        return format_tool_hints(patched, max_length=self._tool_hint_max_length)
-
-    def finalize_content(self, context: AgentHookContext, content: str | None) -> str | None:
-        return self._strip_think(content)
 
 
 _T = TypeVar("_T")
@@ -238,6 +227,7 @@ class TurnContext:
 
     outbound: OutboundMessage | None = None
     suppress_response: bool = False
+    tool_calls_log: list[dict[str, Any]] = field(default_factory=list)  # FORK
 
     events: EventSink = NO_EVENTS
     streaming: bool = False
@@ -350,6 +340,7 @@ class AgentLoop:
         max_concurrent_subagents: int | None = None,
         context_window_tokens: int | None = None,
         max_tool_result_chars: int | None = None,
+        max_tokens: int | None = None,  # FORK: write/edit size limits
         provider_retry_mode: str = "standard",
         tool_hint_max_length: int | None = None,
         cron_service: CronService | None = None,
@@ -427,6 +418,7 @@ class AgentLoop:
             else defaults.max_tool_result_chars
         )
         self.provider_retry_mode = provider_retry_mode
+        self.max_tokens = max_tokens  # FORK
         self.tool_hint_max_length = (
             tool_hint_max_length if tool_hint_max_length is not None
             else defaults.tool_hint_max_length
@@ -578,6 +570,7 @@ class AgentLoop:
             max_concurrent_subagents=defaults.max_concurrent_subagents,
             context_window_tokens=context_window_tokens,
             max_tool_result_chars=defaults.max_tool_result_chars,
+            max_tokens=defaults.max_tokens,  # FORK
             provider_retry_mode=defaults.provider_retry_mode,
             tool_hint_max_length=defaults.tool_hint_max_length,
             restrict_to_workspace=config.tools.restrict_to_workspace,
@@ -711,6 +704,7 @@ class AgentLoop:
             timezone=self.context.timezone or "UTC",
             workspace_sandbox=self.workspace_scopes.sandbox_status,
             runtime_control=AgentRuntimeControl(self),
+            max_output_tokens=self.max_tokens,  # FORK
         )
         loader = ToolLoader()
         registered = loader.load(ctx, self.tools)
@@ -731,34 +725,6 @@ class AgentLoop:
                 self._runtime_context_providers.remove(provider)
 
         return _unsubscribe
-
-    def _tool_hint(self, tool_calls: list[Any]) -> str:
-        """Format tool calls as concise hints with smart abbreviation.
-
-        FORK: web_search and web_fetch get custom display labels (search/fetch).
-        All other tools are handled by upstream's format_tool_hints utility,
-        which uses abbreviate_path and groups consecutive identical calls.
-        UPSTREAM: now instance method with max_length param for configurable truncation.
-        """
-        from nanobot.utils.tool_hints import format_tool_hints
-        # Patch web_search/web_fetch names for display before delegating
-        class _PatchedTC:
-            """Thin wrapper that overrides .name for display purposes only."""
-            __slots__ = ("_tc", "name", "arguments")
-            def __init__(self, tc: Any, name_override: str) -> None:
-                self._tc: Any = tc
-                self.name: str = name_override
-                self.arguments: Any = tc.arguments
-
-        patched: list[Any] = []
-        for tc in tool_calls:
-            if tc.name == "web_search":
-                patched.append(_PatchedTC(tc, "web_search"))  # kept as-is; format_tool_hints knows it
-            elif tc.name in ("web_fetch", "fetch"):
-                patched.append(_PatchedTC(tc, "web_fetch"))   # normalise "fetch" alias
-            else:
-                patched.append(tc)
-        return format_tool_hints(patched, max_length=self.tool_hint_max_length)
 
     @staticmethod
     def _build_tools_summary(all_tool_calls: list[dict[str, Any]]) -> str:
@@ -805,7 +771,7 @@ class AgentLoop:
             elif name in ("write_file",):
                 if args_dict:
                     path = _shorten_path(args_dict.get("path", ""))
-                    content = args_dict.get("file_text", "")
+                    content = args_dict.get("content", "")
                     first_line = _to_single_line(content, 60)
                     lines.append(f"- write_file({path}: {first_line})")
                 else:
@@ -813,8 +779,8 @@ class AgentLoop:
             elif name in ("edit_file",):
                 if args_dict:
                     path = _shorten_path(args_dict.get("path", ""))
-                    old_str = args_dict.get("old_str", "")
-                    first_line = _to_single_line(old_str, 60)
+                    old_text = args_dict.get("old_text", "")
+                    first_line = _to_single_line(old_text, 60)
                     lines.append(f"- edit_file({path}: {first_line})")
                 else:
                     lines.append("- edit_file(...)")
@@ -1175,6 +1141,7 @@ class AgentLoop:
         tools: ToolRegistry | None = None,
         request_context: RequestContext | None = None,
         provider_state: ProviderConversationState | None = None,
+        tool_calls_log: list[dict[str, Any]] | None = None,
     ) -> AgentRunResult:
         """Run the agent iteration loop.
 
@@ -1184,7 +1151,7 @@ class AgentLoop:
         the next text segment belongs to the same user-visible assistant message.
 
         Returns the complete result produced by ``AgentRunner``.
-        Fork stores the turn tool-call log on ``self._last_tool_calls_log``.
+        Fork: when *tool_calls_log* is given, the turn's tool calls are appended to it.
         """
         # UPSTREAM: Sync subagent runtime limits
         self._sync_subagent_runtime_limits()
@@ -1385,13 +1352,11 @@ class AgentLoop:
                 and (session is None or session.policy.log_content)
             ),
         )
-        # FORK: build _ForkProgressHook here (subclass of AgentProgressHook)
-        # so force_final_threshold, all_tool_calls_log, and _tool_hint are active.
-        # Pass it into build_agent_turn_hook via spec.progress_hook so upstream's
-        # hook-factory composition still works around it. Built after request_ctx
-        # is finalized so log_content (privacy) is forwarded to the hook.
+        # FORK: the progress hook subclass adds the force-final notice and the
+        # tool-call log. It is passed via spec.progress_hook so upstream's
+        # hook-factory composition still wraps it. Built after request_ctx is
+        # finalized so log_content (privacy) is forwarded.
         loop_hook = _ForkProgressHook(
-            self,
             events=events,
             streaming=streaming,
             force_final_threshold=force_final_threshold,  # FORK
@@ -1517,7 +1482,8 @@ class AgentLoop:
                 "LLM returned error: {}",
                 (result.final_content or "")[:200] if request_ctx.log_content else "[content hidden]",
             )
-        self._last_tool_calls_log = loop_hook.all_tool_calls_log  # FORK
+        if tool_calls_log is not None:  # FORK
+            tool_calls_log.extend(loop_hook.all_tool_calls_log)
         return result
 
     def _check_expired_sessions_if_due(self) -> None:
@@ -2382,13 +2348,13 @@ class AgentLoop:
                 request_context=ctx.request_context,
                 provider_state=ctx.provider_state,
                 events=ctx.events,
+                tool_calls_log=ctx.tool_calls_log,  # FORK
             )
         ctx.final_content = result.final_content
         ctx.all_messages = result.messages
         ctx.summary_checkpoint = result.summary_checkpoint
         ctx.provider_compaction_applied = result.provider_compaction_applied
         ctx.stop_reason = result.stop_reason
-        ctx.tool_calls_log = getattr(self, "_last_tool_calls_log", [])  # FORK  # pyright: ignore[reportAttributeAccessIssue]
         ctx.failure_error_kind = result.failure_error_kind
         if (
             ctx.kind is TurnKind.USER
@@ -2459,10 +2425,10 @@ class AgentLoop:
             ctx.outbound = None
             return
 
-        # FORK: Send tools summary message before final response
-        tool_calls_log: list[dict[str, Any]] | None = getattr(ctx, "tool_calls_log", None)
-        if tool_calls_log:
-            tools_summary = self._build_tools_summary(tool_calls_log)
+        # FORK: send the tools summary before the final response. Only user turns
+        # get it; background/system turns keep their own delivery policy.
+        if ctx.kind is TurnKind.USER and ctx.tool_calls_log:
+            tools_summary = self._build_tools_summary(ctx.tool_calls_log)
             await self.bus.publish_outbound(OutboundMessage(
                 channel=ctx.msg.channel, chat_id=ctx.msg.chat_id, content=tools_summary,
                 metadata={**(ctx.msg.metadata or {}), "_tools_summary": True},

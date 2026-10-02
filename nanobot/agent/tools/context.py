@@ -97,3 +97,5 @@ class ToolContext:
     timezone: str = "UTC"
     workspace_sandbox: WorkspaceSandboxStatus | None = None
     runtime_control: RuntimeControl | None = None
+    # FORK: model output budget (agents.defaults.max_tokens) for write/edit size limits.
+    max_output_tokens: int | None = None

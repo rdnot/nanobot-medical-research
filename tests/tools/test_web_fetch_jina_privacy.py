@@ -202,11 +202,9 @@ async def test_execute_fetches_credential_urls_locally(monkeypatch) -> None:
             requested.append(str(url))
             return FakeResponse()
 
-    monkeypatch.setattr(tool, "_extract_readable_html", lambda html, mode: "ok")
-    # FORK: mock _fetch_raw (curl_cffi → httpx tiered fetcher) instead of upstream's
-    # httpx.AsyncClient pre-fetch. Fork's 2-tier fetcher handles the fetch; credential
-    # URLs are already blocked from Jina by _url_carries_credentials().
-    async def _fake_fetch_raw(url, proxy=None):
+    # FORK: mock the tiered fetcher; credential URLs are blocked from Jina by
+    # _url_carries_credentials() before any fetch happens.
+    async def _fake_fetch_raw(url, proxy=None, user_agent=None):
         return (b"<html><head><title>T</title></head><body><p>ok</p></body></html>",
                 {"content-type": "text/html"}, 200, "httpx")
     monkeypatch.setattr(web_module, "_fetch_raw", _fake_fetch_raw)
@@ -271,10 +269,9 @@ async def test_execute_does_not_send_redirected_credential_url_to_jina(monkeypat
             requested.append(str(url))
             return FakeResponse()
 
-    monkeypatch.setattr(tool, "_extract_readable_html", lambda html, mode: "ok")
-    # FORK: mock _fetch_raw (curl_cffi → httpx tiered fetcher) instead of upstream's
-    # httpx.AsyncClient pre-fetch. Fork skips the pre-fetch redirect-chain scanner.
-    async def _fake_fetch_raw(url, proxy=None):
+    # FORK: mock the tiered fetcher (redirect validation is covered in
+    # test_web_fetch_security.py); only the Jina gate matters here.
+    async def _fake_fetch_raw(url, proxy=None, user_agent=None):
         return (b"<html><head><title>T</title></head><body><p>ok</p></body></html>",
                 {"content-type": "text/html"}, 200, "httpx")
     monkeypatch.setattr(web_module, "_fetch_raw", _fake_fetch_raw)

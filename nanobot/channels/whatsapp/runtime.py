@@ -71,14 +71,15 @@ def _markdown_to_whatsapp(text: str) -> str:
         return f"{_PH_INLINE_CODE}{len(inline_codes) - 1}\x02"
     text = re.sub(r'`([^`]+)`', save_inline_code, text)
 
-    # 3. Convert headers to bold (WhatsApp doesn't support # headers)
+    # 3. Convert headers to bold (WhatsApp doesn't support # headers). The text is
+    # kept as written: upper-casing would alter units and drug names.
     def convert_header(m: re.Match[str]) -> str:
-        return f"{_PH_BOLD_START}{m.group(1).strip().upper()}{_PH_BOLD_END}"
+        return f"{_PH_BOLD_START}{m.group(1).strip()}{_PH_BOLD_END}"
     text = re.sub(r'^#{1,6}\s+(.+)$', convert_header, text, flags=re.MULTILINE)
 
-    # 3b. Convert bullet lists early: - item or * item -> • item
+    # 3b. Convert bullet lists early (indentation preserved): - item or * item -> • item
     # Must happen before step 4-6 which process * as formatting
-    text = re.sub(r'^[-*]\s+', '• ', text, flags=re.MULTILINE)
+    text = re.sub(r'^(\s*)[-*]\s+', r'\1• ', text, flags=re.MULTILINE)
 
     # 4. Handle ***bold italic*** -> *_bold italic_* (via placeholder to avoid later corruption)
     text = re.sub(r'\*\*\*(.+?)\*\*\*', f'{_PH_BOLD_ITALIC_START}\\1{_PH_BOLD_ITALIC_END}', text)
@@ -86,8 +87,9 @@ def _markdown_to_whatsapp(text: str) -> str:
     # 5. Convert bold: **text** -> *text* (via placeholders)
     text = re.sub(r'\*\*(.+?)\*\*', f'{_PH_BOLD_START}\\1{_PH_BOLD_END}', text)
 
-    # 6. Convert markdown italic: *text* -> _text_
-    text = re.sub(r'\*([^*]+)\*', r'_\1_', text)
+    # 6. Convert markdown italic: *text* -> _text_ (single line only, so stray
+    # asterisks in arithmetic such as "5 * 3" on different lines are not paired)
+    text = re.sub(r'\*([^*\n]+)\*', r'_\1_', text)
 
     # 7. Restore bold placeholders as WhatsApp bold
     text = text.replace(_PH_BOLD_START, '*').replace(_PH_BOLD_END, '*')

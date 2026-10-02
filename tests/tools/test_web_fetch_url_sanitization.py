@@ -91,7 +91,7 @@ async def test_execute_accepts_cleanable_http_urls(url):
 
     # FORK: fork's tiered fetcher (curl_cffi -> httpx) bypasses the httpx mock,
     # so also patch _fetch_raw to keep these tests hermetic (no real network).
-    async def _fake_fetch_raw(fetch_url, proxy=None):
+    async def _fake_fetch_raw(fetch_url, proxy=None, user_agent=None):
         return b"<html><body>Example</body></html>", {"content-type": "text/html"}, 200, "curl_cffi"
 
     with _patched_web_fetch(), patch(

@@ -172,9 +172,7 @@ def test_from_config_default_path():
         mock_prov.return_value.get_default_model.return_value = "test"
         mock_prov.return_value.generation.max_tokens = 4096
         Nanobot.from_config()
-        # Fork calls load_config multiple times during init; verify first call uses default path
-        assert mock_load.call_count >= 1
-        assert mock_load.call_args_list[0].args == (None,)
+        mock_load.assert_called_once_with(None)
 
 
 @pytest.mark.asyncio
