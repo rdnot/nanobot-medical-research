@@ -91,6 +91,33 @@ def test_pubmed_markers():
     assert not _has_pubmed_article_content(b"<html><title>only</title></html>")
 
 
+def test_pubmed_article_without_known_markers_is_accepted_by_visible_text():
+    # Current PMC markup carries none of the legacy markers; a real article is
+    # recognised by its amount of visible prose instead of exact HTML hooks.
+    body = "".join(f"<p>Pneumonia paragraph {i} with clinical detail and findings.</p>" for i in range(80))
+    page = f"<html><head><title>Pneumonia - PMC</title></head><body><main>{body}</main></body></html>".encode()
+    assert _has_pubmed_article_content(page)
+
+    shell = (
+        "<html><head><title>Pneumonia - PMC</title><script src='app.js'></script></head>"
+        "<body><div id='root'></div></body></html>"
+    ).encode()
+    assert not _has_pubmed_article_content(shell)
+
+
+def test_ncbi_cookie_proof_of_work_shell_is_a_challenge():
+    shell = (
+        "<html><head><title>PMC</title></head><body><p>Cookies must be enabled to use this site.</p>"
+        "<script>/* proof of work */</script></body></html>"
+    ).encode()
+    assert _is_recaptcha_challenge(shell)
+    assert not _has_pubmed_article_content(shell)
+    # A long real article that merely mentions cookies is not a challenge.
+    article = ("<html><body>" + "<p>Cookies must be enabled is a phrase in this methods text.</p>" * 400 + "</body></html>").encode()
+    assert not _is_recaptcha_challenge(article)
+    assert _has_pubmed_article_content(article)
+
+
 # ---------------------------------------------------------------------------
 # browser tier
 # ---------------------------------------------------------------------------

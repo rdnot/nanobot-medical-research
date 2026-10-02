@@ -335,21 +335,41 @@ def _is_cloudflare_protected(content: bytes | None) -> bool:
     return _is_cloudflare_challenge_text(content[:8000].decode("utf-8", errors="replace").lower())
 
 
+_NCBI_ARTICLE_MIN_VISIBLE_CHARS = 2_500
+
+
 def _is_recaptcha_challenge(content_bytes: bytes) -> bool:
-    """Google reCAPTCHA Enterprise interstitial served by PMC/PubMed/Bookshelf (HTTP 200)."""
+    """NCBI interstitials served with a 2xx status instead of the article.
+
+    Covers the Google reCAPTCHA Enterprise page ("Checking your browser") and the
+    newer proof-of-work shell ("Cookies must be enabled", often HTTP 203). Both are
+    small pages; the cookie wording alone is only treated as a challenge when the
+    document is shell-sized, so an article that merely mentions cookies passes.
+    """
     raw = content_bytes.decode("utf-8", errors="replace").lower()
-    return "checking your browser" in raw and "recaptcha" in raw
+    if "checking your browser" in raw and "recaptcha" in raw:
+        return True
+    return "cookies must be enabled" in raw and len(raw) < 20_000
 
 
 def _has_pubmed_article_content(content_bytes: bytes) -> bool:
-    """True when PubMed/PMC HTML contains the article body rather than a shell/challenge."""
+    """True when PubMed/PMC HTML carries the article rather than a shell/challenge.
+
+    Known layout markers are accepted directly. Because NCBI changes its markup,
+    a page that is not a challenge and has substantial visible text also counts;
+    title-only shells have only a few hundred characters of text.
+    """
     if _is_recaptcha_challenge(content_bytes):
         return False
     raw = content_bytes.decode("utf-8", errors="replace").lower()
-    return any(marker in raw for marker in (
+    if any(marker in raw for marker in (
         'id="main-content"', 'id="article-container"', "pmc-article-section",
         "article-body", 'class="abstract"', 'section class="abstract"',
-    ))
+        'class="main-article-body"', "pmc-layout", 'aria-label="article content"',
+    )):
+        return True
+    visible = _normalize(_strip_tags(raw))
+    return len(visible) >= _NCBI_ARTICLE_MIN_VISIBLE_CHARS
 
 
 # UPSTREAM (pinned DNS, SSRF hardening): validate URL and return resolved IPs for pinning
