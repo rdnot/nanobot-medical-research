@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier (Scrapling/Playwright) in
   `nanobot/agent/tools/web.py`. Only `web.py` and its tests differ from `main`.
 
-## Customizations (verified October 2, 2026)
+## Customizations (verified October 2, 2026 — includes upstream merge #6, 28 commits through `d0d0a44e5`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False`; `DEFAULT_SEARXNG_URL` constant forces
