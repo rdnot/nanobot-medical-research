@@ -166,7 +166,7 @@ class SubagentManager:
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
 
     def runtime_statuses(self) -> Mapping[str, SubagentStatus]:
-        """Return the observable task statuses used by runtime-control snapshots."""
+        """Return the observable statuses of all active tasks."""
         return self._task_statuses
 
     def statuses_for_session(self, session_key: str | None) -> Mapping[str, SubagentStatus]:
