@@ -168,8 +168,13 @@ async def test_web_private_diagnostics_keep_error_category_not_content(
     error = RuntimeError(url)
     with request_context(RequestContext(channel="websocket", chat_id="test", log_content=log_content)):
         if kind == "fetch":
+            async def _no_curl(url, proxy, user_agent):
+                return None
+
+            monkeypatch.setattr("nanobot.agent.tools.web._fetch_curl_cffi", _no_curl)
+            monkeypatch.setattr("nanobot.agent.tools.web._validate_url_safe", lambda url: (True, ""))
             monkeypatch.setattr("nanobot.agent.tools.web.httpx.AsyncClient", MagicMock(side_effect=error))
-            result = await WebFetchTool()._fetch_readability(url, "text", 100)
+            result = await WebFetchTool().execute(url=url, extract_mode="text")
             assert url in result
         elif kind == "jina":
             tool = WebSearchTool(config=WebSearchConfig(provider="jina", api_key="synthetic"))

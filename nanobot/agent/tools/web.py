@@ -6,11 +6,16 @@ from __future__ import annotations
 
 import asyncio
 import html
+import importlib.util
+import io
 import json
+import mimetypes
 import os
 import re
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast
+import subprocess
+import sys
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 from urllib.parse import parse_qsl, quote, urljoin, urlparse
 
 import httpx
@@ -27,15 +32,10 @@ from nanobot.agent.tools.schema import (
 )
 from nanobot.config_base import Base
 
-if TYPE_CHECKING:
-    from nanobot.config.schema import WebFetchConfig, WebSearchConfig
-
-# Scrapling availability check (async browser tier)
-try:
-    from scrapling.fetchers import AsyncStealthySession
-    SCRAPLING_AVAILABLE = True
-except ImportError:
-    SCRAPLING_AVAILABLE = False
+# Scrapling (stealth Playwright) availability. The package itself is imported
+# lazily inside _fetch_scrapling so the CLI never pays the Playwright import
+# cost at startup.
+SCRAPLING_AVAILABLE = importlib.util.find_spec("scrapling") is not None
 
 # Shared constants
 _DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -141,23 +141,51 @@ def _smart_truncate(text: str, max_chars: int) -> str:
     return text[:max_chars] + " [...truncated...]"
 
 
-# FORK: PDF text extraction using PyMuPDF
+class RedirectBlockedError(Exception):
+    """A redirect target failed URL safety validation (SSRF guard)."""
+
+
+# FORK: PDF text extraction (PyMuPDF, falling back to the bundled pypdf)
 def _extract_pdf_text(pdf_data: bytes) -> str:
-    """Extract text from PDF using PyMuPDF."""
+    """Extract page-delimited text from PDF bytes.
+
+    Raises ``RuntimeError`` when no extractor is available or extraction fails so the
+    caller can report a tool error instead of returning the error text as document content.
+    """
+    pymupdf: Any = None
     try:
-        import fitz  # PyMuPDF  # pyright: ignore[reportMissingTypeStubs]
-        doc = fitz.open(stream=pdf_data, filetype="pdf")
-        text_lines: list[str] = []
-        for page_num in range(len(doc)):
-            page = cast(Any, doc[page_num])
-            text = cast(str, page.get_text())
-            text_lines.append(f"--- Page {page_num + 1} ---\n{text}")
-        doc.close()
-        return "\n".join(text_lines)
+        import pymupdf  # pyright: ignore[reportMissingTypeStubs,reportMissingImports]
     except ImportError:
-        return "Error: PyMuPDF (fitz) not installed. Install with: pip install PyMuPDF"
+        try:
+            import fitz as pymupdf  # legacy PyMuPDF module name  # pyright: ignore[reportMissingTypeStubs,reportMissingImports]
+        except ImportError:
+            pymupdf = None
+    if pymupdf is not None:
+        try:
+            doc: Any = pymupdf.open(stream=pdf_data, filetype="pdf")
+            text_lines: list[str] = []
+            for page_num in range(len(doc)):
+                text = cast(str, doc[page_num].get_text())
+                text_lines.append(f"--- Page {page_num + 1} ---\n{text}")
+            doc.close()
+            return "\n".join(text_lines)
+        except Exception as e:
+            raise RuntimeError(f"PDF extraction failed: {e}") from e
+    try:
+        from pypdf import PdfReader
+    except ImportError as e:
+        raise RuntimeError(
+            "No PDF extractor available: install PyMuPDF (pip install pymupdf) or pypdf"
+        ) from e
+    try:
+        reader = PdfReader(io.BytesIO(pdf_data))
+        pages = [
+            f"--- Page {page_num + 1} ---\n{page.extract_text() or ''}"
+            for page_num, page in enumerate(reader.pages)
+        ]
+        return "\n".join(pages)
     except Exception as e:
-        return f"Error extracting PDF: {e}"
+        raise RuntimeError(f"PDF extraction failed: {e}") from e
 
 
 # FORK: Extract author, date, description from HTML meta tags
@@ -198,142 +226,130 @@ def _build_image_blocks(data: bytes, content_type: str, url: str) -> list[dict[s
     ]
 
 
-def _is_content_sufficient(content_bytes: bytes, url: str) -> bool:
+_IMAGE_URL_RE = re.compile(r"\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|$)", re.I)
+
+
+def _image_mime_for(content_type: str, url: str) -> str | None:
+    """Return the image MIME type for a response, or None when it is not an image.
+
+    The Content-Type header wins. The URL extension is only consulted when the
+    server sent no usable type, so an HTML page served at ``/chart.png`` is never
+    mislabelled as an image.
     """
-    Returns False if we got a JS shell → escalate to Scrapling browser.
-    Tuned on real Reddit HTML (Feb 2026).
-    """
-    try:
-        raw = content_bytes.decode("utf-8", errors="replace").lower()
-    except Exception:
+    mime = content_type.split(";")[0].strip().lower()
+    if mime.startswith("image/"):
+        return mime
+    if mime and mime != "application/octet-stream":
+        return None
+    if not _IMAGE_URL_RE.search(url):
+        return None
+    guessed, _ = mimetypes.guess_type(urlparse(url).path)
+    return guessed if guessed and guessed.startswith("image/") else "image/jpeg"
+
+
+
+_JS_SHELL_SIGNALS = (
+    '<div id="root"></div>', '<div id="app"></div>',
+    "enable javascript", "requires javascript", "javascript is required",
+)
+_CLOUDFLARE_SIGNALS = (
+    "just a moment", "checking your browser", "cf-browser-verification", "cf_chl_opt",
+)
+
+
+def _looks_like_html(content_bytes: bytes, content_type: str = "") -> bool:
+    mime = content_type.split(";")[0].strip().lower()
+    if mime:
+        return mime in {"text/html", "application/xhtml+xml"}
+    head = content_bytes[:512].lstrip().lower()
+    return head.startswith((b"<!doctype", b"<html", b"<head", b"<body"))
+
+
+def _is_cloudflare_challenge_text(raw: str) -> bool:
+    if any(sig in raw for sig in _CLOUDFLARE_SIGNALS):
         return True
+    # "challenge-platform" is a Cloudflare marker, but the benign beacon script
+    # at /cdn-cgi/challenge-platform/scripts/jsd/main.js also contains it.
+    return "challenge-platform" in raw and "/cdn-cgi/challenge-platform/" not in raw
 
-    # Real rendered pages are significantly larger than shells
-    if len(raw) < 8000:
+
+def _is_content_sufficient(content_bytes: bytes, url: str, content_type: str = "") -> bool:
+    """Return False when a response is a JS shell / challenge page that needs a browser.
+
+    Non-HTML payloads (JSON, XML, PDF, images, plain text) are always sufficient:
+    a browser cannot improve them and would mislabel them as HTML.
+    """
+    if not _looks_like_html(content_bytes, content_type):
+        return True
+    raw = content_bytes.decode("utf-8", errors="replace").lower()
+    lowered_url = url.lower()
+
+    if _is_cloudflare_challenge_text(raw):
         return False
 
-    # Cloudflare challenge page — not real content, escalate to browser tier
-    # (checked here so curl_cffi returns False → falls through to Scrapling)
-    if any(sig in raw for sig in [
-        "just a moment", "checking your browser",
-        "cf-browser-verification", "cf_chl_opt",
-    ]):
-        return False
-    # "challenge-platform" is a Cloudflare marker, but the benign beacon
-    # script at /cdn-cgi/challenge-platform/scripts/jsd/main.js also
-    # contains it — only flag it when the beacon path is NOT present.
-    if "challenge-platform" in raw and "/cdn-cgi/challenge-platform/" not in raw:
-        return False
-
-    # Generic JS-shell signals (framework-agnostic)
-    if '<div id="root"></div>' in raw or '<div id="app"></div>' in raw:
-        return False
-    if any(sig in raw for sig in ["enable javascript", "requires javascript", "javascript is required"]):
-        # False positive: NCBI Bookshelf pages contain "requires javascript" in a header banner
-        # but ship full SSR content (not a JS shell). Strong markers of real NCBI content:
-        if "ncbi.nlm.nih.gov" in url.lower() and any(m in raw for m in [
+    if any(sig in raw for sig in _JS_SHELL_SIGNALS):
+        # NCBI Bookshelf pages carry a "requires javascript" banner but ship
+        # full server-rendered content.
+        if "ncbi.nlm.nih.gov" in lowered_url and any(m in raw for m in (
             "statpearls", "bookshelf", "citation_title", "ncbi_acc",
             "ncbi_bookparttype", "ncbi_pagename", "continuing education",
-        ]):
+        )):
             return True
         return False
 
-    if "reddit.com" in url.lower():
-        # Strong positive markers of real content
-        if any(m in raw for m in [
-            "shreddit-app",            # root component
-            "shreddit-post",           # post body
-            "shreddit-comment",        # crucial for threads
-            "shreddit-comment-tree",   # comment container
-            "faceplate-tracker",       # engagement tracker (only in real render)
-            'data-testid="post-content"',
-        ]):
-            return True
+    # Small HTML documents are only treated as shells when they are mostly
+    # script with almost no visible text.
+    if len(raw) < 8000 and "<script" in raw:
+        visible = _normalize(_strip_tags(raw))
+        if len(visible) < 500:
+            return False
 
-        # Edge-case: old Reddit structure without new components = shell
+    if "reddit.com" in lowered_url:
+        if any(m in raw for m in (
+            "shreddit-app", "shreddit-post", "shreddit-comment",
+            "shreddit-comment-tree", "faceplate-tracker", 'data-testid="post-content"',
+        )):
+            return True
         if 'id="comment-tree"' in raw and "shreddit-comment" not in raw:
             return False
 
-    if "bbc.com" in url.lower() or "bbc.co.uk" in url.lower():
-        # BBC SSR sends real HTML but article body is lazy-loaded via XHR.
-        # The initial HTML only has a brief intro block — escalate to browser
-        # unless we see the full article prose markers.
-        # Live blogs (/news/live/) use different component names than standard articles.
-        has_article_body = any(m in raw for m in [
-            'data-component="text-block"',        # article body paragraphs
-            'data-testid="article-body"',         # newer layout
-            '"articleBody"',                      # JSON-LD structured data
-            'data-e2e="article-body"',            # sport/live pages
-            'data-testid="live-post"',            # live blog post block
-            'data-component="livepost"',          # live blog component
-            'data-component="liveblog"',          # live blog wrapper
-            'data-testid="liveblog"',             # live blog testid
-            'data-post-id=',                      # individual live blog post
-            'data-testid="lx-stream-post"',       # live experience stream post
-            'data-e2e="lx-stream-post"',          # live experience stream post (alt)
-            '"liveblogposting"',                  # JSON-LD LiveBlogPosting type
-        ])
+    if "bbc.com" in lowered_url or "bbc.co.uk" in lowered_url:
+        # BBC's initial HTML only has a brief intro block; the article body is
+        # lazy-loaded unless one of these markers is present.
+        has_article_body = any(m in raw for m in (
+            'data-component="text-block"', 'data-testid="article-body"', '"articlebody"',
+            'data-e2e="article-body"', 'data-testid="live-post"', 'data-component="livepost"',
+            'data-component="liveblog"', 'data-testid="liveblog"', "data-post-id=",
+            'data-testid="lx-stream-post"', 'data-e2e="lx-stream-post"', '"liveblogposting"',
+        ))
         if not has_article_body:
             return False
 
     return True
 
 
-def _is_cloudflare_protected(status: int | None, content: bytes | None) -> bool:
-    """
-    Detect if curl_cffi hit a solvable Cloudflare challenge page.
-    Only returns True for actual CF interstitial/Turnstile pages — NOT bare 403s.
-    A bare 403 (e.g. GameStop Bot Fight Mode) has no challenge to solve,
-    so solve_cloudflare=True would waste time and still fail.
-    """
+def _is_cloudflare_protected(content: bytes | None) -> bool:
+    """True for a solvable Cloudflare interstitial/Turnstile page (not a bare 403)."""
     if not content:
         return False
-    try:
-        snippet = content[:8000].decode("utf-8", errors="replace").lower()
-        return any(m in snippet for m in [
-            "just a moment",            # CF interstitial spinner
-            "cf-browser-verification",  # CF challenge form
-            "checking your browser",    # CF spinner text
-            "cf_chl_opt",               # CF challenge JS variable
-        ]) or (
-            "challenge-platform" in snippet   # CF challenge platform
-            and "/cdn-cgi/challenge-platform/" not in snippet  # but NOT the benign beacon
-        )
-    except Exception:
-        return False
+    return _is_cloudflare_challenge_text(content[:8000].decode("utf-8", errors="replace").lower())
 
 
 def _is_recaptcha_challenge(content_bytes: bytes) -> bool:
-    """
-    Detect Google reCAPTCHA Enterprise challenge pages (HTTP 200).
-    PMC/PubMed serves these as an interstitial before the real article.
-    The page contains 'Checking your browser' and loads grecaptcha.enterprise.js.
-    """
-    try:
-        raw = content_bytes.decode("utf-8", errors="replace").lower()
-    except Exception:
-        return False
+    """Google reCAPTCHA Enterprise interstitial served by PMC/PubMed/Bookshelf (HTTP 200)."""
+    raw = content_bytes.decode("utf-8", errors="replace").lower()
     return "checking your browser" in raw and "recaptcha" in raw
 
 
 def _has_pubmed_article_content(content_bytes: bytes) -> bool:
-    """Return True when PubMed/PMC HTML contains the real article body, not a shell/challenge."""
-    try:
-        raw = content_bytes.decode("utf-8", errors="replace").lower()
-    except Exception:
-        return False
+    """True when PubMed/PMC HTML contains the article body rather than a shell/challenge."""
     if _is_recaptcha_challenge(content_bytes):
         return False
-    # PMC full article pages consistently include these server-rendered article markers.
-    # Title-only/shell pages can still return HTTP 200, so status alone is not enough.
-    return any(marker in raw for marker in [
-        'id="main-content"',
-        'id="article-container"',
-        'pmc-article-section',
-        'article-body',
-        'class="abstract"',
-        'section class="abstract"',
-    ])
+    raw = content_bytes.decode("utf-8", errors="replace").lower()
+    return any(marker in raw for marker in (
+        'id="main-content"', 'id="article-container"', "pmc-article-section",
+        "article-body", 'class="abstract"', 'section class="abstract"',
+    ))
 
 
 # UPSTREAM (pinned DNS, SSRF hardening): validate URL and return resolved IPs for pinning
@@ -457,63 +473,18 @@ async def _get_with_safe_redirects(
     return None, f"Too many redirects: exceeded limit of {MAX_REDIRECTS}"
 
 
-async def _stream_with_safe_redirects(  # pyright: ignore[reportUnusedFunction]
-    client: httpx.AsyncClient,
-    url: str,
-    headers: dict[str, str] | None = None,
-) -> tuple[httpx.Response | None, Any | None, str | None, bool]:
-    """Open a streamed response while validating every redirect target first."""
-    current_url = url
-    chain_carries_credentials = _url_carries_credentials(url)
-    for _ in range(MAX_REDIRECTS + 1):
-        is_valid, error_msg, _ = _resolve_url_safe(current_url)
-        if not is_valid:
-            return None, None, f"Redirect blocked: {error_msg}", chain_carries_credentials
-
-        stream = client.stream(
-            "GET",
-            current_url,
-            headers=headers,
-            follow_redirects=False,
-        )
-        try:
-            response = await stream.__aenter__()
-        except httpx.RequestError as exc:
-            unsafe_error = _unsafe_url_request_error(exc)
-            if unsafe_error is not None:
-                return (
-                    None,
-                    None,
-                    f"Redirect blocked: {unsafe_error}",
-                    chain_carries_credentials,
-                )
-            raise
-        is_redirect = 300 <= response.status_code < 400
-        if not is_redirect:
-            return response, stream, None, chain_carries_credentials
-
-        location = response.headers.get("location")
-        if not location:
-            return response, stream, None, chain_carries_credentials
-
-        next_url = urljoin(str(response.url), location)
-        chain_carries_credentials = (
-            chain_carries_credentials or _url_carries_credentials(next_url)
-        )
-        is_valid, error_msg = _validate_url_safe(next_url)
-        if not is_valid:
-            await stream.__aexit__(None, None, None)
-            return None, None, f"Redirect blocked: {error_msg}", chain_carries_credentials
-
-        await stream.__aexit__(None, None, None)
-        current_url = next_url
-
-    return (
-        None,
-        None,
-        f"Too many redirects: exceeded limit of {MAX_REDIRECTS}",
-        chain_carries_credentials,
-    )
+def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
+    """Format provider results into shared plaintext output."""
+    if not items:
+        return f"No results for: {query}"
+    lines = [f"Results for: {query}\n"]
+    for i, item in enumerate(items[:n], 1):
+        title = _normalize(_strip_tags(item.get("title", "")))
+        snippet = _normalize(_strip_tags(item.get("content", "")))
+        lines.append(f"{i}. {title}\n   {item.get('url', '')}")
+        if snippet:
+            lines.append(f"   {snippet}")
+    return "\n".join(lines)
 
 
 def _normalize_volcengine_time_range(value: Any) -> str | None:
@@ -542,380 +513,438 @@ def _normalize_volcengine_auth_level(value: Any) -> int | None:
     return auth_level
 
 
-async def _fetch_raw(url: str, proxy: str | None = None) -> tuple[bytes, dict[str, Any], int, str]:
+_FetchResult = tuple[bytes, dict[str, Any], int, str]
+
+
+def _fetch_headers(user_agent: str, *, impersonating: bool) -> dict[str, str]:
+    """Request headers for a raw fetch.
+
+    When curl_cffi impersonates Chrome it supplies a matching User-Agent; only
+    override it when the operator configured a custom ``web.user_agent``.
     """
-    Fetch URL bytes with tiered fallback strategy:
-      1. curl_cffi           — Chrome TLS impersonation, fast, no browser
-                               (skipped for Reddit — always needs real browser)
-                               (skipped for PubMed/PMC — reCAPTCHA Enterprise challenge)
-      2. AsyncStealthySession — stealth Playwright (Patchright), handles JS-rendered
-                                pages: Reddit comments, Cloudflare, heavy SPAs,
-                                PubMed/PMC reCAPTCHA Enterprise.
-                                solve_cloudflare auto-enabled when CF detected.
-      3. httpx               — last resort, no stealth
-    Returns (content_bytes, headers_dict, status_code, fetcher_name)
+    if impersonating and user_agent == _DEFAULT_USER_AGENT:
+        return {}
+    return {"User-Agent": user_agent}
+
+
+async def _fetch_curl_cffi(
+    url: str, proxy: str | None, user_agent: str
+) -> _FetchResult | None:
+    """Tier 1: curl_cffi with Chrome TLS impersonation.
+
+    Redirects are followed manually so every hop is validated against the SSRF
+    policy before it is requested. Returns ``None`` when curl_cffi is not
+    installed or the request fails, so the caller can fall through to httpx.
+    Raises ``RedirectBlockedError`` for an unsafe redirect target; that is a
+    final verdict and must not be retried by another tier.
     """
-    is_reddit = "reddit.com" in url.lower()
-    is_pubmed = "pubmed.ncbi.nlm.nih.gov" in url.lower() or "pmc.ncbi.nlm.nih.gov" in url.lower()
-    # FORK (Sep 2026): NCBI Bookshelf (/books/NBK*/) now serves the same Google
-    # reCAPTCHA Enterprise interstitial as PubMed/PMC. Route it through the same
-    # browser-tier bypass: skip curl_cffi (challenge page), wait for real content
-    # markers, validate, retry.
-    is_bookshelf = "ncbi.nlm.nih.gov/books/" in url.lower()
-    curl_cffi_status: int | None = None
-    curl_cffi_content: bytes | None = None
-
-    # --- Tier 1: curl_cffi (Chrome TLS fingerprint, fast, no browser) ---
-    # Skipped for Reddit: always returns a JS shell or triggers "prove you are human"
-    # Skipped for PubMed/PMC: reCAPTCHA Enterprise challenge page (HTTP 200)
-    if not is_reddit and not is_pubmed and not is_bookshelf:
-        try:
-            from curl_cffi.requests import AsyncSession  # noqa: I001  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
-            logger.debug("curl_cffi fetch: {}", "proxy enabled" if proxy else "direct connection")
-            async with AsyncSession() as session:  # pyright: ignore[reportUnknownVariableType]
-                r: Any = await session.get(  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
-                    url,
-                    impersonate="chrome",
-                    allow_redirects=True,
-                    max_redirects=MAX_REDIRECTS,
-                    timeout=30,
-                    headers={"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
-                    proxy=proxy,
-                )
-                curl_cffi_status = cast(int | None, r.status_code)
-                curl_cffi_content = cast(bytes | None, r.content)
-                if curl_cffi_status is not None and curl_cffi_content is not None and curl_cffi_status < 400 and _is_content_sufficient(curl_cffi_content, url):
-                    return (
-                        curl_cffi_content,
-                        cast(dict[str, Any], dict(r.headers)),
-                        curl_cffi_status,
-                        "curl_cffi",
-                    )
-                # status >= 400 or JS shell → fall through to browser tier
-        except ImportError:
-            logger.warning("curl_cffi not installed → skipping to next fetcher. Run: pip install curl_cffi")
-        except httpx.ProxyError as e:
-            logger.error("curl_cffi proxy error: {}", e)
-            # Proxy error, skip to next tier
-        except Exception as e:
-            logger.error("curl_cffi error: {}", e)
-            error_str = str(e).lower()
-            # Check if it's a timeout error - if so, server is down, skip all other methods
-            if any(x in error_str for x in ["timeout", "timed out", "operation timed out"]):
-                logger.error("curl_cffi timeout → server appears down, skipping other fetchers")
-                raise Exception(f"Server timeout: {url} is not responding") from e
-
-    # --- Tier 2: AsyncStealthySession (scrapling) — stealth Playwright (Patchright) ---
-    # Uses Playwright Chromium + Patchright stealth patches (Camoufox removed in v0.4)
-    # network_idle is intentionally disabled for both Reddit and CF sites:
-    #   - Reddit: never fully idles (realtime polls, ads, notifications) → waits full timeout
-    #   - CF sites: background pings after Turnstile solve → hangs
-    # Instead we use load event + a short fixed wait for JS content to inject
-    if SCRAPLING_AVAILABLE:
-        try:
-            solve_cf = _is_cloudflare_protected(curl_cffi_status, curl_cffi_content)
-            if solve_cf:
-                logger.debug("Cloudflare detected → enabling solve_cloudflare")
-
-            # ── PubMed/PMC reCAPTCHA Enterprise page_action callback ──
-            # PMC serves a Google reCAPTCHA Enterprise challenge (HTTP 200) that
-            # sets a cookie (recaptcha-ca-e / recaptcha-fastly-e / recaptcha-cf-e)
-            # after invisible reCAPTCHA solves, then calls location.reload(true).
-            # Scrapling's fetch() would return the initial challenge HTML before the
-            # redirect fires. This page_action runs after navigation + CF solving,
-            # detects the reCAPTCHA challenge page, waits for the cookie, and lets
-            # the page reload before Scrapling captures the response.
-            _pubmed_recaptcha_action = None
-            if is_bookshelf:
-                # FORK (Sep 2026): Bookshelf reCAPTCHA — wait until the interstitial
-                # title clears and real body text renders. The invisible reCAPTCHA
-                # auto-solves (~15s observed) and reloads into the real page; there
-                # is no stable cookie signal, so poll DOM state directly.
-                async def _bookshelf_recaptcha_action(page):
-                    """Wait for Bookshelf reCAPTCHA interstitial to yield real content."""
-                    try:
-                        async def _page_is_interstitial() -> bool:
-                            page_html = await page.content()
-                            return _is_recaptcha_challenge(page_html.encode("utf-8", errors="replace"))
-
-                        async def _page_has_body_text(min_chars: int = 500) -> bool:
-                            # The interstitial has ~200 chars of text; real Bookshelf
-                            # pages have thousands. Require real rendered body text so
-                            # we don't capture a skeleton mid-load.
-                            try:
-                                n = await page.evaluate("() => document.body ? document.body.innerText.length : 0")
-                                return bool(n and int(n) >= min_chars)
-                            except Exception:
-                                return False
-
-                        if not await _page_is_interstitial():
-                            logger.debug("Bookshelf: content already present after navigation")
-                            return
-
-                        logger.info("Bookshelf reCAPTCHA challenge detected — waiting for real content")
-                        for _ in range(250):  # up to ~25s
-                            if not await _page_is_interstitial() and await _page_has_body_text():
-                                logger.info("Bookshelf: reCAPTCHA cleared, real content loaded")
-                                return
-                            await page.wait_for_timeout(100)
-                        # Cookie/content not seen — try manual reload (mirrors PubMed path),
-                        # the interstitial redirect may need a nudge.
-                        logger.debug("Bookshelf: interstitial persists, attempting page.reload()")
-                        try:
-                            await page.reload(wait_until="domcontentloaded", timeout=15000)
-                        except Exception:
-                            pass
-                        for _ in range(100):  # up to ~10s more
-                            if not await _page_is_interstitial() and await _page_has_body_text():
-                                logger.info("Bookshelf: reCAPTCHA cleared after reload")
-                                return
-                            await page.wait_for_timeout(100)
-                        logger.debug("Bookshelf: interstitial still present after wait + reload")
-                    except Exception as rc_err:
-                        logger.debug("Bookshelf reCAPTCHA page_action failed: {}", rc_err)
-            if is_pubmed:
-
-                async def _pubmed_recaptcha_action(page):
-                    """Wait for PubMed/PMC reCAPTCHA to yield real article HTML inside Scrapling."""
-                    try:
-                        async def _page_has_article() -> bool:
-                            page_html = await page.content()
-                            return _has_pubmed_article_content(page_html.encode("utf-8", errors="replace"))
-
-                        if await _page_has_article():
-                            logger.debug("PubMed: article content already present after navigation")
-                            return
-
-                        page_html = await page.content()
-                        if not _is_recaptcha_challenge(page_html.encode("utf-8", errors="replace")):
-                            # Not the known challenge, but also not article content. Give JS a short
-                            # chance to render before Scrapling captures a title-only shell.
-                            logger.debug("PubMed: no reCAPTCHA marker but article content absent; waiting for body markers")
-                            for _ in range(50):
-                                if await _page_has_article():
-                                    return
-                                await page.wait_for_timeout(100)
-                            return
-
-                        logger.info("PubMed reCAPTCHA challenge detected — waiting for article content")
-                        # Poll for the success cookie OR for real article markers. Some NCBI/PMC
-                        # variants do not expose the historical recaptcha-* cookie names to Playwright,
-                        # so DOM/article-content detection is the reliable success condition.
-                        _recaptcha_cookies = {
-                            "recaptcha-ca-e", "recaptcha-fastly-e",
-                            "recaptcha-cf-e", "recaptcha-akam-e",
-                        }
-                        for _ in range(200):
-                            if await _page_has_article():
-                                logger.info("PubMed: article content appeared after reCAPTCHA wait")
-                                return
-                            cookies = await page.context.cookies()
-                            cookie_names = {c["name"] for c in cookies}
-                            if cookie_names & _recaptcha_cookies:
-                                logger.debug("reCAPTCHA cookie detected, waiting for page reload/article markers")
-                                try:
-                                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
-                                except Exception:
-                                    pass
-                                for _ in range(30):
-                                    if await _page_has_article():
-                                        logger.info("PubMed: reCAPTCHA bypassed, article content loaded")
-                                        return
-                                    await page.wait_for_timeout(100)
-                            await page.wait_for_timeout(100)
-
-                        # Cookie/content not seen — try manual reload as last resort, then wait for
-                        # the article markers rather than returning immediately after a 200 shell.
-                        logger.debug("PubMed: reCAPTCHA cookie/content not detected, attempting page.reload()")
-                        await page.reload(wait_until="domcontentloaded", timeout=10000)
-                        for _ in range(50):
-                            if await _page_has_article():
-                                logger.info("PubMed: article content loaded after manual reload")
-                                return
-                            await page.wait_for_timeout(100)
-                    except Exception as rc_err:
-                        logger.debug("PubMed reCAPTCHA page_action failed: {}", rc_err)
-
-            # Hard timeout for the entire scrapling fetch including CF solving.
-            # Scrapling's _cloudflare_solver has unbounded recursion — each attempt
-            # takes ~12s, so without a cap it loops forever on unsolvable challenges.
-            _scrapling_hard_timeout = 45 if solve_cf else 60
-
-            # PubMed/PMC + Bookshelf: retry up to 2 attempts if reCAPTCHA challenge persists
-            _pubmed_max_attempts = 2 if (is_pubmed or is_bookshelf) else 1
-
-            for _pubmed_attempt in range(_pubmed_max_attempts):
-                logger.debug(
-                    "AsyncStealthySession fetch (attempt {}/{}): {}",
-                    _pubmed_attempt + 1, _pubmed_max_attempts,
-                    "proxy enabled" if proxy else "direct connection",
-                )
-                async with AsyncStealthySession(
-                    headless=True,
-                    solve_cloudflare=solve_cf,
-                    proxy=proxy,
-                ) as session:
-                    fetch_kwargs = dict(
-                        url=url,
-                        network_idle=False,          # disabled — Reddit/CF never fully idle
-                        adaptive=True,
-                        timeout=30000 if solve_cf else 45000,  # CF=30s, Reddit/SPA=45s
-                    )
-                    # Attach the reCAPTCHA wait callback for PubMed/PMC URLs.
-                    # Do not rely on Scrapling's wait_selector here: on unresolved NCBI
-                    # reCAPTCHA it can outlive our hard timeout and emit TargetClosedError.
-                    # The page_action plus post-fetch content validation below are the gates.
-                    if _pubmed_recaptcha_action is not None:
-                        fetch_kwargs["page_action"] = _pubmed_recaptcha_action
-                    elif _bookshelf_recaptcha_action is not None:
-                        fetch_kwargs["page_action"] = _bookshelf_recaptcha_action
-                    try:
-                        page = await asyncio.wait_for(
-                            session.fetch(**fetch_kwargs),
-                            timeout=_scrapling_hard_timeout,
-                        )
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            "Scrapling fetch timed out after {}s (CF solve={}) — "
-                            "Cloudflare challenge likely unsolvable, skipping to next tier",
-                            _scrapling_hard_timeout, solve_cf,
-                        )
-                        page = None
-
-                    if page:
-                        status = getattr(page, "status", getattr(page, "status_code", 200))
-                        if status < 400:
-                            html_bytes = getattr(page, "html_content", getattr(page, "html", "")).encode("utf-8", errors="replace")
-                            # Reject results that are still a Cloudflare challenge page
-                            # (scrapling solver may return without actually solving it)
-                            if solve_cf and _is_cloudflare_protected(status, html_bytes):
-                                logger.warning(
-                                    "Scrapling returned content that is still a Cloudflare challenge page "
-                                    "— solver failed, skipping to next tier"
-                                )
-                                break  # CF unsolvable, don't retry
-                            # Reject PubMed/PMC title-only shells or unresolved challenge pages.
-                            # Scrapling can return HTTP 200 before the real article body exists;
-                            # accepting that poisons WebFetchTool's session cache with 40-word output.
-                            _bookshelf_shell = (
-                                is_bookshelf
-                                and _is_recaptcha_challenge(html_bytes)
-                            )
-                            if _bookshelf_shell and _pubmed_attempt < _pubmed_max_attempts - 1:
-                                logger.info(
-                                    "Bookshelf: Scrapling returned reCAPTCHA shell after attempt {}/{}, retrying…",
-                                    _pubmed_attempt + 1, _pubmed_max_attempts,
-                                )
-                                continue
-                            if _bookshelf_shell:
-                                logger.warning(
-                                    "Bookshelf: Scrapling returned reCAPTCHA shell after {} attempts, skipping to next tier",
-                                    _pubmed_max_attempts,
-                                )
-                                break
-                            if is_pubmed and not _has_pubmed_article_content(html_bytes):
-                                if _is_recaptcha_challenge(html_bytes):
-                                    reason = "reCAPTCHA still present"
-                                else:
-                                    reason = "article content markers absent"
-                                if _pubmed_attempt < _pubmed_max_attempts - 1:
-                                    logger.info(
-                                        "PubMed: Scrapling returned {} after attempt {}/{}, retrying…",
-                                        reason, _pubmed_attempt + 1, _pubmed_max_attempts,
-                                    )
-                                    continue
-                                logger.warning(
-                                    "PubMed: Scrapling returned {} after {} attempts, skipping to next tier",
-                                    reason, _pubmed_max_attempts,
-                                )
-                                break
-                            headers = {"content-type": "application/json; charset=utf-8" if url.endswith(".json") else "text/html; charset=utf-8"}
-                            logger.debug("Scrapling browser fetch succeeded")
-                            return html_bytes, headers, status, "scrapling"
-        except Exception as e:
-            logger.error("Scrapling error: {}", e)
-
-    # --- Tier 3: httpx (last resort, no stealth) ---
     try:
-        logger.debug("httpx fetch (fallback): {}", "proxy enabled" if proxy else "direct connection")
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            max_redirects=MAX_REDIRECTS,
-            timeout=30.0,
-            headers={"User-Agent": _DEFAULT_USER_AGENT},
-            proxy=proxy,
-        ) as client:
-            r = await client.get(url)
-            # Don't raise_for_status — caller needs content even on 4xx/5xx for error diagnosis
-            logger.debug("httpx fallback fetch succeeded")
-            return r.content, dict(r.headers), r.status_code, "httpx"
-    except httpx.ProxyError as e:
-        logger.error("httpx proxy error: {}", e)
-        raise Exception(f"All fetchers failed for {url}: {e}") from e
+        from curl_cffi.requests import AsyncSession  # noqa: I001  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
+    except ImportError:
+        logger.debug("curl_cffi not installed – install with: pip install curl_cffi")
+        return None
+
+    headers = _fetch_headers(user_agent, impersonating=True)
+    logger.debug("curl_cffi fetch: {}", "proxy enabled" if proxy else "direct connection")
+    try:
+        async with AsyncSession() as session:  # pyright: ignore[reportUnknownVariableType]
+            current_url = url
+            for _ in range(MAX_REDIRECTS + 1):
+                is_valid, error_msg, _ips = _resolve_url_safe(current_url)
+                if not is_valid:
+                    raise RedirectBlockedError(f"Redirect blocked: {error_msg}")
+                r: Any = await session.get(  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
+                    current_url,
+                    impersonate="chrome",
+                    allow_redirects=False,
+                    timeout=30,
+                    headers=headers or None,
+                    proxy=proxy,
+                )
+                status = cast(int, r.status_code)
+                r_headers = {str(k).lower(): str(v) for k, v in cast(dict[str, Any], dict(r.headers)).items()}
+                if 300 <= status < 400 and r_headers.get("location"):
+                    next_url = urljoin(current_url, r_headers["location"])
+                    is_valid, error_msg = _validate_url_safe(next_url)
+                    if not is_valid:
+                        raise RedirectBlockedError(f"Redirect blocked: {error_msg}")
+                    current_url = next_url
+                    continue
+                return cast(bytes, r.content), r_headers, status, "curl_cffi"
+            raise RedirectBlockedError(f"Too many redirects: exceeded limit of {MAX_REDIRECTS}")
+    except RedirectBlockedError:
+        raise
     except Exception as e:
-        logger.error("httpx error: {}", e)
-        raise Exception(f"All fetchers failed for {url}: {e}") from e
+        logger.debug("curl_cffi failed ({}), falling back to httpx", type(e).__name__)
+        return None
 
 
-def _html_to_text(raw_html: str, extract_mode: str = "markdown", url: str = "") -> tuple[str, str]:
+async def _fetch_httpx(url: str, proxy: str | None, user_agent: str) -> _FetchResult:
+    """Tier 2: httpx with the upstream pinned-DNS transport and per-hop redirect checks."""
+    logger.debug("httpx fetch: {}", "proxy enabled" if proxy else "direct connection")
+    async with httpx.AsyncClient(**_fetch_client_kwargs(proxy, 30.0)) as client:
+        r, redirect_error = await _get_with_safe_redirects(
+            client, url, headers=_fetch_headers(user_agent, impersonating=False),
+        )
+        if redirect_error:
+            raise RedirectBlockedError(redirect_error)
+        if r is None:
+            raise RuntimeError("Fetch failed")
+        return r.content, {k.lower(): v for k, v in r.headers.items()}, r.status_code, "httpx"
+
+
+
+_PageAction = Callable[[Any], Awaitable[None]]
+_NCBI_BROWSER_HOSTS = ("pubmed.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov")
+_RECAPTCHA_COOKIES = frozenset({
+    "recaptcha-ca-e", "recaptcha-fastly-e", "recaptcha-cf-e", "recaptcha-akam-e",
+})
+
+
+async def _page_html(page: Any) -> bytes:
+    return cast(str, await page.content()).encode("utf-8", errors="replace")
+
+
+async def _page_body_text_length(page: Any) -> int:
+    try:
+        n = await page.evaluate("() => document.body ? document.body.innerText.length : 0")
+        return int(n or 0)
+    except Exception:
+        return 0
+
+
+async def _bookshelf_recaptcha_action(page: Any) -> None:
+    """Wait for the NCBI Bookshelf reCAPTCHA interstitial to yield real content."""
+    try:
+        if not _is_recaptcha_challenge(await _page_html(page)):
+            logger.debug("Bookshelf: content already present after navigation")
+            return
+        logger.info("Bookshelf reCAPTCHA challenge detected — waiting for real content")
+        for _ in range(250):  # up to ~25s
+            if (
+                not _is_recaptcha_challenge(await _page_html(page))
+                and await _page_body_text_length(page) >= 500
+            ):
+                logger.info("Bookshelf: reCAPTCHA cleared, real content loaded")
+                return
+            await page.wait_for_timeout(100)
+        logger.debug("Bookshelf: interstitial persists, attempting page.reload()")
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=15000)
+        except Exception:
+            pass
+        for _ in range(100):  # up to ~10s more
+            if (
+                not _is_recaptcha_challenge(await _page_html(page))
+                and await _page_body_text_length(page) >= 500
+            ):
+                logger.info("Bookshelf: reCAPTCHA cleared after reload")
+                return
+            await page.wait_for_timeout(100)
+        logger.debug("Bookshelf: interstitial still present after wait + reload")
+    except Exception as rc_err:
+        logger.debug("Bookshelf reCAPTCHA page_action failed: {}", type(rc_err).__name__)
+
+
+async def _pubmed_recaptcha_action(page: Any) -> None:
+    """Wait for PubMed/PMC reCAPTCHA to yield real article HTML inside Scrapling."""
+    try:
+        if _has_pubmed_article_content(await _page_html(page)):
+            logger.debug("PubMed: article content already present after navigation")
+            return
+        if not _is_recaptcha_challenge(await _page_html(page)):
+            logger.debug("PubMed: no reCAPTCHA marker but article content absent; waiting")
+            for _ in range(50):
+                if _has_pubmed_article_content(await _page_html(page)):
+                    return
+                await page.wait_for_timeout(100)
+            return
+
+        logger.info("PubMed reCAPTCHA challenge detected — waiting for article content")
+        for _ in range(200):
+            if _has_pubmed_article_content(await _page_html(page)):
+                logger.info("PubMed: article content appeared after reCAPTCHA wait")
+                return
+            cookies = cast(list[dict[str, Any]], await page.context.cookies())
+            if {str(c.get("name", "")) for c in cookies} & _RECAPTCHA_COOKIES:
+                logger.debug("reCAPTCHA cookie detected, waiting for page reload/article markers")
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                except Exception:
+                    pass
+                for _ in range(30):
+                    if _has_pubmed_article_content(await _page_html(page)):
+                        logger.info("PubMed: reCAPTCHA bypassed, article content loaded")
+                        return
+                    await page.wait_for_timeout(100)
+            await page.wait_for_timeout(100)
+
+        logger.debug("PubMed: reCAPTCHA cookie/content not detected, attempting page.reload()")
+        await page.reload(wait_until="domcontentloaded", timeout=10000)
+        for _ in range(50):
+            if _has_pubmed_article_content(await _page_html(page)):
+                logger.info("PubMed: article content loaded after manual reload")
+                return
+            await page.wait_for_timeout(100)
+    except Exception as rc_err:
+        logger.debug("PubMed reCAPTCHA page_action failed: {}", type(rc_err).__name__)
+
+
+def _scrapling_headers(page: Any, url: str) -> dict[str, Any]:
+    """Prefer the browser's real response headers; fall back to a content-type guess."""
+    raw_headers = getattr(page, "headers", None)
+    headers: dict[str, Any] = {}
+    if isinstance(raw_headers, dict):
+        headers = {str(k).lower(): v for k, v in cast(dict[Any, Any], raw_headers).items()}
+    if "content-type" not in headers:
+        headers["content-type"] = (
+            "application/json; charset=utf-8" if url.endswith(".json")
+            else "text/html; charset=utf-8"
+        )
+    return headers
+
+
+_BROWSER_INSTALL_TIMEOUT_SECONDS = 900
+_browser_provisioned = False
+_browser_provision_lock: asyncio.Lock | None = None
+
+
+def _run_browser_install(argv: list[str]) -> tuple[int, str]:
+    """Run the Patchright browser installer (blocking); split out so tests can stub it."""
+    proc = subprocess.run(
+        argv, capture_output=True, text=True, timeout=_BROWSER_INSTALL_TIMEOUT_SECONDS,
+    )
+    tail = (proc.stdout + proc.stderr).strip().splitlines()
+    return proc.returncode, "\n".join(tail[-5:])
+
+
+async def _ensure_scrapling_browser() -> None:
+    """Make sure the Chromium build Scrapling/Patchright pins is present (once per process).
+
+    ``patchright install chromium`` is idempotent: it returns quickly when the
+    pinned build already exists in Playwright's cache (which lives outside the
+    virtualenv, so it survives reinstalls). A failure is logged with the manual
+    command and never raised; the fetch still runs in case a browser is present
+    elsewhere.
+    """
+    global _browser_provisioned, _browser_provision_lock
+    if _browser_provisioned:
+        return
+    if _browser_provision_lock is None:
+        _browser_provision_lock = asyncio.Lock()
+    async with _browser_provision_lock:
+        if _browser_provisioned:
+            return
+        argv = [sys.executable, "-m", "patchright", "install", "chromium"]
+        try:
+            code, tail = await asyncio.to_thread(_run_browser_install, argv)
+        except Exception as e:
+            logger.warning(
+                "Could not run the Scrapling browser installer ({}); run manually: {}",
+                type(e).__name__, " ".join(argv),
+            )
+            _browser_provisioned = True  # do not retry every fetch
+            return
+        if code == 0:
+            logger.debug("Scrapling Chromium build ready")
+        else:
+            logger.warning(
+                "Scrapling browser install exited with {}; run manually: {}\n{}",
+                code, " ".join(argv), tail,
+            )
+        _browser_provisioned = True
+
+
+async def _fetch_scrapling(
+    url: str,
+    proxy: str | None,
+    curl_content: bytes | None,
+    *,
+    is_pubmed: bool,
+    is_bookshelf: bool,
+) -> _FetchResult | None:
+    """Tier 2: Scrapling AsyncStealthySession (stealth Playwright/Patchright).
+
+    Handles JS-rendered pages (Reddit, SPAs), Cloudflare challenges (solver enabled
+    when the curl_cffi response was a CF interstitial) and the NCBI reCAPTCHA
+    Enterprise interstitial. Returns ``None`` when Scrapling is unavailable or
+    could not produce real content, so the caller falls through to httpx.
+    """
+    if not SCRAPLING_AVAILABLE:
+        return None
+    try:
+        from scrapling.fetchers import (  # pyright: ignore[reportMissingImports]
+            AsyncStealthySession,  # pyright: ignore[reportUnknownVariableType]
+        )
+    except ImportError:
+        return None
+
+    await _ensure_scrapling_browser()
+    solve_cf = _is_cloudflare_protected(curl_content)
+    if solve_cf:
+        logger.debug("Cloudflare detected → enabling solve_cloudflare")
+    page_action: _PageAction | None = None
+    if is_pubmed:
+        page_action = _pubmed_recaptcha_action
+    elif is_bookshelf:
+        page_action = _bookshelf_recaptcha_action
+
+    # Hard timeout for the whole fetch including CF solving: Scrapling's solver
+    # retries without bound, each attempt taking ~12s.
+    hard_timeout = 45 if solve_cf else 60
+    max_attempts = 2 if (is_pubmed or is_bookshelf) else 1
+
+    try:
+        for attempt in range(max_attempts):
+            logger.debug(
+                "AsyncStealthySession fetch (attempt {}/{}): {}",
+                attempt + 1, max_attempts, "proxy enabled" if proxy else "direct connection",
+            )
+            session_cm: Any = AsyncStealthySession(  # pyright: ignore[reportUnknownVariableType]
+                headless=True, solve_cloudflare=solve_cf, proxy=proxy,
+            )
+            async with session_cm as session:  # pyright: ignore[reportUnknownVariableType]
+                fetch_kwargs: dict[str, Any] = {
+                    "url": url,
+                    # network_idle never settles on Reddit/CF sites; rely on the
+                    # load event plus the page action instead.
+                    "network_idle": False,
+                    "adaptive": True,
+                    "timeout": 30000 if solve_cf else 45000,
+                }
+                if page_action is not None:
+                    fetch_kwargs["page_action"] = page_action
+                try:
+                    page: Any = await asyncio.wait_for(
+                        cast(Any, session).fetch(**fetch_kwargs), timeout=hard_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Scrapling fetch timed out after {}s (CF solve={}) — skipping to next tier",
+                        hard_timeout, solve_cf,
+                    )
+                    return None
+
+                if not page:
+                    continue
+                status = int(getattr(page, "status", getattr(page, "status_code", 200)) or 200)
+                if status >= 400:
+                    logger.debug("Scrapling returned HTTP {} for {}", status, _redact_url_for_log(url))
+                    return None
+                html_text = cast(str, getattr(page, "html_content", getattr(page, "html", "")) or "")
+                html_bytes = html_text.encode("utf-8", errors="replace")
+
+                if solve_cf and _is_cloudflare_protected(html_bytes):
+                    logger.warning("Scrapling returned a Cloudflare challenge page — solver failed")
+                    return None
+                if is_bookshelf and _is_recaptcha_challenge(html_bytes):
+                    if attempt < max_attempts - 1:
+                        logger.info("Bookshelf: reCAPTCHA shell after attempt {}/{}, retrying…", attempt + 1, max_attempts)
+                        continue
+                    logger.warning("Bookshelf: reCAPTCHA shell after {} attempts — skipping to next tier", max_attempts)
+                    return None
+                if is_pubmed and not _has_pubmed_article_content(html_bytes):
+                    reason = "reCAPTCHA still present" if _is_recaptcha_challenge(html_bytes) else "article content markers absent"
+                    if attempt < max_attempts - 1:
+                        logger.info("PubMed: {} after attempt {}/{}, retrying…", reason, attempt + 1, max_attempts)
+                        continue
+                    logger.warning("PubMed: {} after {} attempts — skipping to next tier", reason, max_attempts)
+                    return None
+                logger.debug("Scrapling browser fetch succeeded")
+                return html_bytes, _scrapling_headers(page, url), status, "scrapling"
+    except Exception as e:
+        logger.error("Scrapling error: {}", type(e).__name__)
+    return None
+
+
+async def _fetch_raw(
+    url: str, proxy: str | None = None, user_agent: str | None = None
+) -> _FetchResult:
+    """Fetch URL bytes with a tiered strategy.
+
+    1. curl_cffi (Chrome TLS impersonation, fast). Skipped for Reddit, PubMed/PMC
+       and NCBI Bookshelf, which always need a real browser. A JS shell or a
+       challenge page falls through to the next tier.
+    2. Scrapling stealth browser: JS-rendered pages, Cloudflare, NCBI reCAPTCHA.
+    3. httpx (pinned DNS), last resort.
+
+    Every redirect hop in the curl_cffi and httpx tiers is validated by the SSRF
+    policy. Returns ``(content_bytes, headers, status_code, fetcher_name)``; HTTP
+    error statuses are returned, not raised, so the caller decides how to report them.
+    """
+    ua = user_agent or _DEFAULT_USER_AGENT
+    lowered = url.lower()
+    is_reddit = "reddit.com" in lowered
+    is_pubmed = any(host in lowered for host in _NCBI_BROWSER_HOSTS)
+    is_bookshelf = "ncbi.nlm.nih.gov/books/" in lowered
+
+    curl_result: _FetchResult | None = None
+    if not (is_reddit or is_pubmed or is_bookshelf):
+        curl_result = await _fetch_curl_cffi(url, proxy, ua)
+        if curl_result is not None:
+            content, headers, status, _fetcher = curl_result
+            if status < 400 and _is_content_sufficient(
+                content, url, str(headers.get("content-type", "")),
+            ):
+                return curl_result
+            logger.debug("curl_cffi result insufficient (status {}) → browser tier", status)
+
+    browser_result = await _fetch_scrapling(
+        url, proxy, curl_result[0] if curl_result is not None else None,
+        is_pubmed=is_pubmed, is_bookshelf=is_bookshelf,
+    )
+    if browser_result is not None:
+        return browser_result
+    return await _fetch_httpx(url, proxy, ua)
+
+
+def _html_to_text(
+    raw_html: str, extract_mode: str = "markdown", url: str = "",
+) -> tuple[str, str]:
     """
     Extract main content from HTML.
-    Tries trafilatura first (best for articles), falls back to readability.
+    Site-specific extractors (BBC live blogs / Next.js articles) run first, then
+    trafilatura (best for articles), then readability, then tag stripping.
     Returns (text, extractor_name)
     """
     is_markdown = extract_mode == "markdown"
-
-    # --- BBC live blog: JSON-LD first, then custom HTML parser ---
-    # trafilatura and readability both fail on BBC's React/SSR live blog structure.
-    # JSON-LD (LiveBlogPosting) is the cleanest source; HTML fallback targets
-    # data-testid="content-post" article elements directly.
-    is_bbc = "bbc.com" in url.lower() or "bbc.co.uk" in url.lower()
-    is_live = "/news/live/" in url.lower() or "/sport/live/" in url.lower()
+    lowered_url = url.lower()
+    is_bbc = "bbc.com" in lowered_url or "bbc.co.uk" in lowered_url
+    is_live = "/news/live/" in lowered_url or "/sport/live/" in lowered_url
     if is_bbc and is_live:
+        # trafilatura and readability both fail on BBC's React/SSR live blog
+        # structure. JSON-LD (LiveBlogPosting) is the cleanest source.
         result = _extract_jsonld_liveblog(raw_html, extract_mode)
         if result:
             return result, "jsonld_liveblog"
         result = _extract_bbc_liveblog_html(raw_html, extract_mode)
         if result:
             return result, "bbc_liveblog_html"
-
-    # --- BBC standard article: Optimo CMS via __NEXT_DATA__ ---
-    # readability/trafilatura cannot reach content stored in Next.js JSON.
-    # Verified path: props.pageProps.page.<cms-key>.contents[]
     if is_bbc and not is_live:
         result = _extract_bbc_next_data(raw_html, extract_mode)
         if result:
             return result, "bbc_next_data"
 
-    # --- ext.to torrent listings ---
-    if "ext.to" in url.lower():
-        result = _extract_ext_to(raw_html, extract_mode)
-        if result:
-            return result, "ext_to"
-
     # --- Primary: trafilatura ---
     try:
         import trafilatura  # pyright: ignore[reportMissingImports,reportMissingTypeStubs]
-        common_kwargs = dict(
-            include_tables=True,
-            include_images=False,
-            include_links=is_markdown,
-            output_format="markdown" if is_markdown else "txt",
-            with_metadata=False,
-            url=url or None,  # helps trafilatura with relative URLs
-        )
-        result: Any = trafilatura.extract(raw_html, **common_kwargs)  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType,reportCallIssue]
-
-        # BBC (and some other news sites) get rejected by trafilatura's default
-        # paywall/quality heuristic. Re-extract with favor_recall=True which
-        # disables content-length and quality filters.
-        if (not result or len(result.strip()) < 200):  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
-            result = trafilatura.extract(raw_html, favor_recall=True, **common_kwargs)  # pyright: ignore[reportUnknownMemberType,reportCallIssue]
-
-        if result and len(result.strip()) > 50:  # pyright: ignore[reportUnknownMemberType,reportUnknownArgumentType]
-            return result, "trafilatura"  # pyright: ignore[reportUnknownVariableType]
+        common_kwargs: dict[str, Any] = {
+            "include_tables": True,
+            "include_images": False,
+            "include_links": is_markdown,
+            "output_format": "markdown" if is_markdown else "txt",
+            "with_metadata": False,
+            "url": url or None,  # helps trafilatura resolve relative links
+        }
+        result: str | None = trafilatura.extract(raw_html, **common_kwargs)  # pyright: ignore[reportUnknownMemberType]
+        # Some news sites are rejected by trafilatura's quality heuristic;
+        # favor_recall disables the content-length and quality filters.
+        if not result or len(result.strip()) < 200:
+            result = trafilatura.extract(raw_html, favor_recall=True, **common_kwargs)  # pyright: ignore[reportUnknownMemberType]
+        if result and len(result.strip()) > 50:
+            return result, "trafilatura"
     except ImportError:
-        logger.debug("trafilatura not installed – pip install trafilatura")
+        logger.debug("trafilatura not installed \u2013 pip install trafilatura")
     except Exception as e:
         logger.debug("trafilatura extraction failed: {}", e)
 
@@ -943,7 +972,7 @@ def _readability_to_markdown(raw_html: str) -> str:
     # Try markdownify first
     try:
         from markdownify import markdownify as md  # noqa: I001  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
-        return _normalize(cast(str, md(raw_html, heading_style="ATX", strip=[])))
+        return _normalize(str(md(raw_html, heading_style="ATX", strip=[])))
     except ImportError:
         logger.debug("markdownify not installed  \u2013  pip install markdownify")
     except Exception as e:
@@ -961,392 +990,164 @@ def _readability_to_markdown(raw_html: str) -> str:
 
 
 def _extract_jsonld_liveblog(raw_html: str, extract_mode: str = "markdown") -> str | None:
-    """
-    Extract BBC (and any site using schema.org) live blog content from JSON-LD.
-    Looks for @type=LiveBlogPosting with liveBlogUpdate array.
-    Returns formatted text or None if not found / insufficient content.
-    """
-    scripts = re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>([\s\S]*?)</script>', raw_html, re.I)
+    """Extract schema.org LiveBlogPosting updates from JSON-LD (BBC and similar sites)."""
+    scripts = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>([\s\S]*?)</script>', raw_html, re.I,
+    )
     for script in scripts:
         try:
-            data = json.loads(script)
+            data: Any = json.loads(script)
         except (json.JSONDecodeError, ValueError):
             continue
-
-        # Handle @graph wrapper
         if isinstance(data, dict) and "@graph" in data:
-            candidates = data["@graph"]
+            candidates: list[Any] = list(cast(list[Any], data["@graph"]))
         elif isinstance(data, list):
-            candidates = data
+            candidates = cast(list[Any], data)
         else:
             candidates = [data]
 
-        for item in candidates:
-            if not isinstance(item, dict):
+        for item_any in candidates:
+            if not isinstance(item_any, dict):
                 continue
-            item_type = item.get("@type", "")
+            item = cast(dict[str, Any], item_any)
+            item_type: Any = item.get("@type", "")
             if isinstance(item_type, list):
-                item_type = " ".join(item_type)
-            if "LiveBlogPosting" not in item_type:
+                item_type = " ".join(str(t) for t in cast(list[Any], item_type))
+            if "LiveBlogPosting" not in str(item_type):
+                continue
+            updates = cast(list[Any], item.get("liveBlogUpdate") or [])
+            if len(updates) < 2:
                 continue
 
-            updates = item.get("liveBlogUpdate", [])
-            if not updates or len(updates) < 2:
-                continue
-
-            # Build blog title header
-            blog_title = item.get("headline", item.get("name", ""))
             lines: list[str] = []
+            blog_title = str(item.get("headline") or item.get("name") or "")
             if blog_title:
                 lines.append(f"# {blog_title}\n")
-
-            for post in updates:
-                if not isinstance(post, dict):
+            for post_any in updates:
+                if not isinstance(post_any, dict):
                     continue
-                headline = post.get("headline", "")
-                date_pub = post.get("datePublished", "")
-                body = post.get("articleBody", post.get("text", ""))
-
-                # articleBody can be plain text or nested HTML — strip tags if needed
-                if body and re.search(r'<[a-z]', body, re.I):
+                post = cast(dict[str, Any], post_any)
+                headline = str(post.get("headline") or "")
+                date_pub = str(post.get("datePublished") or "")
+                body = str(post.get("articleBody") or post.get("text") or "")
+                if body and re.search(r"<[a-z]", body, re.I):
                     body = _normalize(_strip_tags(body))
-
                 if not headline and not body:
                     continue
-
-                # Timestamp (ISO → HH:MM if possible)
                 time_str = ""
                 if date_pub:
-                    m = re.search(r'T(\d{2}:\d{2})', date_pub)
+                    m = re.search(r"T(\d{2}:\d{2})", date_pub)
                     time_str = f" — {m.group(1)}" if m else f" — {date_pub}"
-
-                if extract_mode == "markdown":
-                    if headline:
-                        lines.append(f"## {headline}{time_str}")
-                    if body:
-                        lines.append(body)
-                    lines.append("")
-                else:
-                    if headline:
-                        lines.append(f"{headline}{time_str}")
-                    if body:
-                        lines.append(body)
-                    lines.append("")
-
+                if headline:
+                    lines.append(f"## {headline}{time_str}" if extract_mode == "markdown" else f"{headline}{time_str}")
+                if body:
+                    lines.append(body)
+                lines.append("")
             text = "\n".join(lines).strip()
             if len(text) > 200:
                 return text
-
     return None
 
 
 def _extract_bbc_liveblog_html(raw_html: str, extract_mode: str = "markdown") -> str | None:
-    """
-    Fallback BBC live blog extractor targeting data-testid="content-post" article elements.
-    Used when JSON-LD is absent or too sparse (e.g. BBC strips body text from JSON-LD).
-    Returns formatted text or None.
-    """
-    # Find all live post articles
+    """Fallback BBC live-blog extractor targeting data-testid="content-post" articles."""
     posts = re.findall(
-        r'<article[^>]+data-testid=["\']content-post["\'][^>]*>([\s\S]*?)</article>',
-        raw_html, re.I
+        r'<article[^>]+data-testid=["\']content-post["\'][^>]*>([\s\S]*?)</article>', raw_html, re.I,
     )
     if not posts:
         return None
-
     lines: list[str] = []
-
-    # Page title from <h1> or og:title
-    title_m = re.search(r'<h1[^>]*>([\s\S]*?)</h1>', raw_html, re.I)
+    title_m = re.search(r"<h1[^>]*>([\s\S]*?)</h1>", raw_html, re.I)
     if title_m:
         title = _strip_tags(title_m.group(1)).strip()
         if title:
             lines.append(f"# {title}\n")
-
     for post_html in posts:
-        # Headline: <h3> inside header
-        h_m = re.search(r'<h[23][^>]*>([\s\S]*?)</h[23]>', post_html, re.I)
+        h_m = re.search(r"<h[23][^>]*>([\s\S]*?)</h[23]>", post_html, re.I)
         headline = _strip_tags(h_m.group(1)).strip() if h_m else ""
-
-        # Timestamp
         ts_m = re.search(r'data-testid=["\']timestamp["\'][^>]*>([\s\S]*?)</', post_html, re.I)
         time_str = f" — {_strip_tags(ts_m.group(1)).strip()}" if ts_m else ""
-
-        # Body paragraphs — grab all <p> not inside <header>
-        # Strip the header block first to avoid picking up lede text twice
-        body_html = re.sub(r'<header[\s\S]*?</header>', '', post_html, flags=re.I)
-        paragraphs = re.findall(r'<p[^>]*>([\s\S]*?)</p>', body_html, re.I)
+        body_html = re.sub(r"<header[\s\S]*?</header>", "", post_html, flags=re.I)
+        paragraphs = re.findall(r"<p[^>]*>([\s\S]*?)</p>", body_html, re.I)
         body = "\n\n".join(_strip_tags(p).strip() for p in paragraphs if _strip_tags(p).strip())
-
         if not headline and not body:
             continue
-
-        if extract_mode == "markdown":
-            if headline:
-                lines.append(f"## {headline}{time_str}")
-            if body:
-                lines.append(body)
-            lines.append("")
-        else:
-            if headline:
-                lines.append(f"{headline}{time_str}")
-            if body:
-                lines.append(body)
-            lines.append("")
-
+        if headline:
+            lines.append(f"## {headline}{time_str}" if extract_mode == "markdown" else f"{headline}{time_str}")
+        if body:
+            lines.append(body)
+        lines.append("")
     text = "\n".join(lines).strip()
     return text if len(text) > 200 else None
 
 
+def _optimo_blocks_to_text(blocks: list[Any]) -> str:
+    """Recursively collect text from BBC Optimo fragment/inline blocks."""
+    parts: list[str] = []
+    for block_any in blocks:
+        if not isinstance(block_any, dict):
+            continue
+        model = cast(dict[str, Any], cast(dict[str, Any], block_any).get("model") or {})
+        text = model.get("text")
+        nested = model.get("blocks")
+        if isinstance(text, str):
+            parts.append(text)
+        elif isinstance(nested, list):
+            parts.append(_optimo_blocks_to_text(cast(list[Any], nested)))
+    return "".join(parts)
+
+
 def _extract_bbc_next_data(raw_html: str, extract_mode: str = "markdown") -> str | None:
-    """
-    Extract BBC standard article content from __NEXT_DATA__ (Optimo CMS / Next.js).
-
-    Actual JSON path (verified 2026-03-12):
-      props -> pageProps -> page -> <article-key> -> contents[]
-
-    Each content block has:
-      { "type": "headline"|"paragraph"|"text"|"subheadline", "model": { "blocks": [...] } }
-
-    Inner blocks carry the actual text:
-      { "type": "fragment", "model": { "text": "..." } }
-    or for paragraphs, a nested "blocks" list of fragments.
-
-    Returns formatted text or None if not found / insufficient content.
-    """
+    """Extract a BBC Optimo (Next.js ``__NEXT_DATA__``) article: props.pageProps.page.<key>.contents[]."""
     next_data_m = re.search(
-        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>([\s\S]*?)</script>', raw_html, re.I
+        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>([\s\S]*?)</script>', raw_html, re.I,
     )
     if not next_data_m:
         return None
-
     try:
-        data = json.loads(next_data_m.group(1))
-    except (json.JSONDecodeError, ValueError):
-        return None
-
-    try:
-        page_props = data.get("props", {}).get("pageProps", {})
-        # The article lives under pageProps.page, keyed by a CMS path string
-        # e.g. '"news","articles","c0e55g03v2zo",' — we don't know the key,
-        # so grab the first dict value that has a "contents" list.
-        page = page_props.get("page", {})
-        article_data: dict | None = None
+        data = cast(dict[str, Any], json.loads(next_data_m.group(1)))
+        page_props = cast(dict[str, Any], cast(dict[str, Any], data.get("props") or {}).get("pageProps") or {})
+        page = page_props.get("page")
+        article_data: dict[str, Any] | None = None
         if isinstance(page, dict):
-            for v in page.values():
-                if isinstance(v, dict) and "contents" in v:
-                    article_data = v
+            for value in cast(dict[str, Any], page).values():
+                if isinstance(value, dict) and "contents" in cast(dict[str, Any], value):
+                    article_data = cast(dict[str, Any], value)
                     break
-
         if not article_data:
             return None
-
-        contents = article_data.get("contents", [])
+        contents = cast(list[Any], article_data.get("contents") or [])
         if not contents:
             return None
 
-        def _blocks_to_text(blocks: list) -> str:
-            """Recursively collect text from Optimo fragment/inline blocks."""
-            parts = []
-            for b in blocks:
-                if not isinstance(b, dict):
-                    continue
-                model = b.get("model", {})
-                # Leaf fragment: has direct text
-                if "text" in model and isinstance(model["text"], str):
-                    parts.append(model["text"])
-                # Nested blocks
-                elif "blocks" in model and isinstance(model["blocks"], list):
-                    parts.append(_blocks_to_text(model["blocks"]))
-            return "".join(parts)
-
         lines: list[str] = []
-
-        # Article-level headline from metadata
-        metadata = article_data.get("metadata", {})
-        title = metadata.get("headline") or metadata.get("title") or ""
+        metadata = cast(dict[str, Any], article_data.get("metadata") or {})
+        title = str(metadata.get("headline") or metadata.get("title") or "")
         if not title:
-            # Try pageProps.metadata
-            title = page_props.get("metadata", {}).get("headline", "")
+            title = str(cast(dict[str, Any], page_props.get("metadata") or {}).get("headline") or "")
         if title:
             lines.append(f"# {title}\n")
-
-        for block in contents:
-            if not isinstance(block, dict):
+        for block_any in contents:
+            if not isinstance(block_any, dict):
                 continue
-            btype = block.get("type", "")
-            model = block.get("model", {})
-            inner_blocks = model.get("blocks", [])
-
+            block = cast(dict[str, Any], block_any)
+            btype = str(block.get("type") or "")
+            inner = cast(list[Any], cast(dict[str, Any], block.get("model") or {}).get("blocks") or [])
+            text = _optimo_blocks_to_text(inner).strip()
+            if not text:
+                continue
             if btype == "headline":
-                text = _blocks_to_text(inner_blocks).strip()
-                if text:
-                    lines.append(f"# {text}\n")
-
+                lines.append(f"# {text}\n" if extract_mode == "markdown" else f"{text}\n")
             elif btype == "subheadline":
-                text = _blocks_to_text(inner_blocks).strip()
-                if text:
-                    lines.append(f"## {text}\n")
-
+                lines.append(f"## {text}\n" if extract_mode == "markdown" else f"{text}\n")
             elif btype in ("paragraph", "text"):
-                text = _blocks_to_text(inner_blocks).strip()
-                if text:
-                    lines.append(text)
-                    lines.append("")
-
-            # Skip images, media, crossheads, ads, etc.
-
+                lines.append(text)
+                lines.append("")
+            # images, media, crossheads, ads are skipped
         result = "\n".join(lines).strip()
         return result if len(result) > 300 else None
-
     except Exception:
         return None
-
-
-def _extract_ext_to(raw_html: str, extract_mode: str = "markdown") -> str | None:
-    """
-    Extract torrent listings from ext.to search/category pages.
-
-    ext.to renders a standard HTML table with one <tr> per torrent.
-    Each row contains:
-      - <a href="/slug-XXXXXXXX/"><b>Name</b></a>  — torrent link + name
-      - size <span> (e.g. "1.45 GB")
-      - age  <span> (e.g. "2 days ago")
-      - seeds  <span class="text-success ...">
-      - leeches <span class="text-danger ...">
-
-    Returns a formatted table string or None if no results found.
-    """
-    try:
-        lines: list[str] = []
-
-        # Page title (search query or category name)
-        title_m = re.search(r'<h1[^>]*>([\s\S]*?)</h1>', raw_html, re.I)
-        if title_m:
-            title = _strip_tags(title_m.group(1)).strip()
-            if title:
-                lines.append(f"# {title}\n")
-
-        # Find each torrent row.
-        # ext.to uses various structures for torrent links. Try multiple patterns:
-        # Pattern 1: <a href="/.../"><b>Name</b></a> (old structure)
-        # Pattern 2: <a href="/.../" title="Name"> (title attribute)
-        # Pattern 3: <a href="/.../">...<span>Name</span>...</a> (span inside)
-
-        entries: list[tuple[str, str]] = []
-        seen_urls: set[str] = set()
-
-        # Try pattern 1: <b> tag (primary)
-        torrent_link_re = re.compile(r'<a\s+href="(/[^"]+/)"[^>]*><b>([^<]+)</b></a>', re.I)
-        for m in torrent_link_re.finditer(raw_html):
-            url_path, name = m.group(1), html.unescape(m.group(2).strip())
-            if url_path not in seen_urls and name and name not in ['file_upload', 'storage', 'access_time']:
-                seen_urls.add(url_path)
-                entries.append((url_path, name))
-
-        # Try pattern 2: title attribute
-        if len(entries) < 5:
-            title_re = re.compile(r'<a\s+href="(/[^"]+/)"[^>]*title="([^"]+)"', re.I)
-            for m in title_re.finditer(raw_html):
-                url_path, name = m.group(1), html.unescape(m.group(2).strip())
-                if url_path not in seen_urls and name and len(name) > 3:
-                    seen_urls.add(url_path)
-                    entries.append((url_path, name))
-
-        # Try pattern 3: table rows with nested name
-        if len(entries) < 5:
-            tr_re = re.compile(r'<tr[^>]*>([\s\S]*?)</tr>', re.I)
-            for tr_m in tr_re.finditer(raw_html):
-                row = tr_m.group(1)
-                link_m = re.search(r'<a\s+href="(/[^"]+/)"[^>]*>([\s\S]*?)</a>', row, re.I)
-                if link_m:
-                    url_path = link_m.group(1)
-                    if url_path in seen_urls:
-                        continue
-                    link_content = link_m.group(2)
-                    name_m = re.search(r'<(?:span|div|b)[^>]*>([^<]+)</(?:span|div|b)>', link_content, re.I)
-                    if name_m:
-                        name = html.unescape(name_m.group(1).strip())
-                        if name and name not in ['file_upload', 'storage', 'access_time'] and len(name) > 3:
-                            seen_urls.add(url_path)
-                            entries.append((url_path, name))
-
-        logger.debug("ext.to extractor found {} valid entries", len(entries))
-
-        # Process entries — locate each row and extract metadata
-        final_entries: list[str] = []
-        for url_path, name in entries:
-            # Find the row containing this URL
-            tr_start = raw_html.find(f'href="{url_path}"')
-            if tr_start == -1:
-                continue
-            tr_open = raw_html.rfind('<tr', 0, tr_start)
-            tr_close = raw_html.find('</tr>', tr_start)
-            if tr_open == -1 or tr_close == -1:
-                continue
-            row = raw_html[tr_open:tr_close + 5]
-
-            # Size — matches "1.45 GB", "780 MB", "320 KB", etc.
-            size_m = re.search(
-                r'<span[^>]*>\s*(\d[\d.,]*\s*(?:GB|MB|KB|TB|B))\s*</span>',
-                row, re.I,
-            )
-            size = size_m.group(1).strip() if size_m else "?"
-
-            # Seeds — ext.to uses class="text-success ..."
-            seed_m = re.search(r'class="[^"]*text-success[^"]*"[^>]*>(\d+)</span>', row, re.I)
-            seeds = seed_m.group(1) if seed_m else "0"
-
-            # Leeches — ext.to uses class="text-danger ..."
-            leech_m = re.search(r'class="[^"]*text-danger[^"]*"[^>]*>(\d+)</span>', row, re.I)
-            leeches = leech_m.group(1) if leech_m else "0"
-
-            # Age — matches "2 days ago", "5 hours ago", "just now", etc.
-            age_m = re.search(
-                r'<span[^>]*>\s*([^<]*(?:ago|just now|seconds?|minutes?|hours?|days?|weeks?|months?|years?)[^<]*)\s*</span>',
-                row, re.I,
-            )
-            age = age_m.group(1).strip() if age_m else "?"
-
-            torrent_url = f"https://ext.to{url_path}"
-
-            if extract_mode == "markdown":
-                final_entries.append(
-                    f"**{name}**\n"
-                    f"  URL: {torrent_url}\n"
-                    f"  Size: {size} | Seeds: {seeds} | Leeches: {leeches} | Age: {age}"
-                )
-            else:
-                final_entries.append(
-                    f"{name}\n"
-                    f"  URL: {torrent_url}\n"
-                    f"  Size: {size} | Seeds: {seeds} | Leeches: {leeches} | Age: {age}"
-                )
-
-        if not final_entries:
-            logger.warning("ext.to extractor found 0 entries after parsing")
-            return None
-
-        lines.extend(final_entries)
-        return "\n\n".join(lines)
-
-    except Exception as e:
-        logger.debug("ext.to extraction failed: {}", e)
-        return None
-
-
-def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
-    """Format provider results into shared plaintext output."""
-    if not items:
-        return f"No results for: {query}"
-    lines = [f"Results for: {query}\n"]
-    for i, item in enumerate(items[:n], 1):
-        title = _normalize(_strip_tags(item.get("title", "")))
-        snippet = _normalize(_strip_tags(item.get("content", "")))
-        lines.append(f"{i}. {title}\n   {item.get('url', '')}")
-        if snippet:
-            lines.append(f"   {snippet}")
-    return "\n".join(lines)
 
 
 @tool_parameters(
@@ -1723,18 +1524,20 @@ class WebSearchTool(Tool):
                 r.raise_for_status()
             return _format_results(query, r.json().get("results", []), n)
         except Exception as e:
-            logger.warning("SearXNG request failed ({}), falling back to config.web_search={}", e, self.config.web_search)
+            # FORK: a SearXNG outage falls back to the configured provider (or
+            # DuckDuckGo when SearXNG itself is the configured provider).
             provider = self.config.provider.strip().lower()
-            if provider in ("searxng", ""):
-                return await self._search_duckduckgo(query, n)
-            elif provider == "brave":
+            logger.warning(
+                "SearXNG request failed ({}), falling back to provider '{}'",
+                type(e).__name__, provider or "duckduckgo",
+            )
+            if provider == "brave":
                 return await self._search_brave(query, n)
-            elif provider == "tavily":
+            if provider == "tavily":
                 return await self._search_tavily(query, n)
-            elif provider == "jina":
+            if provider == "jina":
                 return await self._search_jina(query, n)
-            else:
-                return await self._search_duckduckgo(query, n)
+            return await self._search_duckduckgo(query, n)
 
     async def _search_jina(self, query: str, n: int) -> str:
         api_key = self.config.api_key or os.environ.get("JINA_API_KEY", "")
@@ -2147,15 +1950,18 @@ class WebFetchTool(Tool):
     """
     Fetch and extract content from a URL.
 
-    Fetcher priority:  curl_cffi → StealthyFetcher (scrapling) → httpx
-    PubMed/PMC: skip curl_cffi (reCAPTCHA Enterprise), route directly to Scrapling
-    Extractor priority: trafilatura → readability → strip_tags
+    Fetcher priority:  curl_cffi → Scrapling stealth browser → httpx
+    (Reddit, PubMed/PMC and NCBI Bookshelf go straight to the browser tier.)
+    Extractor priority: site-specific (BBC) → trafilatura → readability → strip_tags
     """
     _scopes = {"core", "subagent"}
 
     name = "web_fetch"  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
     description = (  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
         "Fetch a URL and extract readable content (HTML → markdown/text). "
+        "Also extracts PDF text and returns images for visual analysis. "
+        "Output is capped at maxChars (default 500 000); HTTP errors and "
+        "blocked redirects are returned as tool errors."
     )
 
     config_key = "web"
@@ -2200,20 +2006,9 @@ class WebFetchTool(Tool):
         if not is_valid:
             return ToolResult.error(json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False))
 
-        # FORK: Skip upstream's httpx-based image pre-fetch detection.
-        # The fork's tiered fetcher (`_fetch_raw`: curl_cffi → httpx) below already
-        # detects images by content-type / URL extension and returns image blocks via
-        # `_build_image_blocks()`. Re-running the pre-fetch via httpx would
-        # double-request every URL (curl_cffi can fetch sites httpx cannot, so the
-        # pre-fetch would also leak fetch attempts past curl_cffi's stealth layer).
-        # The pinned-DNS SSRF helpers (`_get_with_safe_redirects`,
-        # `_stream_with_safe_redirects`, `_resolve_url_safe`, `_fetch_client_kwargs`)
-        # are still defined at module scope and used by `_fetch_readability`.
-        #
-        # UPSTREAM credential check: Still gate Jina forwarding on
-        # `_url_carries_credentials()` so credential-bearing URLs never leave the
-        # machine — but skip the full httpx pre-fetch redirect chain (the tiered
-        # fetcher validates redirects via curl_cffi/scrapling instead).
+        # FORK: the tiered fetcher below (curl_cffi -> httpx) replaces upstream's
+        # httpx pre-fetch. Both tiers validate every redirect hop; the httpx tier
+        # also pins DNS. Jina forwarding stays gated on credential-bearing URLs.
         jina_remote_safe = not _url_carries_credentials(url)
 
         result = None
@@ -2223,25 +2018,36 @@ class WebFetchTool(Tool):
                 return result
 
         try:
-            # FORK: Tiered fetcher (curl_cffi → scrapling → httpx)
-            content_bytes, headers, status_code, fetcher = await _fetch_raw(url, self.proxy)
-            # PubMed/PMC sometimes returns HTTP 200 challenge/title-only shells from every raw
-            # fetcher. Never extract/cache those as 40-word "success"; use Jina Reader as a
-            # last-resort article extractor if direct fetching did not obtain real article HTML.
+            # FORK: Tiered fetcher (curl_cffi → httpx fallback)
+            content_bytes, headers, status_code, fetcher = await _fetch_raw(
+                url, self.proxy, self.user_agent,
+            )
+            if status_code >= 400:
+                return ToolResult.error(json.dumps({
+                    "error": f"HTTP {status_code}", "url": url,
+                    "status": status_code, "fetcher": fetcher,
+                }, ensure_ascii=False))
+            # PubMed/PMC can return HTTP 200 challenge/title-only shells from every
+            # raw tier. Never extract those as a 40-word "success": try Jina Reader
+            # as a last-resort article extractor instead.
             if (
                 "ncbi.nlm.nih.gov" in url.lower()
                 and "pmc" in url.lower()
-                and (not _has_pubmed_article_content(content_bytes))
+                and not _has_pubmed_article_content(content_bytes)
             ):
-                logger.warning("PubMed/PMC raw fetch returned non-article HTML via {}; trying Jina fallback", fetcher)
-                jina_result = await self._fetch_jina(url, max_chars or self.max_chars)
+                logger.warning(
+                    "PubMed/PMC raw fetch returned non-article HTML via {}; trying Jina fallback",
+                    fetcher,
+                )
+                jina_result = await self._fetch_jina(url, max_chars)
                 if jina_result is not None:
                     return jina_result
             ctype = str(headers.get("content-type", "")).lower()
+            image_mime = _image_mime_for(ctype, url)
 
             # --- Image ---
-            if ctype.startswith("image/") or re.search(r'\.(jpg|jpeg|png|gif|webp|svg|bmp|ico)(\?|$)', url, re.I):
-                return _build_image_blocks(content_bytes, ctype or "image/jpeg", url)
+            if image_mime:
+                return _build_image_blocks(content_bytes, image_mime, url)
 
             # --- PDF ---
             elif "application/pdf" in ctype or url.lower().endswith(".pdf"):
@@ -2257,31 +2063,27 @@ class WebFetchTool(Tool):
 
             # --- JSON ---
             elif "application/json" in ctype or url.endswith(".json"):
-                # Minimal fix: Reddit now returns HTML-wrapped + escaped JSON inside <p>
                 content_str = content_bytes.decode("utf-8", errors="replace")
-
-                if "reddit.com" in url.lower() and url.endswith(".json"):
-                    # Extract the actual JSON from <html><body><p>[{...}]</p></body></html>
-                    p_match = re.search(r'<p[^>]*>([\s\S]*?)</p>', content_str, re.IGNORECASE)
-                    if p_match:
-                        content_str = html.unescape(p_match.group(1).strip())
+                is_reddit = "reddit.com" in url.lower()
+                if is_reddit and url.endswith(".json") and fetcher == "scrapling":
+                    # The browser tier wraps Reddit's JSON in <html><body><pre>/<p>…</p>.
+                    wrapped = re.search(r"<(?:pre|p)[^>]*>([\s\S]*?)</(?:pre|p)>", content_str, re.I)
+                    if wrapped:
+                        content_str = html.unescape(wrapped.group(1).strip())
 
                 raw: Any
                 try:
                     raw = json.loads(content_str)
                 except json.JSONDecodeError as e:
-                    is_reddit = "reddit.com" in url.lower()
                     if is_reddit:
-                        logger.debug("Reddit .json HTML wrapper cleaned, but still failed parse → fallback")
-                        text, extractor = _html_to_text(content_bytes.decode("utf-8", errors="replace"), extract_mode, url)
+                        logger.debug("Reddit .json response was not JSON → HTML extraction fallback")
+                        text, _extractor = _html_to_text(content_str, extract_mode, url)
                         text = f"{_UNTRUSTED_BANNER}\n\n{text}"
                     else:
-                        logger.warning("JSON parse failed for {} ({}): falling back to raw text", url, e)
-                        text = content_bytes.decode("utf-8", errors="replace")
-                        text = f"{_UNTRUSTED_BANNER}\n\n[JSON parse failed]\n\n{text}"
-
+                        logger.warning("JSON parse failed for {} ({}): falling back to raw text", _redact_url_for_log(url), type(e).__name__)
+                        text = f"{_UNTRUSTED_BANNER}\n\n[JSON parse failed]\n\n{content_str}"
                     text = _smart_truncate(text, max_chars)
-                    result = json.dumps({   # <-- must build result here
+                    result = json.dumps({
                         "url": url, "status": status_code, "fetcher": fetcher,
                         "extractor": "reddit_html_fallback" if is_reddit else "raw",
                         "truncated": "[...truncated...]" in text,
@@ -2344,8 +2146,6 @@ class WebFetchTool(Tool):
                         "untrusted": True, "text": text
                     }, ensure_ascii=False)
 
-                return result
-
             # --- HTML ---
             elif "text/html" in ctype or content_bytes[:256].lower().startswith((b"<!doctype", b"<html")):
                 raw_html = content_bytes.decode("utf-8", errors="replace")
@@ -2388,11 +2188,20 @@ class WebFetchTool(Tool):
 
             return result
 
+        except RedirectBlockedError as e:
+            return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
         except httpx.ProxyError as e:
-            logger.error("WebFetch proxy error for {}: {}", _redact_url_for_log(url), e)
+            logger.warning(
+                "WebFetch proxy error for {} ({})", _redact_url_for_log(url), type(e).__name__,
+            )
             return ToolResult.error(json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False))
         except Exception as e:
-            logger.error("WebFetch error for {}: {}", _redact_url_for_log(url), e)
+            unsafe_error = _unsafe_url_request_error(e)
+            if unsafe_error is not None:
+                return ToolResult.error(json.dumps(
+                    {"error": f"Redirect blocked: {unsafe_error}", "url": url}, ensure_ascii=False,
+                ))
+            logger.warning("WebFetch error for {} ({})", _redact_url_for_log(url), type(e).__name__)
             return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
 
     # --- UPSTREAM: Optional Jina Reader support ---
@@ -2447,85 +2256,3 @@ class WebFetchTool(Tool):
                 type(e).__name__,
             )
             return None
-
-    async def _fetch_readability(self, url: str, extract_mode: str, max_chars: int) -> Any:
-        """Local fallback using readability-lxml."""
-        try:
-            async with httpx.AsyncClient(
-                **_fetch_client_kwargs(self.proxy, 30.0),
-            ) as client:
-                r, redirect_error = await _get_with_safe_redirects(
-                    client,
-                    url,
-                    headers={"User-Agent": self.user_agent},
-                )
-                if redirect_error:
-                    return ToolResult.error(json.dumps({"error": redirect_error, "url": url}, ensure_ascii=False))
-                if r is None:
-                    return ToolResult.error(json.dumps({"error": "Fetch failed", "url": url}, ensure_ascii=False))
-                r.raise_for_status()
-
-            ctype = r.headers.get("content-type", "")
-            if ctype.startswith("image/"):
-                return _build_image_blocks(r.content, ctype, url)
-
-            if "application/json" in ctype:
-                text, extractor = json.dumps(r.json(), indent=2, ensure_ascii=False), "json"
-            elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
-                try:
-                    text = self._extract_readable_html(r.text, extract_mode)
-                    extractor = "readability"
-                except Exception as e:
-                    logger.warning(
-                        "Readability failed for {}, using raw HTML fallback ({})",
-                        _redact_url_for_log(url),
-                        type(e).__name__,
-                    )
-                    text, extractor = _normalize(_strip_tags(r.text)), "html"
-            else:
-                text, extractor = r.text, "raw"
-
-            truncated = len(text) > max_chars
-            if truncated:
-                text = text[:max_chars]
-            text = f"{_UNTRUSTED_BANNER}\n\n{text}"
-
-            return json.dumps({
-                "url": url, "finalUrl": str(r.url), "status": r.status_code,
-                "extractor": extractor, "truncated": truncated, "length": len(text),
-                "untrusted": True, "text": text,
-            }, ensure_ascii=False)
-        except httpx.ProxyError as e:
-            logger.warning(
-                "WebFetch proxy error for {} ({})",
-                _redact_url_for_log(url),
-                type(e).__name__,
-            )
-            return ToolResult.error(json.dumps({"error": f"Proxy error: {e}", "url": url}, ensure_ascii=False))
-        except Exception as e:
-            logger.warning(
-                "WebFetch error for {} ({})",
-                _redact_url_for_log(url),
-                type(e).__name__,
-            )
-            return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
-
-    def _extract_readable_html(self, html_content: str, extract_mode: str) -> str:
-        from readability import Document as _RDoc  # noqa: I001  # type: ignore[import-untyped]  # pyright: ignore[reportMissingImports,reportMissingTypeStubs,reportUnknownVariableType]
-
-        doc = cast(Any, _RDoc)(html_content)
-        summary = cast(str, doc.summary())
-        content = self._to_markdown(summary) if extract_mode == "markdown" else _strip_tags(summary)
-        doc_title = cast(str | None, doc.title())
-        return f"# {doc_title}\n\n{content}" if doc_title else content
-
-    def _to_markdown(self, html_content: str) -> str:
-        """UPSTREAM: Convert HTML to markdown."""
-        text = re.sub(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>',
-                      lambda m: f'[{_strip_tags(m[2])}]({m[1]})', html_content, flags=re.I)
-        text = re.sub(r'<h([1-6])[^>]*>([\s\S]*?)</h\1>',
-                      lambda m: f'\n{"#" * int(m[1])} {_strip_tags(m[2])}\n', text, flags=re.I)
-        text = re.sub(r'<li[^>]*>([\s\S]*?)</li>', lambda m: f'\n- {_strip_tags(m[1])}', text, flags=re.I)
-        text = re.sub(r'</(p|div|section|article)>', '\n\n', text, flags=re.I)
-        text = re.sub(r'<(br|hr)\s*/?>', '\n', text, flags=re.I)
-        return _normalize(_strip_tags(text))

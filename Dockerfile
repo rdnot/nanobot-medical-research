@@ -24,6 +24,8 @@ RUN uv venv --seed "$VIRTUAL_ENV"
 
 # Install Python dependencies first (cached layer). Hatch reads the custom build
 # hook from hatch_build.py even for this metadata-only install.
+# FORK: the medical-research web_fetch stack is a core dependency of this fork,
+# so no extra is needed for it.
 ARG NANOBOT_EXTRAS=
 COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES.md hatch_build.py ./
 RUN mkdir -p nanobot && touch nanobot/__init__.py && \
@@ -41,6 +43,12 @@ COPY nanobot/ nanobot/
 COPY scripts/install_channel_dependencies.py scripts/
 COPY --from=webui-builder /app/nanobot/web/dist/ nanobot/web/dist/
 RUN NANOBOT_SKIP_WEBUI_BUILD=1 uv pip install --python "$VIRTUAL_ENV/bin/python" --no-cache .
+
+# FORK (scrapling branch): pre-install the Chromium build Scrapling/Patchright needs
+# at a fixed path so it is found regardless of the runtime user's HOME.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN "$VIRTUAL_ENV/bin/python" -m patchright install --with-deps chromium && \
+    chmod -R a+rX /opt/pw-browsers
 
 # Preinstall selected channel dependencies from their manifests. A comma-separated
 # list keeps the image configurable while preserving WhatsApp in the default image.

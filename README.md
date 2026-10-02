@@ -6,39 +6,66 @@
 
 ## Main changes in This Fork
 
-- **Tools Summary**: Shows a clean separate message before the final answer listing used tools  
-  `**Tools used:** - search(... ...) - fetch[](https://...) - read_file(...)`
+- **Tools Summary**: a separate message listing every tool call is sent right before the final answer of a user turn (cron/background turns never get it)
+  `**Tools used:** - search(...) - fetch("https://...") - read_file(...) - write_file(path: first line)`
 
-- **PDF Support**: `web_fetch` now properly reads direct PDF files (no more "binary data" error)
+- **PDF Support**: `web_fetch` extracts text from direct PDF links (PyMuPDF when installed, the bundled `pypdf` otherwise). If no extractor can read the file the tool returns an error instead of pretending the error text is the document.
 
--  **Web_fetch improvements** : `curl_cffi + trafilatura` upgrade (better anti-bot evasion and text extraction)
-  > This fork bypasses Jina `web_fetch` and uses the fork's local web_fetch by default (`curl_cffi` on main branch, `curl_cffi`/`scrapling` on scrapling branch). To use Jina web_fetch, set `"useJinaReader": true` in your config.
+- **web_fetch improvements**: tiered fetcher `curl_cffi` (Chrome TLS impersonation) → `httpx`, with `trafilatura` → `readability` → tag-stripping extraction.
+  - Every redirect hop in both tiers is validated against the SSRF policy (private, loopback and metadata addresses are blocked); the `httpx` tier additionally pins DNS to the validated addresses, matching upstream.
+  - HTTP 4xx/5xx responses and blocked redirects come back as tool errors, not as "successful" page text.
+  - Images are detected by `Content-Type` (the URL extension is only a hint when the server sends no type) and returned as vision blocks; `web.userAgent` from the config is honoured.
+  - Jina Reader is **off by default** (`"useJinaReader": true` in the config re-enables it).
 
-  > install required dependencies: `pip install curl_cffi trafilatura markdownify` (and `PyMuPDF` for PDF support)
+  > The fetch stack (`curl_cffi`, `trafilatura`, `markdownify`, `PyMuPDF`) is a **core dependency of this fork**: any `pip install -e .`, `uv sync` or Docker build installs it, and an exact `uv sync` never prunes it. Nothing to add by hand.
 
-- **Scrapling Branch** (`scrapling` branch only): Adds a browser tier (Scrapling/Playwright) between curl_cffi and httpx for JS-rendered pages / Cloudflare
-  > additionally install `scrapling scrapling[fetchers]`, then run `scrapling install` for browser dependencies
+- **Scrapling Branch** (`scrapling` branch only): adds a stealth-browser tier (Scrapling/Patchright) between `curl_cffi` and `httpx` for JS-rendered pages, Cloudflare challenges and the PubMed/PMC/NCBI Bookshelf reCAPTCHA interstitial.
+  > `scrapling[fetchers]` is a core dependency of that branch. The Chromium build it needs (~150 MB, cached outside the venv in Playwright's browser cache) is downloaded automatically the first time the browser tier is used; to pre-fetch it run `python -m patchright install chromium` in nanobot's environment. The Docker image on that branch bakes it in.
 
-- **Privacy-Focused Search**: Hardcoded SearXNG override: `DEFAULT_SEARXNG_URL` forces SearXNG provider when set in web.py, falls back to config provider
+- **Privacy-Focused Search**: `DEFAULT_SEARXNG_URL` in `nanobot/agent/tools/web.py` forces the SearXNG provider when set; it falls back to the configured provider when empty.
 
-- **Loop Control**: `FORCE_FINAL_THRESHOLD = max_iterations - 2` — Forces final answer after [max_iterations - 2] iterations (default max_iterations = 200, unless specify in config `maxToolIterations`) to prevent infinite tool loops
+- **Loop Control**: once a turn reaches `maxToolIterations - 2` iterations (default `maxToolIterations` = 200) a single hidden notice asks the model to stop calling tools and answer. Upstream's own budget-exhausted finalization still runs at the hard limit.
 
-- **WhatsApp Channel**: Enhanced message markdown rendering for WhatsApp integration
+- **WhatsApp Channel**: Markdown → WhatsApp formatting (bold/italic/strikethrough/code, headers as bold, bullet lists, flattened tables) applied to outgoing messages.
 
 - **New Commands**:
-  - `/s`  → alias for /status
-  - `/c` → Clear session (no memory consolidation)
-  - `/rerun` → Run `workspace\rerun.bat` from chat
+  - `/s`  → alias for `/status`
+  - `/c` → clear the session instantly (cancels the running turn and drops tracked file state like `/new`, but skips memory consolidation)
+  - `/rerun` → run `workspace\rerun.bat` from chat. **Intended behaviour, but note:** it runs outside the exec sandbox and deny-patterns, and the agent can write that file, so only expose the bot to trusted users.
 
 - **Other**:
-  - Increased web_fetch limit to 500,000 chars
-  - ExecTool timeout to 90s
-  - context_window_tokens to 200,000
-  - ReadFileTool._MAX_CHARS 768,000
-  - ReadFileTool._DEFAULT_LIMIT = 8,000
-  - max_tool_result_chars: 400_000 → Prevents large tool results from being offloaded to .nanobot/tool-results/
-  - _CHAT_RETRY_DELAYS = (1, 2, 4, 8, 16) → Increased LLM API retries from 3 to 5 attempts
-  - Write_File & Edit_File Tools: add char limits based on model's output `max_tokens` config (default=4096), `max_tokens × 3 - 1500` for write, `(max_tokens × 3 - 1500)/2` for edit.
+  - `web_fetch` output limit 500,000 chars (truncated at a paragraph/sentence boundary)
+  - `exec` timeout 90s (upstream 60s)
+  - `read_file`: up to 768,000 chars, 8,000 lines and 120 PDF pages per call (upstream 128K / 2,000 / 20)
+  - `maxToolResultChars` default 400,000 → large tool results are kept inline instead of being offloaded to `.nanobot/tool-results/`
+  - LLM API retries 5 instead of 3 (`1, 2, 4, 8, 16` s back-off)
+  - `write_file` / `edit_file` size limits derived from the model output budget `agents.defaults.maxTokens` (default 8192): `maxTokens × 3 − 1500` chars for `write_file`, half of that for `edit_file`'s `new_text`. The limit is passed in by the agent loop; tools never read the config file themselves.
+
+See [`FORK_CUSTOMIZATIONS.md`](FORK_CUSTOMIZATIONS.md) for the file-by-file list and the upstream merge procedure.
+
+## Installing or switching to this fork
+
+nanobot has no self-updater: an install is whatever `pip`/`uv` last put into the environment, so the fork's extra packages are declared as ordinary dependencies and arrive with every install.
+
+**New install from the fork**
+```bash
+git clone https://github.com/rdnot/nanobot-medical-research.git
+cd nanobot-medical-research          # add `git checkout scrapling` for the browser tier
+python -m pip install -e .           # or: uv sync   (CI/dev: uv sync --all-extras --dev)
+nanobot onboard
+```
+
+**Existing nanobot checkout → point it at the fork**
+```bash
+git remote set-url origin https://github.com/rdnot/nanobot-medical-research.git
+git fetch origin && git checkout main    # or scrapling
+git reset --hard origin/main             # fork history replaces upstream history
+python -m pip install -e .               # or: uv sync
+```
+
+**Updating a fork install** (`git pull` then `pip install -e .` / `uv sync` again, because dependency changes only apply when the package is re-installed). A manually `pip install`ed workaround from before this change is harmless: the versions now declared in `pyproject.toml` simply take over on the next install.
+
+**Docker**: `docker build -t nanobot .` on either branch includes everything; no build args needed.
 
 ## Example System Prompt
 A real-world example system prompt for a medical research use case is available here:  
@@ -49,12 +76,12 @@ A real-world example system prompt for a medical research use case is available 
  - Result : structured .md file (7000 words, 50KB size, 28 tool calls)
 
 ## Third-Party Licenses
-This fork introduces the following additional dependencies beyond the original nanobot project:
+This fork introduces the following additional dependencies beyond the original nanobot project (all declared as core dependencies of the fork):
 - [Trafilatura](https://github.com/adbar/trafilatura) — Apache License 2.0
-- [Scrapling](https://github.com/D4Vinci/Scrapling) — BSD-3-Clause License
+- [Scrapling](https://github.com/D4Vinci/Scrapling) *(scrapling branch only)* — BSD-3-Clause License
 - [markdownify](https://github.com/matthewwithanm/python-markdownify) — MIT License
 - [curl_cffi](https://github.com/yifeikong/curl_cffi) — MIT License
-- [PyMuPDF](https://github.com/pymupdf/PyMuPDF) *(optional)* — GNU AGPL v3. Users must comply with PyMuPDF's license terms when using PDF extraction features.
+- [PyMuPDF](https://github.com/pymupdf/PyMuPDF) — GNU AGPL v3. Users must comply with PyMuPDF's license terms when using PDF extraction features; if it is removed from an environment the bundled `pypdf` (BSD) is used instead.
 
 ---
 

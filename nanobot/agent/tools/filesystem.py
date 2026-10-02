@@ -198,6 +198,8 @@ class _FsTool(Tool):
 # read_file
 # ---------------------------------------------------------------------------
 
+_READ_FILE_MAX_PDF_PAGES = 120  # FORK: upstream reads at most 20 pages per call
+
 _BLOCKED_DEVICE_PATHS = frozenset({
     "/dev/zero", "/dev/random", "/dev/urandom", "/dev/full",
     "/dev/stdin", "/dev/stdout", "/dev/stderr",
@@ -255,11 +257,13 @@ def _builtin_skill_read_path(path: str) -> Path | None:
             minimum=1,
         ),
         limit=IntegerSchema(
-            # FORK: default is _DEFAULT_LIMIT=8000 (was 2000); IntegerSchema no longer takes positional default
-            description="Maximum number of lines to read (default 8000), minimum 200",
+            # FORK: default is _DEFAULT_LIMIT=8000 (upstream 2000)
+            description="Maximum number of lines to read (default 8000)",
             minimum=1,
         ),
-        pages=StringSchema("PDF page number or range, e.g. '7' or '1-5' (max 20 pages)"),
+        pages=StringSchema(
+            f"PDF page number or range, e.g. '7' or '1-5' (max {_READ_FILE_MAX_PDF_PAGES} pages)"
+        ),
         force=BooleanSchema(
             description="Return an unchanged range again",
             default=False,
@@ -274,7 +278,7 @@ class ReadFileTool(_FsTool):
     _MAX_CHARS = 768_000  # FORK: ~768 KB — ~192K tokens, fits within 256K-token context window
     _MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024  # UPSTREAM: reject oversized reads before loading
     _DEFAULT_LIMIT = 8000  # FORK: increased from 2000
-    _MAX_PDF_PAGES = 120  # FORK
+    _MAX_PDF_PAGES = _READ_FILE_MAX_PDF_PAGES  # FORK (upstream: 20)
 
     @property
     def name(self) -> str:
@@ -566,11 +570,9 @@ def _max_content_chars_for_tokens(max_tokens: int) -> int:
     return max(max_tokens * _CHARS_PER_TOKEN - _OVERHEAD_CHARS, _MIN_CONTENT_CHARS)
 
 
-def _load_max_tokens_from_config() -> int | None:
-    """Return configured max_tokens, or None if unavailable."""
-    from nanobot.config.loader import load_config  # local import to avoid circular deps
-    config = load_config()
-    return config.agents.defaults.max_tokens or None
+# FORK: Fallback output budget when the loop did not supply one (matches
+# AgentDefaults.max_tokens). Tools never read the config file themselves.
+_DEFAULT_MAX_TOKENS = 8192
 
 
 @tool_parameters(
@@ -585,8 +587,16 @@ class WriteFileTool(_FsTool):
 
     _scopes = {"core", "subagent", "memory"}
 
-    # FORK: Fallback when no max_tokens is available.
-    _DEFAULT_MAX_TOKENS = 8192
+    @classmethod
+    def create(cls, ctx: ToolContext) -> Tool:
+        tool = super().create(ctx)
+        if isinstance(tool, WriteFileTool) and ctx.max_output_tokens:
+            tool.set_max_tokens(ctx.max_output_tokens)  # FORK
+        return tool
+
+    def set_max_tokens(self, max_tokens: int) -> None:
+        """FORK: derive the write size limit from the model output budget."""
+        self._max_content_chars = _max_content_chars_for_tokens(max_tokens)
 
     def __init__(
         self,
@@ -613,10 +623,7 @@ class WriteFileTool(_FsTool):
             extra_read_allowed_files=extra_read_allowed_files,
         )
 
-        if max_tokens is None:
-            max_tokens = _load_max_tokens_from_config() or self._DEFAULT_MAX_TOKENS
-
-        self._max_content_chars = _max_content_chars_for_tokens(max_tokens)
+        self.set_max_tokens(max_tokens or _DEFAULT_MAX_TOKENS)
 
     @property
     def name(self) -> str:
@@ -949,8 +956,16 @@ class EditFileTool(_FsTool):
     _MAX_EDIT_FILE_SIZE = 1024 * 1024 * 1024  # 1 GiB
     _MARKDOWN_EXTS = frozenset({".md", ".mdx", ".markdown"})
 
-    # FORK: Fallback when no max_tokens is available.
-    _DEFAULT_MAX_TOKENS = 8192
+    @classmethod
+    def create(cls, ctx: ToolContext) -> Tool:
+        tool = super().create(ctx)
+        if isinstance(tool, EditFileTool) and ctx.max_output_tokens:
+            tool.set_max_tokens(ctx.max_output_tokens)  # FORK
+        return tool
+
+    def set_max_tokens(self, max_tokens: int) -> None:
+        """FORK: new_text may use half the write budget so old_text + new_text fit."""
+        self._max_new_text_chars = _max_content_chars_for_tokens(max_tokens) // 2
 
     def __init__(
         self,
@@ -977,10 +992,7 @@ class EditFileTool(_FsTool):
             extra_read_allowed_files=extra_read_allowed_files,
         )
 
-        if max_tokens is None:
-            max_tokens = _load_max_tokens_from_config() or self._DEFAULT_MAX_TOKENS
-
-        self._max_content_chars = _max_content_chars_for_tokens(max_tokens)
+        self.set_max_tokens(max_tokens or _DEFAULT_MAX_TOKENS)
 
     @property
     def name(self) -> str:
@@ -992,7 +1004,7 @@ class EditFileTool(_FsTool):
             "Perform a small, exact replacement in one file. "
             "Prefer apply_patch for multi-file, structural, or generated edits. "
             "occurrence, line_hint, and replace_all=true are mutually exclusive. "
-            f"new_text must not exceed {self._max_content_chars // 2:,} characters."  # FORK
+            f"new_text must not exceed {self._max_new_text_chars:,} characters."  # FORK
         )
 
     @staticmethod
@@ -1027,9 +1039,9 @@ class EditFileTool(_FsTool):
                 raise ValueError("Unknown new_text")
 
             # FORK: enforce new_text size limit
-            if len(new_text) > self._max_content_chars:
+            if len(new_text) > self._max_new_text_chars:
                 return (
-                    f"Error: new_text too large ({len(new_text):,} chars, limit {self._max_content_chars // 2:,}). "
+                    f"Error: new_text too large ({len(new_text):,} chars, limit {self._max_new_text_chars:,}). "
                     "Split into smaller edit_file calls, one section at a time."
                 )
 
