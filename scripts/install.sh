@@ -2,8 +2,9 @@
 set -eu
 
 package="nanobot-ai"
-install_target="$package"
-install_source="PyPI"
+# FORK: scripts/install-fork.sh points these at the fork's prebuilt wheel.
+install_target="${NANOBOT_INSTALL_TARGET:-$package}"
+install_source="${NANOBOT_INSTALL_SOURCE:-PyPI}"
 dry_run="0"
 nanobot_runner=""
 nanobot_python=""
