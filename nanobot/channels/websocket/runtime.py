@@ -1216,6 +1216,15 @@ class WebSocketChannel(BaseChannel):
             payload["kind"] = "tool_hint"
         elif progress_event:
             payload["kind"] = "progress"
+        elif msg.metadata.get("_tools_summary"):
+            # FORK: the fork's per-turn "Tools used:" summary is a second
+            # assistant message in the same turn, not a tool-call breadcrumb.
+            # It must render as its own bubble (phase "answer", so it
+            # persists/replays the same as any answer) but stay out of the
+            # activity-to-answer grouping on both clients — see "tools_summary"
+            # handling in webui/src/lib/thread-event-projection.ts,
+            # webui/src/components/thread/ThreadMessages.tsx, and tui/src/app/app.ts.
+            payload["kind"] = "tools_summary"
         phase = "activity" if payload.get("kind") in ("tool_hint", "progress") else "answer"
         self._persist_turn_transcript_event(
             msg.chat_id,

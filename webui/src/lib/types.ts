@@ -4,8 +4,11 @@ export type { RecoveryState } from "../../../packages/client-events/notification
 type Role = "user" | "assistant" | "tool" | "system";
 
 /** "trace" rows are intermediate agent breadcrumbs (tool-call hints,
- * progress pings) that should not be rendered as conversational replies. */
-type MessageKind = "message" | "trace" | "compaction";
+ * progress pings) that should not be rendered as conversational replies.
+ * "tools_summary" is the fork's per-turn "Tools used:" recap: a second
+ * assistant message in the same turn that must render as its own bubble
+ * but stay out of the activity-to-answer grouping, like "compaction". */
+type MessageKind = "message" | "trace" | "compaction" | "tools_summary";
 
 export interface UIContextCompaction extends ContextCompaction {
   /** Live wire transitions announce; hydrated transcript rows stay silent. */
@@ -1395,8 +1398,10 @@ export type InboundEvent =
       /** Oversized persisted activity detail, fetched only when the trace is expanded. */
       trace_detail?: UITraceDetail;
       /** Present when the frame is an agent breadcrumb (e.g. tool hint,
-       * generic progress line) rather than a conversational reply. */
-      kind?: "tool_hint" | "progress" | "reasoning";
+       * generic progress line) rather than a conversational reply, or the
+       * fork's "tools_summary" recap (FORK: a second per-turn assistant
+       * message that must not join the activity-to-answer grouping). */
+      kind?: "tool_hint" | "progress" | "reasoning" | "tools_summary";
       /** Server-measured turn wall time when this frame finishes an assistant reply. */
       latency_ms?: number;
       /** Lightweight provenance for proactive assistant messages. */

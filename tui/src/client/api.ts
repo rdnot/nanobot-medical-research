@@ -226,6 +226,13 @@ export async function fetchHistory(
             role: "activity", content: event.text,
             ...(event.tool_events?.length ? { toolEvents: event.tool_events } : {}),
           })
+        } else if (event.kind === "tools_summary") {
+          // FORK: the fork's "Tools used:" recap is a second assistant message
+          // published after the real answer finishes streaming. It must never
+          // touch `stream`/`lastAnswer` bookkeeping — doing so (like the
+          // kind-less branch below) would let it overwrite the just-decoded
+          // answer row instead of appearing as its own row.
+          messages.push({ role: "activity", content: event.text })
         } else {
           // A final message can repeat the answer already saved by stream_end.
           if (stream && stream.turnId === event.turn_id) stream.row.content = event.text

@@ -85,13 +85,32 @@ def test_build_tools_summary_uses_real_tool_argument_names():
     ])
     lines = summary.splitlines()
     assert lines[0] == "**Tools used:**"
-    assert "- search(pneumonia guidelines)" in lines
-    assert '- fetch("https://example.com/a")' in lines
-    assert "- read_file(~\\.nanobot\\...\\notes\\a.md)" in lines
-    assert "- write_file(/w/report.md: # Title body)" in lines
-    assert "- edit_file(/w/report.md: foo bar)" in lines
+    # FORK: query/URL/path values are wrapped in inline code so the WebUI's
+    # Markdown renderer never auto-links a bare URL into a text-less link.
+    assert "- search(`pneumonia guidelines`)" in lines
+    assert "- fetch(`https://example.com/a`)" in lines
+    assert "- read_file(`~\\.nanobot\\...\\notes\\a.md`)" in lines
+    assert "- write_file(`/w/report.md`: # Title body)" in lines
+    assert "- edit_file(`/w/report.md`: foo bar)" in lines
     assert "- message(hello world)" in lines
     assert "- exec(ls -la)" in lines
+
+
+def test_build_tools_summary_strips_backtick_from_coded_values():
+    """FORK: a backtick inside a search query/URL/path must not break out of
+    the inline-code span the summary wraps it in."""
+    summary = AgentLoop._build_tools_summary([
+        {"name": "web_search", "arguments": {"query": "sepsis `rescue` therapy"}},
+        {"name": "web_fetch", "arguments": {"url": "https://example.com/a`b"}},
+        {"name": "read_file", "arguments": {"path": "/w/weird`file.md"}},
+    ])
+    lines = summary.splitlines()
+    assert "- search(`sepsis 'rescue' therapy`)" in lines
+    assert "- fetch(`https://example.com/a'b`)" in lines
+    assert "- read_file(`/w/weird'file.md`)" in lines
+    assert "`" not in "\n".join(lines).replace("`sepsis 'rescue' therapy`", "").replace(
+        "`https://example.com/a'b`", "",
+    ).replace("`/w/weird'file.md`", "")
 
 
 def test_build_tools_summary_empty():
