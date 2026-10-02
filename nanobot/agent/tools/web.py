@@ -803,11 +803,25 @@ async def _fetch_scrapling(
     solve_cf = _is_cloudflare_protected(curl_content)
     if solve_cf:
         logger.debug("Cloudflare detected → enabling solve_cloudflare")
-    page_action: _PageAction | None = None
+    site_action: _PageAction | None = None
     if is_pubmed:
-        page_action = _pubmed_recaptcha_action
+        site_action = _pubmed_recaptcha_action
     elif is_bookshelf:
-        page_action = _bookshelf_recaptcha_action
+        site_action = _bookshelf_recaptcha_action
+
+    # Scrapling's ``html_content`` is the body of the navigation response, which
+    # for challenge-protected sites (NCBI's interstitial, Cloudflare) is the
+    # shell served *before* the browser solved anything. The live DOM after the
+    # page action is the document we actually want, so capture it there.
+    captured: dict[str, bytes] = {}
+
+    async def page_action(page: Any) -> None:
+        if site_action is not None:
+            await site_action(page)
+        try:
+            captured["html"] = await _page_html(page)
+        except Exception as capture_err:
+            logger.debug("Could not capture rendered DOM: {}", type(capture_err).__name__)
 
     # Hard timeout for the whole fetch including CF solving: Scrapling's solver
     # retries without bound, each attempt taking ~12s.
@@ -832,8 +846,8 @@ async def _fetch_scrapling(
                     "adaptive": True,
                     "timeout": 30000 if solve_cf else 45000,
                 }
-                if page_action is not None:
-                    fetch_kwargs["page_action"] = page_action
+                fetch_kwargs["page_action"] = page_action
+                captured.clear()
                 try:
                     page: Any = await asyncio.wait_for(
                         cast(Any, session).fetch(**fetch_kwargs), timeout=hard_timeout,
@@ -853,6 +867,11 @@ async def _fetch_scrapling(
                     return None
                 html_text = cast(str, getattr(page, "html_content", getattr(page, "html", "")) or "")
                 html_bytes = html_text.encode("utf-8", errors="replace")
+                rendered = captured.get("html")
+                if rendered and len(rendered) >= len(html_bytes) // 2:
+                    # Prefer the rendered DOM unless it is suspiciously small
+                    # compared with the response body (capture mid-navigation).
+                    html_bytes = rendered
 
                 if solve_cf and _is_cloudflare_protected(html_bytes):
                     logger.warning("Scrapling returned a Cloudflare challenge page — solver failed")

@@ -124,11 +124,25 @@ def test_ncbi_cookie_proof_of_work_shell_is_a_challenge():
 
 
 class _FakePage:
-    def __init__(self, html: str, status: int = 200, headers: dict[str, str] | None = None):
+    def __init__(self, html: str, status: int = 200, headers: dict[str, str] | None = None, dom: str | None = None):
         self.html_content = html
         self.status = status
+        self.dom = dom  # live DOM the page action sees, when different from html_content
         if headers is not None:
             self.headers = headers
+
+
+class _FakeBrowserPage:
+    """Minimal Playwright-page stand-in for page actions."""
+
+    def __init__(self, dom: str):
+        self._dom = dom
+
+    async def content(self) -> str:
+        return self._dom
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        return None
 
 
 def _install_fake_scrapling(monkeypatch, pages: list[Any], calls: list[dict[str, Any]]) -> None:
@@ -147,6 +161,9 @@ def _install_fake_scrapling(monkeypatch, pages: list[Any], calls: list[dict[str,
             page = pages.pop(0)
             if isinstance(page, Exception):
                 raise page
+            action = kwargs.get("page_action")
+            if action is not None and getattr(page, "dom", None) is not None:
+                await action(_FakeBrowserPage(page.dom))
             return page
 
     fetchers = types.ModuleType("scrapling.fetchers")
@@ -179,7 +196,7 @@ async def test_browser_tier_serves_generic_js_shell_site(monkeypatch):
     assert b"Rendered comment text." in content
     assert headers["content-type"].startswith("text/html")
     fetch_call = next(c["fetch"] for c in calls if "fetch" in c)
-    assert "page_action" not in fetch_call
+    assert callable(fetch_call["page_action"])  # DOM capture runs for every site
     assert fetch_call["network_idle"] is False
     assert calls[0]["session"]["solve_cloudflare"] is False
 
@@ -200,7 +217,7 @@ async def test_browser_tier_uses_real_headers_and_pubmed_action(monkeypatch):
     assert fetcher == "scrapling"
     assert headers == {"content-type": "text/html; charset=utf-8"}
     fetch_call = next(c["fetch"] for c in calls if "fetch" in c)
-    assert fetch_call["page_action"] is web_module._pubmed_recaptcha_action
+    assert callable(fetch_call["page_action"])
 
 
 @pytest.mark.asyncio
@@ -380,3 +397,27 @@ async def test_browser_install_failure_is_logged_not_raised(monkeypatch):
     _c, _h, _s, fetcher = await web_module._fetch_raw("https://spa.example/a")
     assert fetcher == "scrapling"
     assert web_module._browser_provisioned is True
+
+
+@pytest.mark.asyncio
+async def test_browser_tier_uses_rendered_dom_when_response_body_is_an_interstitial(monkeypatch):
+    """NCBI serves an interstitial as the navigation response; the article only exists in the DOM."""
+    calls: list[dict[str, Any]] = []
+    interstitial = "<html><head><title>PMC</title></head><body>Checking your browser <script src='recaptcha.js'></script></body></html>"
+    article_dom = (
+        '<html><body><main id="main-content"><article><section class="abstract"><h2>Abstract</h2>'
+        + "<p>Pneumonia is very common and continues to exact a high burden on health.</p>" * 40
+        + "</section></article></main></body></html>"
+    )
+    _install_fake_scrapling(monkeypatch, [_FakePage(interstitial, dom=article_dom)], calls)
+
+    async def _unexpected_httpx(*a, **kw):
+        raise AssertionError("httpx tier must not run when the rendered DOM holds the article")
+
+    monkeypatch.setattr(web_module, "_fetch_httpx", _unexpected_httpx)
+
+    content, _headers, status, fetcher = await web_module._fetch_raw("https://pmc.ncbi.nlm.nih.gov/articles/PMC7241411/")
+
+    assert (fetcher, status) == ("scrapling", 200)
+    assert b"Pneumonia is very common" in content
+    assert len([c for c in calls if "fetch" in c]) == 1
