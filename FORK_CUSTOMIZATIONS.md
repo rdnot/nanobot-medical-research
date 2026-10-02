@@ -85,6 +85,11 @@ is marked `# UPSTREAM` where that helps during merges.
   upstream's `scripts/install.sh` / `install.ps1`, which the fork taught to honour
   `NANOBOT_INSTALL_TARGET` / `NANOBOT_INSTALL_SOURCE` (two-line change each).
 
+### `nanobot/cli/tui_launcher.py`
+- `_release_download_base()`: versions stamped `+fork.<branch>.<sha>` download the native TUI
+  archive from the fork's `latest-<branch>` release (built by the `tui` job of
+  `fork-release.yml`); other versions keep upstream's `HKUDS/nanobot` releases.
+
 ### Tests
 - Fork-specific: `tests/tools/test_web_fetch_fork.py`, `tests/tools/test_fork_fs_limits.py`,
   `tests/agent/test_fork_loop_hook.py`,
