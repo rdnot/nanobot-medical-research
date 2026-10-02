@@ -625,89 +625,80 @@ async def _page_html(page: Any) -> bytes:
     return cast(str, await page.content()).encode("utf-8", errors="replace")
 
 
-async def _page_body_text_length(page: Any) -> int:
+async def _page_html_or_empty(page: Any) -> bytes:
+    """Rendered DOM, or b"" while the page is navigating (NCBI reloads after its challenge)."""
     try:
-        n = await page.evaluate("() => document.body ? document.body.innerText.length : 0")
-        return int(n or 0)
+        return await _page_html(page)
     except Exception:
-        return 0
+        return b""
+
+
+async def _settle(page: Any, ms: int) -> None:
+    try:
+        await page.wait_for_timeout(ms)
+    except Exception:
+        await asyncio.sleep(ms / 1000)
+
+
+async def _wait_for_ncbi_content(
+    page: Any,
+    has_content: Callable[[bytes], bool],
+    *,
+    label: str,
+    poll_ms: int = 100,
+    max_wait_ms: int = 25_000,
+    reload_after_ms: int = 12_000,
+) -> bool:
+    """Poll the live DOM until ``has_content`` accepts it.
+
+    NCBI's interstitial (reCAPTCHA Enterprise or the cookie proof-of-work page)
+    solves itself and then calls ``location.reload()``. During that navigation
+    every call on the old document raises, so each probe tolerates errors and
+    keeps polling instead of aborting. One manual reload is attempted midway in
+    case the interstitial's own redirect never fires.
+    """
+    waited = 0
+    reloaded = False
+    challenge_seen = False
+    while waited <= max_wait_ms:
+        html = await _page_html_or_empty(page)
+        if html and has_content(html):
+            if challenge_seen:
+                logger.info("{}: challenge cleared, content loaded after {} ms", label, waited)
+            else:
+                logger.debug("{}: content present after {} ms", label, waited)
+            return True
+        if html and not challenge_seen and _is_recaptcha_challenge(html):
+            challenge_seen = True
+            logger.info("{} challenge detected — waiting for content", label)
+        if waited >= reload_after_ms and not reloaded:
+            reloaded = True
+            logger.debug("{}: interstitial persists, attempting page.reload()", label)
+            try:
+                await page.reload(wait_until="domcontentloaded", timeout=15_000)
+            except Exception:
+                pass
+        await _settle(page, poll_ms)
+        waited += poll_ms
+    logger.debug("{}: content still absent after {} ms", label, waited)
+    return False
+
+
+def _bookshelf_has_content(html: bytes) -> bool:
+    if _is_recaptcha_challenge(html):
+        return False
+    visible = _normalize(_strip_tags(html.decode("utf-8", errors="replace")))
+    return len(visible) >= _NCBI_ARTICLE_MIN_VISIBLE_CHARS
 
 
 async def _bookshelf_recaptcha_action(page: Any) -> None:
-    """Wait for the NCBI Bookshelf reCAPTCHA interstitial to yield real content."""
-    try:
-        if not _is_recaptcha_challenge(await _page_html(page)):
-            logger.debug("Bookshelf: content already present after navigation")
-            return
-        logger.info("Bookshelf reCAPTCHA challenge detected — waiting for real content")
-        for _ in range(250):  # up to ~25s
-            if (
-                not _is_recaptcha_challenge(await _page_html(page))
-                and await _page_body_text_length(page) >= 500
-            ):
-                logger.info("Bookshelf: reCAPTCHA cleared, real content loaded")
-                return
-            await page.wait_for_timeout(100)
-        logger.debug("Bookshelf: interstitial persists, attempting page.reload()")
-        try:
-            await page.reload(wait_until="domcontentloaded", timeout=15000)
-        except Exception:
-            pass
-        for _ in range(100):  # up to ~10s more
-            if (
-                not _is_recaptcha_challenge(await _page_html(page))
-                and await _page_body_text_length(page) >= 500
-            ):
-                logger.info("Bookshelf: reCAPTCHA cleared after reload")
-                return
-            await page.wait_for_timeout(100)
-        logger.debug("Bookshelf: interstitial still present after wait + reload")
-    except Exception as rc_err:
-        logger.debug("Bookshelf reCAPTCHA page_action failed: {}", type(rc_err).__name__)
+    """Wait for the NCBI Bookshelf interstitial to yield real content."""
+    await _wait_for_ncbi_content(page, _bookshelf_has_content, label="Bookshelf")
 
 
 async def _pubmed_recaptcha_action(page: Any) -> None:
-    """Wait for PubMed/PMC reCAPTCHA to yield real article HTML inside Scrapling."""
-    try:
-        if _has_pubmed_article_content(await _page_html(page)):
-            logger.debug("PubMed: article content already present after navigation")
-            return
-        if not _is_recaptcha_challenge(await _page_html(page)):
-            logger.debug("PubMed: no reCAPTCHA marker but article content absent; waiting")
-            for _ in range(50):
-                if _has_pubmed_article_content(await _page_html(page)):
-                    return
-                await page.wait_for_timeout(100)
-            return
-
-        logger.info("PubMed reCAPTCHA challenge detected — waiting for article content")
-        for _ in range(200):
-            if _has_pubmed_article_content(await _page_html(page)):
-                logger.info("PubMed: article content appeared after reCAPTCHA wait")
-                return
-            cookies = cast(list[dict[str, Any]], await page.context.cookies())
-            if {str(c.get("name", "")) for c in cookies} & _RECAPTCHA_COOKIES:
-                logger.debug("reCAPTCHA cookie detected, waiting for page reload/article markers")
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
-                except Exception:
-                    pass
-                for _ in range(30):
-                    if _has_pubmed_article_content(await _page_html(page)):
-                        logger.info("PubMed: reCAPTCHA bypassed, article content loaded")
-                        return
-                    await page.wait_for_timeout(100)
-            await page.wait_for_timeout(100)
-
-        logger.debug("PubMed: reCAPTCHA cookie/content not detected, attempting page.reload()")
-        await page.reload(wait_until="domcontentloaded", timeout=10000)
-        for _ in range(50):
-            if _has_pubmed_article_content(await _page_html(page)):
-                logger.info("PubMed: article content loaded after manual reload")
-                return
-            await page.wait_for_timeout(100)
-    except Exception as rc_err:
-        logger.debug("PubMed reCAPTCHA page_action failed: {}", type(rc_err).__name__)
+    """Wait for PubMed/PMC's interstitial to yield real article HTML inside Scrapling."""
+    await _wait_for_ncbi_content(page, _has_pubmed_article_content, label="PubMed")
 
 
 def _scrapling_headers(page: Any, url: str) -> dict[str, Any]:
@@ -818,10 +809,14 @@ async def _fetch_scrapling(
     async def page_action(page: Any) -> None:
         if site_action is not None:
             await site_action(page)
-        try:
-            captured["html"] = await _page_html(page)
-        except Exception as capture_err:
-            logger.debug("Could not capture rendered DOM: {}", type(capture_err).__name__)
+        # The DOM may be mid-navigation (a challenge's reload); retry briefly.
+        for _attempt in range(10):
+            html = await _page_html_or_empty(page)
+            if html:
+                captured["html"] = html
+                return
+            await _settle(page, 200)
+        logger.debug("Could not capture rendered DOM (page kept navigating)")
 
     # Hard timeout for the whole fetch including CF solving: Scrapling's solver
     # retries without bound, each attempt taking ~12s.
@@ -896,6 +891,15 @@ async def _fetch_scrapling(
     return None
 
 
+def _reddit_legacy_url(url: str) -> str | None:
+    """old.reddit.com equivalent of a www/new reddit.com page URL (not for .json API calls)."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if host not in {"reddit.com", "www.reddit.com", "new.reddit.com"} or parsed.path.endswith(".json"):
+        return None
+    return parsed._replace(netloc="old.reddit.com").geturl()
+
+
 async def _fetch_raw(
     url: str, proxy: str | None = None, user_agent: str | None = None
 ) -> _FetchResult:
@@ -918,6 +922,17 @@ async def _fetch_raw(
     is_bookshelf = "ncbi.nlm.nih.gov/books/" in lowered
 
     curl_result: _FetchResult | None = None
+    if is_reddit:
+        # www.reddit.com is a JS shell (and now answers 403 even to stealth
+        # browsers); old.reddit.com serves the thread server-rendered.
+        legacy_url = _reddit_legacy_url(url)
+        if legacy_url is not None:
+            legacy = await _fetch_curl_cffi(legacy_url, proxy, ua)
+            if legacy is not None and legacy[2] < 400 and _is_content_sufficient(
+                legacy[0], legacy_url, str(legacy[1].get("content-type", "")),
+            ):
+                logger.debug("Reddit: served by old.reddit.com via curl_cffi")
+                return legacy
     if not (is_reddit or is_pubmed or is_bookshelf):
         curl_result = await _fetch_curl_cffi(url, proxy, ua)
         if curl_result is not None:

@@ -421,3 +421,125 @@ async def test_browser_tier_uses_rendered_dom_when_response_body_is_an_interstit
     assert (fetcher, status) == ("scrapling", 200)
     assert b"Pneumonia is very common" in content
     assert len([c for c in calls if "fetch" in c]) == 1
+
+
+class _NavigatingPage:
+    """Fake Playwright page: the challenge document is destroyed by a reload, then the article appears."""
+
+    def __init__(self, interstitial: str, article: str, *, failing_calls: int):
+        self._interstitial = interstitial
+        self._article = article
+        self._failing_calls = failing_calls
+        self.calls = 0
+        self.reloads = 0
+
+    async def content(self) -> str:
+        self.calls += 1
+        if self.calls == 1:
+            return self._interstitial
+        if self.calls <= 1 + self._failing_calls:
+            raise RuntimeError("Execution context was destroyed, most likely because of a navigation")
+        return self._article
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        return None
+
+    async def reload(self, **kwargs) -> None:
+        self.reloads += 1
+
+
+_ARTICLE_DOM = (
+    '<html><body><main id="main-content"><article><section class="abstract"><h2>Abstract</h2>'
+    + "<p>Pneumonia is very common and continues to exact a high burden on health.</p>" * 40
+    + "</section></article></main></body></html>"
+)
+_INTERSTITIAL = "<html><head><title>PMC</title></head><body>Checking your browser <script src='recaptcha.js'></script></body></html>"
+
+
+@pytest.mark.asyncio
+async def test_pubmed_wait_survives_navigation_errors_during_challenge_reload():
+    page = _NavigatingPage(_INTERSTITIAL, _ARTICLE_DOM, failing_calls=5)
+    await web_module._pubmed_recaptcha_action(page)
+    assert page.calls >= 7  # interstitial, five destroyed-context probes, then the article
+    assert page.reloads == 0
+
+
+@pytest.mark.asyncio
+async def test_pubmed_wait_reloads_once_when_interstitial_persists(monkeypatch):
+    class _StuckPage(_NavigatingPage):
+        async def content(self) -> str:
+            self.calls += 1
+            return self._article if self.reloads else self._interstitial
+
+    page = _StuckPage(_INTERSTITIAL, _ARTICLE_DOM, failing_calls=0)
+    ok = await web_module._wait_for_ncbi_content(
+        page, web_module._has_pubmed_article_content, label="PubMed", poll_ms=100, reload_after_ms=300,
+    )
+    assert ok and page.reloads == 1
+
+
+@pytest.mark.asyncio
+async def test_browser_tier_captures_dom_after_challenge_reload(monkeypatch):
+    calls: list[dict[str, Any]] = []
+    page_obj = _NavigatingPage(_INTERSTITIAL, _ARTICLE_DOM, failing_calls=3)
+
+    class AsyncStealthySession:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def fetch(self, **kwargs):
+            calls.append(kwargs)
+            await kwargs["page_action"](page_obj)
+            return _FakePage(_INTERSTITIAL)  # navigation body stays the interstitial
+
+    fetchers = types.ModuleType("scrapling.fetchers")
+    fetchers.AsyncStealthySession = AsyncStealthySession  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "scrapling", types.ModuleType("scrapling"))
+    monkeypatch.setitem(sys.modules, "scrapling.fetchers", fetchers)
+    monkeypatch.setattr(web_module, "SCRAPLING_AVAILABLE", True)
+    monkeypatch.setattr(web_module, "_browser_provisioned", True)
+
+    async def _unexpected_httpx(*a, **kw):
+        raise AssertionError("httpx must not run")
+
+    monkeypatch.setattr(web_module, "_fetch_httpx", _unexpected_httpx)
+
+    content, _h, _s, fetcher = await web_module._fetch_raw("https://pmc.ncbi.nlm.nih.gov/articles/PMC5958567/")
+    assert fetcher == "scrapling"
+    assert b"Pneumonia is very common" in content
+    assert len(calls) == 1
+
+
+def test_reddit_legacy_url():
+    assert web_module._reddit_legacy_url("https://www.reddit.com/r/x/comments/1/t/") == "https://old.reddit.com/r/x/comments/1/t/"
+    assert web_module._reddit_legacy_url("https://reddit.com/r/x/?sort=new") == "https://old.reddit.com/r/x/?sort=new"
+    assert web_module._reddit_legacy_url("https://www.reddit.com/r/x/comments/1/t/.json") is None
+    assert web_module._reddit_legacy_url("https://old.reddit.com/r/x/") is None
+    assert web_module._reddit_legacy_url("https://example.com/reddit.com/") is None
+
+
+@pytest.mark.asyncio
+async def test_reddit_thread_served_by_old_reddit_before_browser(monkeypatch):
+    seen: list[str] = []
+    thread = "<html><body>" + "<div class='comment'><p>Real comment text here.</p></div>" * 60 + "</body></html>"
+
+    async def _curl(url, proxy, user_agent):
+        seen.append(url)
+        return thread.encode(), {"content-type": "text/html"}, 200, "curl_cffi"
+
+    async def _unexpected_browser(*a, **kw):
+        raise AssertionError("browser tier must not run when old.reddit.com works")
+
+    monkeypatch.setattr(web_module, "_fetch_curl_cffi", _curl)
+    monkeypatch.setattr(web_module, "_fetch_scrapling", _unexpected_browser)
+
+    content, _h, status, fetcher = await web_module._fetch_raw("https://www.reddit.com/r/hermesagent/comments/1wvhzvv/x/")
+    assert (status, fetcher) == (200, "curl_cffi")
+    assert seen == ["https://old.reddit.com/r/hermesagent/comments/1wvhzvv/x/"]
+    assert b"Real comment text" in content
