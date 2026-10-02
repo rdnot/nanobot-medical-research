@@ -1744,6 +1744,7 @@ def _transcript_turn_signature(records: list[dict[str, Any]]) -> tuple[str, ...]
             "tool_hint",
             "progress",
             "reasoning",
+            "tools_summary",  # FORK: the recap is not the turn's answer text
         }:
             flush_stream()
             if signature := _assistant_text_signature(record.get("text")):
@@ -1801,6 +1802,7 @@ def _is_recoverable_answer_record(record: dict[str, Any]) -> bool:
         "tool_hint",
         "progress",
         "reasoning",
+        "tools_summary",  # FORK: the recap is not the turn's answer
     }
 
 
@@ -2251,7 +2253,10 @@ def _client_projection_event(
             content = augment_assistant_text(content)
         projected = {"event": "message", **common, "text": content}
         kind = record.get("kind")
-        if kind in {"tool_hint", "progress", "reasoning"}:
+        # FORK: "tools_summary" is the fork's per-turn "Tools used:" recap.
+        # It must replay with its kind so both clients keep it out of the
+        # activity-to-answer grouping on reload, exactly like the live wire.
+        if kind in {"tool_hint", "progress", "reasoning", "tools_summary"}:
             projected["kind"] = kind
         tool_events = _normalize_tool_events(record.get("tool_events"))
         if tool_events:
