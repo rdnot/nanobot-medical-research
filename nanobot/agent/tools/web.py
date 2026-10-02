@@ -845,7 +845,7 @@ async def _fetch_scrapling(
                 captured.clear()
                 try:
                     page: Any = await asyncio.wait_for(
-                        cast(Any, session).fetch(**fetch_kwargs), timeout=hard_timeout,
+                        session.fetch(**fetch_kwargs), timeout=hard_timeout,
                     )
                 except asyncio.TimeoutError:
                     logger.warning(
