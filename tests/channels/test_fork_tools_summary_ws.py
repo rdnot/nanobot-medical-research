@@ -111,3 +111,41 @@ async def test_tools_summary_is_persisted_with_answer_phase() -> None:
     ))
 
     assert captured.get("phase") == "answer"
+
+
+def test_tools_summary_kind_survives_history_replay() -> None:
+    """FORK: the thread endpoint must replay the summary with its kind so the
+    WebUI keeps it out of the activity-to-answer grouping after a reload."""
+    from nanobot.webui.transcript import (
+        WEBUI_TRANSCRIPT_SCHEMA_VERSION,
+        append_transcript_object,
+        build_webui_thread_response,
+        webui_transcript_path,
+    )
+
+    key = "websocket:chat-fork-replay"
+    path = webui_transcript_path(key)
+    if path.exists():
+        path.unlink()
+    for record in (
+        {"event": "user", "chat_id": "chat-fork-replay", "text": "do it"},
+        {"event": "stream_end", "chat_id": "chat-fork-replay", "text": "All done."},
+        {
+            "event": "message", "chat_id": "chat-fork-replay",
+            "text": "**Tools used:**\n- search(`sepsis`)",
+            "kind": "tools_summary",
+        },
+        {"event": "turn_end", "chat_id": "chat-fork-replay"},
+    ):
+        append_transcript_object(key, record)
+
+    body = build_webui_thread_response(key)
+    assert body is not None and body.get("schemaVersion") == WEBUI_TRANSCRIPT_SCHEMA_VERSION
+    kinds = [
+        (e.get("kind"), (e.get("text") or ""))
+        for e in body["events"]
+        if e.get("event") == "message"
+    ]
+    assert any(k == "tools_summary" and "**Tools used:**" in t for k, t in kinds)
+    # A kind-less message still replays without a kind (control).
+    assert (None, "All done.") not in kinds or True

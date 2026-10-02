@@ -55,6 +55,10 @@ is marked `# UPSTREAM` where that helps during merges.
   stays on the real answer; no fork action or source badges on the summary).
 - TUI: `client/types.ts`, `client/api.ts` (history: own row, never overwrites the answer) and
   `app/app.ts` (live: own row, never `finalMessage`).
+- `nanobot/webui/transcript.py`: the thread history endpoint replays the summary with its kind
+  (added to the message-kind allow-list) and excludes it from assistant-signature matching and
+  incomplete-turn recovery, which treat kind-less messages as answers — so a reload renders the
+  same as the live wire.
 
 ### `nanobot/agent/turn_hooks.py`
 - `AgentTurnHookSpec.progress_hook` lets the loop supply the fork hook subclass.
