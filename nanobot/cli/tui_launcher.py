@@ -263,7 +263,7 @@ def _download_release_tui(asset: str, *, data_dir: Path | None = None) -> Path |
     if cached is not None:
         return cached
 
-    base = f"https://github.com/HKUDS/nanobot/releases/download/v{version}"
+    base = _release_download_base(version)
     archive_name = f"{asset}.zip"
     try:
         checksum = _read_release_asset(f"{base}/{archive_name}.sha256", max_bytes=1024)
@@ -295,6 +295,25 @@ def _download_release_tui(asset: str, *, data_dir: Path | None = None) -> Path |
         _clear_cached_release(target_dir, asset)
         return None
     return target_dir / asset
+
+
+_FORK_RELEASE_REPO = "rdnot/nanobot-medical-research"  # FORK
+
+
+def _release_download_base(version: str) -> str:
+    """Release URL that carries the TUI archives for this build.
+
+    FORK: builds stamped ``<base>+fork.<branch>.<sha>`` by the fork's release
+    workflow download from the fork's rolling ``latest-<branch>`` release, which
+    publishes the TUI archives next to the wheel. Everything else keeps
+    upstream's versioned releases.
+    """
+    local = version.partition("+")[2]
+    if local.startswith("fork."):
+        parts = local.split(".")
+        if len(parts) >= 3 and parts[1]:
+            return f"https://github.com/{_FORK_RELEASE_REPO}/releases/download/latest-{parts[1]}"
+    return f"https://github.com/HKUDS/nanobot/releases/download/v{version}"
 
 
 def _release_bundle_names(asset: str) -> tuple[str, ...]:

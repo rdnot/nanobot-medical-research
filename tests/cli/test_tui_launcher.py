@@ -976,3 +976,51 @@ def test_gateway_started_for_tui_stops_when_its_last_lease_exits(
     assert gateway.lease is not None
     assert gateway.lease.release() is True
     assert stopped is True
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("0.3.5", "https://github.com/HKUDS/nanobot/releases/download/v0.3.5"),
+        (
+            "0.3.5+fork.main.9e46801",
+            "https://github.com/rdnot/nanobot-medical-research/releases/download/latest-main",
+        ),
+        (
+            "0.3.5+fork.scrapling.3ba5490",
+            "https://github.com/rdnot/nanobot-medical-research/releases/download/latest-scrapling",
+        ),
+        ("0.3.5+local", "https://github.com/HKUDS/nanobot/releases/download/v0.3.5+local"),
+        ("0.3.5+fork", "https://github.com/HKUDS/nanobot/releases/download/v0.3.5+fork"),
+    ],
+)
+def test_release_download_base_uses_fork_release_for_fork_builds(version: str, expected: str) -> None:
+    # FORK: CI-stamped builds fetch the TUI from the fork's rolling release.
+    assert tui_launcher._release_download_base(version) == expected
+
+
+def test_fork_build_downloads_tui_from_fork_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    asset = "nanobot-tui-win32-x64.exe"
+    archive, checksum = _release_archive(asset, binary=b"native-tui")
+    downloads: list[str] = []
+
+    def read_asset(url: str, *, max_bytes: int) -> bytes:
+        downloads.append(url)
+        return checksum if url.endswith(".sha256") else archive
+
+    monkeypatch.setattr("nanobot.cli.tui_launcher.__version__", "0.3.5+fork.main.9e46801")
+    monkeypatch.setattr("nanobot.cli.tui_launcher.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.cli.tui_launcher._read_release_asset", read_asset)
+
+    target = _download_release_tui(asset)
+
+    assert target == tmp_path / "bin" / "tui" / "0.3.5+fork.main.9e46801" / asset
+    assert downloads == [
+        "https://github.com/rdnot/nanobot-medical-research/releases/download/latest-main/"
+        f"{asset}.zip.sha256",
+        "https://github.com/rdnot/nanobot-medical-research/releases/download/latest-main/"
+        f"{asset}.zip",
+    ]

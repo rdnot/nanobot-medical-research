@@ -1,8 +1,11 @@
 # FORK: build a wheel with the WebUI bundled on every push and publish it to a
-# rolling GitHub Release (tag latest-<branch>). scripts/install-fork.sh and
-# scripts/install-fork.ps1 install from that asset, so end users never need
-# Bun/npm or git. Not a versioned release: the tag moves with every push.
-name: Fork release (wheel with bundled WebUI)
+# rolling GitHub Release (tag latest-<branch>), then build the native TUI for
+# every platform and attach the archives to the same release.
+# scripts/install-fork.sh and scripts/install-fork.ps1 install the wheel, and
+# nanobot/cli/tui_launcher.py downloads the matching TUI archive from the
+# fork's release for versions stamped +fork.<branch>.<sha>. Not a versioned
+# release: the tag moves with every push.
+name: Fork release (wheel with bundled WebUI + native TUI)
 
 on:
   push:
@@ -75,3 +78,72 @@ jobs:
             --prerelease \
             --title "Latest ${GITHUB_REF_NAME} build (${GITHUB_SHA:0:7})" \
             --notes "Rolling build of branch \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}, with the WebUI bundled. Installed by \`scripts/install-fork.sh\` / \`scripts/install-fork.ps1\`. This tag moves on every push; it is not a versioned release."
+
+  tui:
+    # Mirrors upstream's tui-release.yml (Bun-compiled terminal UI per target)
+    # without the manual tag/compliance gate: the fork publishes the generated
+    # third-party notices and source offer with every build.
+    name: TUI ${{ matrix.target }}
+    needs: wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - darwin-arm64
+          - darwin-x64
+          - linux-arm64
+          - linux-x64
+          - win32-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies
+        working-directory: tui
+        run: bun install --frozen-lockfile
+
+      - name: Install ${{ matrix.target }} native dependencies
+        working-directory: tui
+        run: bun scripts/prepare-target.ts ${{ matrix.target }}
+
+      - name: Build ${{ matrix.target }}
+        working-directory: tui
+        run: bun run build -- ${{ matrix.target }}
+
+      - name: Ad-hoc sign macOS executable
+        if: startsWith(matrix.target, 'darwin-')
+        uses: indygreg/apple-code-sign-action@44d0985b7f4363198e80b6fea63ac3e9dd3e9957 # v1
+        with:
+          input_path: tui/dist/nanobot-tui-${{ matrix.target }}
+          rcodesign_version: 0.29.0
+
+      - name: Build notices and release archive
+        working-directory: tui
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          bun scripts/release-notices.ts "$TARGET"
+          python3 scripts/package-release.py "$TARGET"
+
+      - name: Upload TUI archive to latest-<branch>
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          tag="latest-${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null
+          asset="nanobot-tui-${TARGET}"
+          if [[ "$TARGET" == win32-* ]]; then asset="${asset}.exe"; fi
+          gh release upload "$tag" \
+            "tui/dist/${asset}.zip" \
+            "tui/dist/${asset}.zip.sha256" \
+            --clobber

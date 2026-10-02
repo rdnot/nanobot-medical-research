@@ -69,6 +69,8 @@ $env:NANOBOT_FORK_BRANCH = "scrapling"; irm https://raw.githubusercontent.com/rd
 
 The installer chooses `uv tool`, `pipx` or a managed venv under `~/.nanobot/venv` (never your global Python or another tool's venv), prints the exact command it will use to run nanobot, and starts `nanobot onboard`. Your config lives in `~/.nanobot/config.json`. On the scrapling branch the Chromium build (~150 MB) is downloaded the first time the browser tier is used.
 
+The native terminal UI works on fork builds too: the same CI run compiles it for Windows x64, Linux x64/arm64 and macOS x64/arm64 and attaches the archives (with their notices and source offer) to the `latest-<branch>` release, and `nanobot` fetches the checksummed archive matching its version on first launch. Fork versions look like `0.3.5+fork.main.<commit>`; builds without that label keep using upstream's releases.
+
 **Updating to the fork's newest commits:** re-run the same one-liner. Every push to `main`/`scrapling` publishes a fresh build (release tag `latest-main` / `latest-scrapling`, version `0.x.y+fork.<branch>.<commit>`), and the installer replaces the installed copy with it. Config and data are kept.
 
 If the installer reports "no published build found", the branch has not been built yet (Actions must be enabled on the repository); use the source install below meanwhile.
