@@ -8,8 +8,9 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Package = "nanobot-ai"
-$InstallTarget = $Package
-$InstallSource = "PyPI"
+# FORK: scripts/install-fork.ps1 points these at the fork's prebuilt wheel.
+$InstallTarget = if ($env:NANOBOT_INSTALL_TARGET) { $env:NANOBOT_INSTALL_TARGET } else { $Package }
+$InstallSource = if ($env:NANOBOT_INSTALL_SOURCE) { $env:NANOBOT_INSTALL_SOURCE } else { "PyPI" }
 $script:NanobotRunner = $null
 $script:NanobotPython = $null
 $script:LastInstallSucceeded = $false

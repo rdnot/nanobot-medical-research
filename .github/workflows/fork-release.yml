@@ -1,0 +1,77 @@
+# FORK: build a wheel with the WebUI bundled on every push and publish it to a
+# rolling GitHub Release (tag latest-<branch>). scripts/install-fork.sh and
+# scripts/install-fork.ps1 install from that asset, so end users never need
+# Bun/npm or git. Not a versioned release: the tag moves with every push.
+name: Fork release (wheel with bundled WebUI)
+
+on:
+  push:
+    branches: [main, scrapling]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  wheel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Stamp fork version (PEP 440 local label, unique per commit)
+        run: |
+          python3 - <<'EOF'
+          import os
+          import pathlib
+          import re
+
+          path = pathlib.Path("pyproject.toml")
+          text = path.read_text(encoding="utf-8")
+          match = re.search(r'^version = "([^"]+)"$', text, re.M)
+          if match is None:
+              raise SystemExit("version line not found in pyproject.toml")
+          base = match.group(1).split("+", 1)[0]
+          label = f"{base}+fork.{os.environ['GITHUB_REF_NAME']}.{os.environ['GITHUB_SHA'][:7]}"
+          path.write_text(text[: match.start(1)] + label + text[match.end(1):], encoding="utf-8")
+          print(label)
+          EOF
+
+      - name: Build wheel (hatch_build.py bundles the WebUI with Bun)
+        run: uv build --wheel
+
+      - name: Verify the WebUI is inside the wheel
+        run: |
+          python3 - <<'EOF'
+          import glob
+          import zipfile
+
+          wheels = glob.glob("dist/*.whl")
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel, got {wheels}")
+          names = zipfile.ZipFile(wheels[0]).namelist()
+          if not any(name.endswith("nanobot/web/dist/index.html") for name in names):
+              raise SystemExit("WebUI bundle missing from wheel")
+          print(wheels[0])
+          EOF
+
+      - name: Publish rolling release latest-<branch>
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="latest-${GITHUB_REF_NAME}"
+          gh release delete "$tag" --cleanup-tag --yes || true
+          gh release create "$tag" dist/*.whl \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Latest ${GITHUB_REF_NAME} build (${GITHUB_SHA:0:7})" \
+            --notes "Rolling build of branch \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}, with the WebUI bundled. Installed by \`scripts/install-fork.sh\` / \`scripts/install-fork.ps1\`. This tag moves on every push; it is not a versioned release."

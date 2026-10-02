@@ -45,25 +45,45 @@ See [`FORK_CUSTOMIZATIONS.md`](FORK_CUSTOMIZATIONS.md) for the file-by-file list
 
 ## Installing or switching to this fork
 
-nanobot has no self-updater: an install is whatever `pip`/`uv` last put into the environment, so the fork's extra packages are declared as ordinary dependencies and arrive with every install.
+### One-command install (recommended)
 
-**New install from the fork**
+The fork is not on PyPI, so the upstream one-liner would install stock nanobot. Use the fork's installer instead. It picks up the newest build that this repository's GitHub Actions publishes for the branch (a wheel with the WebUI already bundled), then runs the standard nanobot installer with it: no git, Bun or npm needed on your machine. Python 3.11+ must be installed.
+
+macOS / Linux:
+```bash
+curl -fsSL https://raw.githubusercontent.com/rdnot/nanobot-medical-research/main/scripts/install-fork.sh | sh
+```
+
+Windows PowerShell:
+```powershell
+irm https://raw.githubusercontent.com/rdnot/nanobot-medical-research/main/scripts/install-fork.ps1 | iex
+```
+
+Browser-tier (`scrapling`) branch instead of `main`:
+```bash
+NANOBOT_FORK_BRANCH=scrapling curl -fsSL https://raw.githubusercontent.com/rdnot/nanobot-medical-research/main/scripts/install-fork.sh | sh
+```
+```powershell
+$env:NANOBOT_FORK_BRANCH = "scrapling"; irm https://raw.githubusercontent.com/rdnot/nanobot-medical-research/main/scripts/install-fork.ps1 | iex
+```
+
+The installer chooses `uv tool`, `pipx` or a managed venv under `~/.nanobot/venv` (never your global Python or another tool's venv), prints the exact command it will use to run nanobot, and starts `nanobot onboard`. Your config lives in `~/.nanobot/config.json`. On the scrapling branch the Chromium build (~150 MB) is downloaded the first time the browser tier is used.
+
+**Updating to the fork's newest commits:** re-run the same one-liner. Every push to `main`/`scrapling` publishes a fresh build (release tag `latest-main` / `latest-scrapling`, version `0.x.y+fork.<branch>.<commit>`), and the installer replaces the installed copy with it. Config and data are kept.
+
+If the installer reports "no published build found", the branch has not been built yet (Actions must be enabled on the repository); use the source install below meanwhile.
+
+### Install from source (for editing the code)
+
 ```bash
 git clone https://github.com/rdnot/nanobot-medical-research.git
 cd nanobot-medical-research          # add `git checkout scrapling` for the browser tier
-python -m pip install -e .           # or: uv sync   (CI/dev: uv sync --all-extras --dev)
-nanobot onboard
+uv sync                              # isolated venv at ./.venv (CI/dev: uv sync --all-extras --dev)
+uv run nanobot onboard
 ```
+Update with `git pull` then `uv sync`. Editable installs skip the WebUI bundle; build it once with `cd webui && bun run build` if you want the browser UI from a source checkout (chat channels, the API and the terminal agent work without it).
 
-**Existing nanobot checkout → point it at the fork**
-```bash
-git remote set-url origin https://github.com/rdnot/nanobot-medical-research.git
-git fetch origin && git checkout main    # or scrapling
-git reset --hard origin/main             # fork history replaces upstream history
-python -m pip install -e .               # or: uv sync
-```
-
-**Updating a fork install** (`git pull` then `pip install -e .` / `uv sync` again, because dependency changes only apply when the package is re-installed). A manually `pip install`ed workaround from before this change is harmless: the versions now declared in `pyproject.toml` simply take over on the next install.
+**Existing upstream checkout → fork:** `git remote set-url origin https://github.com/rdnot/nanobot-medical-research.git`, `git fetch origin`, `git checkout main` (or `scrapling`), `git reset --hard origin/main`, then `uv sync`.
 
 **Docker**: `docker build -t nanobot .` on either branch includes everything; no build args needed.
 

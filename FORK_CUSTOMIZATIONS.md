@@ -78,6 +78,13 @@ is marked `# UPSTREAM` where that helps during merges.
   `scrapling[fetchers]` and its Dockerfile pre-installs the Patchright Chromium build.
 - Coverage `fail_under` kept at upstream's value.
 
+### `scripts/install-fork.sh`, `scripts/install-fork.ps1`, `.github/workflows/fork-release.yml`
+- The workflow builds a wheel with the WebUI bundled (Bun) on every push to `main`/`scrapling`,
+  stamps the version `<base>+fork.<branch>.<sha7>` and publishes it to the rolling release
+  `latest-<branch>`. The fork installers resolve that asset through the GitHub API and run
+  upstream's `scripts/install.sh` / `install.ps1`, which the fork taught to honour
+  `NANOBOT_INSTALL_TARGET` / `NANOBOT_INSTALL_SOURCE` (two-line change each).
+
 ### Tests
 - Fork-specific: `tests/tools/test_web_fetch_fork.py`, `tests/tools/test_fork_fs_limits.py`,
   `tests/agent/test_fork_loop_hook.py`,
