@@ -10,10 +10,10 @@ is marked `# UPSTREAM` where that helps during merges.
 
 ## Branches
 - `main` – fork on top of upstream `HKUDS/nanobot` main.
-- `scrapling` – `main` plus a stealth-browser fetch tier (Scrapling/Playwright) in
-  `nanobot/agent/tools/web.py`. Only `web.py` and its tests differ from `main`.
+- `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
+  `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified October 2, 2026 — includes upstream merge #6, 28 commits through `d0d0a44e5`)
+## Customizations (verified October 5, 2026 — upstream `f75470e72`, fork main `f4fa37a83` / scrapling `8fe3a57fc`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False`; `DEFAULT_SEARXNG_URL` constant forces
