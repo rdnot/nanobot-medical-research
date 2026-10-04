@@ -179,7 +179,7 @@ export function AgentActivityCluster(props: AgentActivityClusterProps) {
     () => summarizeFileEditsByMessage(messages, props.isTurnStreaming),
     [messages, props.isTurnStreaming],
   );
-  if (props.expanded !== undefined || displayMode === "summary" || !editsByMessage.size) {
+  if (displayMode === "summary" || !editsByMessage.size) {
     return <FoldedAgentActivity {...props} />;
   }
 
@@ -192,6 +192,7 @@ export function AgentActivityCluster(props: AgentActivityClusterProps) {
     items.push(
       <FoldedAgentActivity
         {...props}
+        detailsId={undefined}
         key={pending[0]?.id ?? "tail-status"}
         messages={pending}
         isTurnStreaming={last && props.isTurnStreaming}
@@ -225,7 +226,7 @@ export function AgentActivityCluster(props: AgentActivityClusterProps) {
   }
   flush(true);
   return (
-    <div className={cn("flex w-full flex-col gap-0.5", props.hasBodyBelow && "mb-2")}>
+    <div id={props.detailsId} className={cn("flex w-full flex-col gap-0.5", props.hasBodyBelow && "mb-2")}>
       {items}
     </div>
   );

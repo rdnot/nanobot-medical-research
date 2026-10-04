@@ -2245,6 +2245,7 @@
       "deletingFile": "Deleting",
       "editingFileShort": "Editing",
       "deletedFile": "Deleted",
+      "createdFile": "Created",
       "editedFileShort": "Edited"
     },
     "collapseActivity": "Collapse activity details",

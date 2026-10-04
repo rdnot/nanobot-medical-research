@@ -2394,7 +2394,7 @@ describe("App layout", () => {
     expect(screen.queryByText("Daily repo check")).not.toBeInTheDocument();
   }, 15_000);
 
-  it("opens a mobile topic with one click and closes the drawer without a search tooltip", async () => {
+  it("closes the mobile drawer when selecting a new or current topic without a search tooltip", async () => {
     restoreBrowserFocus = mockBrowserFocus();
     const user = userEvent.setup();
     mockSessions = ["First", "Second"].map((title, index) => ({
@@ -2418,7 +2418,7 @@ describe("App layout", () => {
 
     render(<App />);
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
-    for (const title of ["First", "Second"]) {
+    for (const title of ["First", "First", "Second"]) {
       await user.click(await screen.findByRole("button", { name: "Toggle sidebar" }));
       const sheet = await screen.findByRole("dialog");
       await waitFor(() => expect(sheet).toHaveFocus());

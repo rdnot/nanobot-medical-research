@@ -156,7 +156,7 @@ describe("AgentActivityCluster", () => {
     expect(screen.getByText(`正在读取文件 ${path}`)).toBeInTheDocument();
     expect(screen.getByText("正在使用 Blender · --json --background scene.blend")).toBeInTheDocument();
     expect(screen.getByText("正在打开 example.com · Browserbase")).toBeInTheDocument();
-    expect(screen.getByText("已编辑")).toBeInTheDocument();
+    expect(screen.getByText("编辑")).toBeInTheDocument();
     expect(screen.getByTestId("activity-file-reference")).toHaveTextContent(path);
 
     await act(async () => setAppLanguage("ja"));
@@ -166,7 +166,7 @@ describe("AgentActivityCluster", () => {
     expect(screen.getByText("Blender を使用中 · --json --background scene.blend")).toBeInTheDocument();
     expect(screen.getByText("example.com · 開いています · Browserbase")).toBeInTheDocument();
     expect(screen.getByTestId("activity-file-reference").closest('[data-testid="activity-step"]'))
-      .toHaveTextContent(`${path} · 編集しました`);
+      .toHaveTextContent(`${path} · 編集`);
   });
 
   it("loads deferred trace details only after completed activity is expanded", async () => {
@@ -661,6 +661,7 @@ describe("AgentActivityCluster", () => {
       expect(screen.getByTestId("file-edit-diff")).toBeInTheDocument();
       expect(screen.getByText("return <Old />;")).toBeInTheDocument();
       expect(screen.getByText("return <New />;")).toBeInTheDocument();
+      expect(screen.getByText("Edited")).toBeInTheDocument();
       expect(screen.getByTestId("activity-file-reference")).toHaveTextContent("src/app.tsx");
       expect(screen.getAllByTestId("activity-diff-pair")).toHaveLength(1);
 
@@ -668,6 +669,7 @@ describe("AgentActivityCluster", () => {
         writeLocalPreferences({ ...DEFAULT_LOCAL_PREFS, fileEditDisplayMode: "summary" });
       });
       expect(screen.queryByTestId("file-edit-diff")).not.toBeInTheDocument();
+      expect(screen.getByText("Edited")).toBeInTheDocument();
 
       act(() => {
         writeLocalPreferences({ ...DEFAULT_LOCAL_PREFS, fileEditDisplayMode: "diff" });
@@ -932,6 +934,39 @@ describe("AgentActivityCluster", () => {
       fireEvent.click(screen.getByTestId("file-edit-diff-open-file"));
 
       expect(onOpenFilePreview).toHaveBeenCalledWith("/repo/src/app.tsx");
+    } finally {
+      localStorage.removeItem("nanobot-webui.settings-preferences");
+    }
+  });
+
+  it.each([false, true])("labels created files with or without text diffs (hasDiff: %s)", (hasDiff) => {
+    localStorage.setItem(
+      "nanobot-webui.settings-preferences",
+      JSON.stringify({ fileEditDisplayMode: "diff" }),
+    );
+    try {
+      render(
+        <AgentActivityCluster
+          messages={[{
+            id: "create", role: "tool", kind: "trace", content: "edit_file()", createdAt: 1,
+            traces: ["edit_file()"],
+            fileEdits: [{
+              call_id: "call-create", tool: "edit_file", path: "tmp.txt", phase: "end",
+              added: hasDiff ? 1 : 0, deleted: 0, status: "done", operation: "create",
+              ...(hasDiff ? { diff: unifiedFileDiff([
+                "--- tmp.txt", "+++ tmp.txt", "@@ -0,0 +1 @@", "+hello",
+              ]) } : {}),
+            }],
+          }]}
+          isTurnStreaming={false}
+          hasBodyBelow={false}
+        />,
+      );
+      expect(screen.getByText("Created")).toBeInTheDocument();
+      expect(screen.getByLabelText("Created tmp.txt")).toBeInTheDocument();
+      expect(screen.queryByText("Edited")).not.toBeInTheDocument();
+      expect(screen.getByTestId("activity-file-reference")).toHaveTextContent("tmp.txt");
+      expect(!!screen.queryByTestId("file-edit-diff")).toBe(hasDiff);
     } finally {
       localStorage.removeItem("nanobot-webui.settings-preferences");
     }
