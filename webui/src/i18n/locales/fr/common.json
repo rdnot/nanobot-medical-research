@@ -1921,7 +1921,7 @@
     "copiedReply": "Copié",
     "turnLatencyTitle": "Temps de réponse (de bout en bout)",
     "fileEditViewDiff": "Voir les différences",
-    "fileEditViewLargeDiff": "Voir les grandes différences",
+    "fileEditViewLargeDiff": "Voir les différences",
     "fileEditDiffLineCount": "{{count}} lignes",
     "fileEditUnchangedLinesHidden": "{{count}} lignes inchangées masquées",
     "fileEditShowMoreLines": "Afficher {{count}} lignes de plus",
@@ -2073,6 +2073,7 @@
       "deletingFile": "Suppression",
       "editingFileShort": "Modification",
       "deletedFile": "Supprimé",
+      "createdFile": "Créé",
       "editedFileShort": "Modifié"
     },
     "collapseActivity": "Réduire les détails de l’activité",

@@ -1921,7 +1921,7 @@
     "copiedReply": "Disalin",
     "turnLatencyTitle": "Waktu respons (ujung ke ujung)",
     "fileEditViewDiff": "Lihat perbedaan",
-    "fileEditViewLargeDiff": "Lihat perbedaan besar",
+    "fileEditViewLargeDiff": "Lihat perbedaan",
     "fileEditDiffLineCount": "{{count}} baris",
     "fileEditUnchangedLinesHidden": "{{count}} baris tidak berubah disembunyikan",
     "fileEditShowMoreLines": "Tampilkan {{count}} baris lagi",
@@ -2073,6 +2073,7 @@
       "deletingFile": "Menghapus",
       "editingFileShort": "Mengedit",
       "deletedFile": "Dihapus",
+      "createdFile": "Dibuat",
       "editedFileShort": "Diedit"
     },
     "collapseActivity": "Ciutkan detail aktivitas",

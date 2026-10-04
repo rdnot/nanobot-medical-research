@@ -14,6 +14,8 @@ import remarkMath from "remark-math";
 import { Streamdown, type Components, type StreamdownProps } from "streamdown";
 import remend from "remend";
 
+import { parseMathAwareMarkdownBlocks } from "@/lib/markdown-streaming-blocks";
+
 import { AttachmentTile } from "@/components/AttachmentTile";
 import { CodeBlock } from "@/components/CodeBlock";
 import { WebLink } from "@/components/WebLink";
@@ -831,6 +833,7 @@ export default function MarkdownTextRenderer({
       key={needsMath && mathPlugin ? "math" : "text"}
       mode={streaming || preserveStreamingLayout ? "streaming" : "static"}
       parseIncompleteMarkdown={false}
+      parseMarkdownIntoBlocksFn={parseMathAwareMarkdownBlocks}
       isAnimating={false}
       animated={false}
       linkSafety={DIRECT_LINKS}

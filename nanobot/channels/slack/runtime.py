@@ -87,6 +87,7 @@ class SlackConfig(Base):
 
 
 SLACK_MAX_MESSAGE_LEN = 39_000  # Slack API allows ~40k; leave margin
+SLACK_SECTION_TEXT_MAX_LEN = 3_000  # Block Kit section text limit
 SLACK_DOWNLOAD_TIMEOUT = 30.0
 # Abort Socket Mode WSS handshake after this many seconds. REST auth_test can still
 # succeed while WSS blocks (firewall / region). slack-sdk does not apply HTTP(S)_PROXY
@@ -739,8 +740,12 @@ class SlackChannel(BaseChannel):
     @staticmethod
     def _build_button_blocks(text: str, buttons: list[list[str]]) -> list[dict[str, Any]]:
         """Build Slack Block Kit blocks with action buttons."""
+        # Slack renders ``blocks`` instead of ``text`` and caps each section's
+        # text at 3000 chars, so split the chunk across sections rather than
+        # dropping everything past the first 3000 chars.
         blocks: list[dict[str, Any]] = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": text[:3000]}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": part}}
+            for part in split_message(text, SLACK_SECTION_TEXT_MAX_LEN)
         ]
         elements: list[dict[str, Any]] = []
         for row in buttons:

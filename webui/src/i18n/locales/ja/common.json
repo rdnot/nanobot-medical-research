@@ -2072,8 +2072,9 @@
       "editFileFailedShort": "編集できませんでした",
       "deletingFile": "削除中",
       "editingFileShort": "編集中",
-      "deletedFile": "削除しました",
-      "editedFileShort": "編集しました"
+      "deletedFile": "削除",
+      "createdFile": "作成",
+      "editedFileShort": "編集"
     },
     "collapseActivity": "アクティビティの詳細を折りたたむ",
     "activityShow": "処理過程を表示",
