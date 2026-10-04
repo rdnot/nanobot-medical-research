@@ -3,11 +3,20 @@
 // NOT capture the answer's folded activity trace (completedMessageBlocks used to
 // attach activity to "the next assistant message", which became the summary).
 import { cleanup, fireEvent, render } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ThreadMessages } from "@/components/thread/ThreadMessages";
 import { projectThreadEvents } from "@/lib/thread-event-projection";
 import type { ThreadProjectionEvent } from "@/lib/types";
+
+// Upstream's split file-edit view (AgentActivityCluster renders per-file diffs
+// instead of the single folded trace when fileEditDisplayMode != "summary") is
+// exercised by other test files that write the preference mid-run. With vitest's
+// file-backed localStorage those writes leak across concurrent workers, so pin
+// the hook to "summary" for this suite — it asserts the folded-trace layout only.
+vi.mock("@/hooks/useFileEditDisplayMode", () => ({
+  useFileEditDisplayMode: () => "summary" as const,
+}));
 
 afterEach(() => cleanup());
 
