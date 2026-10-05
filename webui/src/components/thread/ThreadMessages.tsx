@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { MessageBlockMenuActions, MessageBubble, MessageCopyButton } from "@/components/MessageBubble";
@@ -14,6 +14,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
+import { useLocalPreferences } from "@/hooks/useLocalPreferences";
 import { fmtDateTime, formatMessageHoverTime } from "@/lib/format";
 import { projectActivityTimeline, type TurnUnit } from "@/lib/activity-timeline";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,9 @@ import type { CliAppInfo, McpPresetInfo, RetryStatus, SlashCommand, UIMessage } 
 
 interface ThreadMessagesProps {
   messages: UIMessage[];
+  beforeMessages?: ReactNode;
+  afterUserMessage?: (message: UIMessage) => ReactNode;
+  afterMessages?: ReactNode;
   temporary?: boolean;
   /** When true, agent turn still in flight — keeps activity timeline expanded. */
   isStreaming?: boolean;
@@ -77,6 +81,9 @@ export function assistantForkFlags(units: DisplayUnit[]): boolean[] {
 
 export function ThreadMessages({
   messages,
+  beforeMessages,
+  afterUserMessage,
+  afterMessages,
   temporary = false,
   isStreaming = false,
   activeTurnId = null,
@@ -95,6 +102,7 @@ export function ThreadMessages({
   onActivityToggle,
 }: ThreadMessagesProps) {
   const { t } = useTranslation();
+  const { activityMode } = useLocalPreferences();
   const messageListRef = useRef<HTMLDivElement>(null);
   const mobileActions = useMediaQuery("(max-width: 767px)");
   const units = useMemo(
@@ -136,17 +144,19 @@ export function ThreadMessages({
     ),
     [activeTurnId, currentTurnStartIndex, isStreaming, unitKeys, units],
   );
-  const [expandedActivityKeys, setExpandedActivityKeys] = useState<Set<string>>(() => new Set());
+  const [activityOverrides, setActivityOverrides] = useState<Map<string, boolean>>(() => new Map());
+  useEffect(() => {
+    setActivityOverrides(new Map());
+  }, [activityMode]);
   const [activeContextBlockKey, setActiveContextBlockKey] = useState<string | null>(null);
   const [openContextBlockKey, setOpenContextBlockKey] = useState<string | null>(null);
   const pointedContextBlockRef = useRef<string | null>(null);
   const setActivityExpanded = useCallback((key: string, expanded: boolean) => {
     onActivityToggle?.();
-    setExpandedActivityKeys((current) => {
-      if (current.has(key) === expanded) return current;
-      const next = new Set(current);
-      if (expanded) next.add(key);
-      else next.delete(key);
+    setActivityOverrides((current) => {
+      if (current.get(key) === expanded) return current;
+      const next = new Map(current);
+      next.set(key, expanded);
       return next;
     });
   }, [onActivityToggle]);
@@ -172,6 +182,7 @@ export function ThreadMessages({
         containerRef={messageListRef}
         onQuoteSelection={onQuoteSelection}
       />
+      {beforeMessages}
       {units.map((unit, index) => {
         const next = units[index + 1];
         const hasBodyBelow =
@@ -194,7 +205,7 @@ export function ThreadMessages({
           : marginAfterPrevUnit(units[previousVisibleIndex]);
         const blockActivityExpanded = showBlockContext
           && contextBlockKey !== undefined
-          && expandedActivityKeys.has(contextBlockKey);
+          && (activityOverrides.get(contextBlockKey) ?? activityMode === "expanded");
         const deferOffscreenRender =
           index < units.length - 1
           && (
@@ -224,6 +235,7 @@ export function ThreadMessages({
         ) nextUserIndex += 1;
 
         return (
+          <Fragment key={unitKeys[index]}>
           <ThreadDisplayUnit
             key={unitKeys[index]}
             unitKey={unitKeys[index]}
@@ -265,8 +277,13 @@ export function ThreadMessages({
             onContextBlockFocusChange={setContextBlockFocused}
             onContextBlockMenuOpenChange={setContextBlockMenuOpen}
           />
+          {unit.type === "message" && unit.message.role === "user" ? (
+            afterUserMessage?.(unit.message)
+          ) : null}
+          </Fragment>
         );
       })}
+      {afterMessages}
       {pendingActivity ? (
         <div className={cn("thread-message-row", units.length > 0 && "mt-5")}>
           <AgentActivityCluster
@@ -910,10 +927,10 @@ export function unitKeysForDisplay(units: DisplayUnit[]): string[] {
   const occurrences = new Map<string, number>();
   return units.map((unit, index) => {
     const base = unitKeyBase(unit, index);
-    if (!base.startsWith("turn-") || base.endsWith("-user")) return base;
+    if (!base.startsWith("turn-")) return base;
     const next = (occurrences.get(base) ?? 0) + 1;
     occurrences.set(base, next);
-    return `${base}-${next}`;
+    return base.endsWith("-user") && next === 1 ? base : `${base}-${next}`;
   });
 }
 
