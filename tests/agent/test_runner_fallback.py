@@ -470,7 +470,8 @@ class TestFallbackWhenPrimaryRaises:
         assert result.content == "fallback ok"
         assert result.finish_reason == "stop"
         factory.assert_called_once_with(_fallback("fallback-a"))
-        assert sleep.await_args_list == [call(1), call(2), call(4)]
+        # FORK: 5 retry delays (1, 2, 4, 8, 16); upstream: (1, 2, 4)
+        assert sleep.await_args_list == [call(1), call(2), call(4), call(8), call(16)]
 
     @pytest.mark.asyncio
     async def test_authentication_exception_message_is_classified(self) -> None:
@@ -921,7 +922,8 @@ class TestFallbackOnPrimaryError:
 
         assert result.content == "fallback ok"
         assert fallback_models == ["fallback-b"]
-        assert sleep.await_args_list == [call(1), call(2), call(4)]
+        # FORK: 5 retry delays (1, 2, 4, 8, 16); upstream: (1, 2, 4)
+        assert sleep.await_args_list == [call(1), call(2), call(4), call(8), call(16)]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("provider_name", "status", "code", "kind", "expected"), [
