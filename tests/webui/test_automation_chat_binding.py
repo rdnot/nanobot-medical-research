@@ -409,7 +409,8 @@ async def test_late_subagent_result_stays_with_moved_task(tmp_path, monkeypatch)
         async with asyncio.timeout(5):
             while not any(msg.content.startswith("Final report:") for msg in delivered):
                 msg = await bus.consume_outbound()
-                if msg.event is None and msg.content:
+                # FORK: the "Tools used:" summary is a separate outbound message.
+                if msg.event is None and msg.content and not msg.metadata.get("_tools_summary"):
                     delivered.append(msg)
         assert [(msg.channel, msg.chat_id) for msg in delivered] == [("telegram", "-100")] * 2
         assert "Final report: 37 items completed" in json.dumps(

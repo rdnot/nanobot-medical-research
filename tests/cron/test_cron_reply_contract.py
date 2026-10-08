@@ -94,7 +94,8 @@ async def test_moved_cron_keeps_reply_send_and_prompt_prefix_contract(tmp_path, 
             outbound = []
             while bus.outbound_size:
                 message = await bus.consume_outbound()
-                if message.event is None and message.content:
+                # FORK: the "Tools used:" summary is a separate outbound message.
+                if message.event is None and message.content and not message.metadata.get("_tools_summary"):
                     outbound.append(message)
             normal = [m for m in outbound if (m.channel, m.chat_id) == ("telegram", "new")]
             # Normal backend replies and legacy same-chat sends each arrive once.
