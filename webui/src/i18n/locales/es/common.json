@@ -1723,7 +1723,7 @@
     },
     "composer": {
       "placeholderThread": "Escribe tu mensaje…",
-      "placeholderHero": "¿Qué tienes en mente?",
+      "placeholderHero": "Describe lo que quieres hacer",
       "placeholderOpening": "Abriendo un nuevo tema…",
       "placeholderStreaming": "El modelo está respondiendo…",
       "inputAria": "Entrada de mensaje",
@@ -1916,11 +1916,12 @@
       "workspace": {
         "accessAria": "Modo de acceso al espacio de trabajo",
         "projectAria": "Elegir proyecto",
-        "projectPlaceholder": "Seleccionar proyecto",
         "default": "Permiso predeterminado",
         "defaultShort": "Predeterm.",
         "full": "Acceso completo",
-        "fullShort": "Completo"
+        "fullShort": "Completo",
+        "defaultDescription": "El acceso a archivos y la ejecución de comandos se limitan al directorio de trabajo actual.",
+        "fullDescription": "Permite acceder a archivos y ejecutar comandos fuera del directorio de trabajo actual."
       }
     },
     "scrollToBottom": "Desplazarse al final",
@@ -2283,11 +2284,34 @@
   },
   "workspace": {
     "dialog": {
-      "defaultProject": "Espacio de trabajo predeterminado",
       "manual": "Pegar ruta",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "Usar ruta",
       "absolutePathRequired": "Introduce una ruta absoluta de carpeta en esta máquina."
+    },
+    "picker": {
+      "favorites": "Favoritos",
+      "recent": "Proyectos recientes",
+      "pin": "Fijar {{name}}",
+      "unpin": "Desfijar {{name}}",
+      "description": "Elige una carpeta existente en el equipo conectado. La carpeta de trabajo no cambia hasta que confirmes.",
+      "shortcuts": "Ubicaciones guardadas",
+      "favoriteHint": "Pulsa la estrella de una carpeta para añadirla aquí.",
+      "loading": "Cargando carpetas…",
+      "truncated": "Se muestran 500 carpetas. Sigue escribiendo la ruta para reducir la lista.",
+      "hidden": "Mostrar carpetas ocultas",
+      "select": "Confirmar",
+      "title": "Elegir carpeta de trabajo",
+      "back": "Atrás",
+      "forward": "Adelante",
+      "history": "Última carpeta visitada",
+      "editPath": "Editar ruta",
+      "location": "Ubicación actual",
+      "filter": "Filtrar esta carpeta",
+      "pathNotFound": "No hay carpetas coincidentes. Comprueba la ruta.",
+      "empty": "Sin subcarpetas",
+      "noMatches": "No hay carpetas coincidentes.",
+      "retry": "Reintentar",
+      "cancel": "Cancelar",
+      "switchDirectory": "Cambiar directorio de trabajo"
     }
   }
 }

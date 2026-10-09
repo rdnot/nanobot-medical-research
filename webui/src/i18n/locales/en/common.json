@@ -1922,7 +1922,7 @@
     },
     "composer": {
       "placeholderThread": "Type your message…",
-      "placeholderHero": "Ask anything...",
+      "placeholderHero": "Describe what you’d like to do",
       "placeholderOpening": "Opening a new topic…",
       "placeholderStreaming": "Model is responding…",
       "inputAria": "Message input",
@@ -2115,11 +2115,12 @@
       "workspace": {
         "accessAria": "Workspace access mode",
         "projectAria": "Choose project",
-        "projectPlaceholder": "Select project",
         "default": "Default Permission",
         "defaultShort": "Default",
         "full": "Full Access",
-        "fullShort": "Full"
+        "fullShort": "Full",
+        "defaultDescription": "File access and command execution are restricted to the current working directory.",
+        "fullDescription": "Allows file access and command execution outside the current working directory."
       }
     },
     "scrollToBottom": "Scroll to bottom",
@@ -2482,11 +2483,34 @@
   },
   "workspace": {
     "dialog": {
-      "defaultProject": "Default workspace",
       "manual": "Paste path",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "Use Path",
       "absolutePathRequired": "Enter an absolute folder path on this machine."
+    },
+    "picker": {
+      "favorites": "Favorites",
+      "recent": "Recent projects",
+      "pin": "Pin {{name}}",
+      "unpin": "Unpin {{name}}",
+      "description": "Choose an existing folder on the connected host. Navigation does not change your workspace until you confirm.",
+      "shortcuts": "Saved locations",
+      "favoriteHint": "Use a folder’s star to add it here.",
+      "loading": "Loading folders…",
+      "truncated": "Showing 500 folders. Continue typing the path to narrow the list.",
+      "hidden": "Show hidden folders",
+      "select": "Confirm",
+      "title": "Choose a working folder",
+      "back": "Back",
+      "forward": "Forward",
+      "history": "Last visited folder",
+      "editPath": "Edit path",
+      "location": "Current location",
+      "filter": "Filter this folder",
+      "pathNotFound": "No matching folder. Check the path and try again.",
+      "empty": "No subfolders",
+      "noMatches": "No matching folders.",
+      "retry": "Try again",
+      "cancel": "Cancel",
+      "switchDirectory": "Switch working directory"
     }
   }
 }

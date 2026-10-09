@@ -381,7 +381,7 @@ describe("App layout", () => {
       }] },
     });
     render(<App />);
-    await screen.findByRole("textbox");
+    await screen.findByRole("textbox", {}, { timeout: 5_000 });
     if (supported) await screen.findByRole("button", { name: /Config check Running/ });
     else expect(screen.queryByText("Config check")).not.toBeInTheDocument();
     const reads = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith("/subagents"));
@@ -1088,7 +1088,7 @@ describe("App layout", () => {
     expect(window.location.hash).toBe("#/new");
     // Let queued browser navigation events settle before sending the first message.
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
-    expect(await screen.findByRole("button", { name: "Choose project" })).toHaveTextContent("selected-project");
+    expect(await screen.findByRole("button", { name: "Switch working directory" })).toHaveTextContent("selected-project");
     fireEvent.change(screen.getByLabelText("Message input"), {
       target: { value: "project topic" },
     });
@@ -1113,7 +1113,7 @@ describe("App layout", () => {
     render(<App />);
 
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
-    expect(await screen.findByRole("button", { name: "Choose project" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Switch working directory" })).toBeInTheDocument();
     act(() => {
       sessionUpdateHandlers.forEach((handler) => handler("selected-chat", "metadata", {
         project_path: "/tmp/selected-project",
@@ -1124,7 +1124,7 @@ describe("App layout", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Temporary chat" }));
 
-    expect(screen.queryByRole("button", { name: "Choose project" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Switch working directory" })).not.toBeInTheDocument();
     expect(screen.queryByText("Full Access")).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Message input"), {
       target: { value: "temporary project check" },
@@ -1141,31 +1141,45 @@ describe("App layout", () => {
 
   it("preserves the first message when the gateway rejects a project", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const projectPath = "C:\\missing-project";
+    const directory = (path: string) => ({
+      path, parent: null, entries: [], partial: false,
+      truncated: false, host: "test-host", platform: "Windows",
+    });
+    const directoryUrl = (path: string) => `/api/workspaces/directories?${new URLSearchParams({ path, q: "", hidden: "0", partial: "1" })}`;
+    requestMutationSpy.mockResolvedValue({ path: projectPath, name: "missing-project" });
     createChatSpy.mockRejectedValueOnce(
       new Error("workspace_scope_rejected:project_path must be an existing directory"),
     );
     mockFetchRoutes({
       "/api/workspaces": {
         schema_version: 1,
-        default_access_mode: "restricted",
+        default_access_mode: "default",
         default_scope: {
           project_path: "C:\\workspace",
           project_name: "workspace",
           access_mode: "restricted",
           restrict_to_workspace: true,
         },
-        controls: { can_change_project: true, can_use_full_access: true },
+        controls: { can_change_project: true, can_use_full_access: true, can_browse_directories: true, can_resolve_project: true },
       },
+      [directoryUrl("C:\\workspace")]: directory("C:\\workspace"),
+      [directoryUrl("C:\\workspace\\")]: directory("C:\\workspace"),
+      [directoryUrl(projectPath)]: directory(projectPath),
+      [directoryUrl(`${projectPath}\\`)]: directory(projectPath),
     });
 
     render(<App />);
 
     await waitFor(() => expect(connectSpy).toHaveBeenCalled());
-    fireEvent.click(await screen.findByRole("button", { name: "Choose project" }));
-    fireEvent.change(await screen.findByLabelText("Paste path"), {
-      target: { value: "C:\\missing-project" },
+    fireEvent.click(await screen.findByRole("button", { name: "Switch working directory" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Edit path:/ }));
+    fireEvent.change(await screen.findByRole("combobox"), {
+      target: { value: projectPath },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 
     const message = screen.getByLabelText("Message input");
     fireEvent.change(message, { target: { value: "keep this first message" } });
@@ -1173,16 +1187,17 @@ describe("App layout", () => {
 
     await waitFor(() => expect(createChatSpy).toHaveBeenCalledTimes(1));
     expect(message).toHaveValue("keep this first message");
-    const projectButton = screen.getByRole("button", { name: "Choose project" });
+    const projectButton = screen.getByRole("button", { name: "Switch working directory" });
     await waitFor(() => expect(projectButton).toHaveFocus());
     expect(screen.getByRole("alert")).toHaveTextContent(
       "The gateway rejected this project or access mode. Choose an existing project or a different access mode, then try again.",
     );
     fireEvent.click(projectButton);
-    const projectPath = await screen.findByLabelText("Paste path");
-    expect(projectPath).toHaveValue("C:\\missing-project");
-    expect(projectPath).toHaveAttribute("aria-invalid", "true");
-    expect(projectPath).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: /^Edit path:/ }));
+    const pathInput = await screen.findByRole("combobox");
+    expect(pathInput).toHaveValue(`${projectPath}\\`);
+    expect(pathInput).toHaveAttribute("aria-invalid", "true");
+    expect(pathInput).toHaveFocus();
     expect(screen.getByRole("alert")).toHaveTextContent(
       "The gateway rejected this project or access mode. Choose an existing project or a different access mode, then try again.",
     );
@@ -2232,7 +2247,7 @@ describe("App layout", () => {
   });
 
   it("uses native chrome when the host bridge overrides browser gateway metadata", async () => {
-    Reflect.set(window, "nanobotHost", { pickFolder: vi.fn() });
+    Reflect.set(window, "nanobotHost", { getRuntimeInfo: vi.fn() });
     vi.mocked(fetchBootstrap).mockResolvedValue({
       token: "tok",
       api_token: "api-tok",

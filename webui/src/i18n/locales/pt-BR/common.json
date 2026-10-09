@@ -1736,7 +1736,7 @@
     },
     "composer": {
       "placeholderThread": "Digite sua mensagem…",
-      "placeholderHero": "Pergunte qualquer coisa...",
+      "placeholderHero": "Descreva o que você quer fazer",
       "placeholderOpening": "Abrindo um novo tópico…",
       "placeholderStreaming": "O modelo está respondendo…",
       "inputAria": "Campo de mensagem",
@@ -1929,11 +1929,12 @@
       "workspace": {
         "accessAria": "Modo de acesso ao espaço de trabalho",
         "projectAria": "Escolher projeto",
-        "projectPlaceholder": "Selecionar projeto",
         "default": "Permissão padrão",
         "defaultShort": "Padrão",
         "full": "Acesso total",
-        "fullShort": "Total"
+        "fullShort": "Total",
+        "defaultDescription": "O acesso a arquivos e a execução de comandos ficam restritos ao diretório de trabalho atual.",
+        "fullDescription": "Permite acessar arquivos e executar comandos fora do diretório de trabalho atual."
       }
     },
     "scrollToBottom": "Rolar para o final",
@@ -2296,11 +2297,34 @@
   },
   "workspace": {
     "dialog": {
-      "defaultProject": "Espaço de trabalho padrão",
       "manual": "Colar caminho",
-      "manualPlaceholder": "/Users/nome/projeto",
-      "usePath": "Usar caminho",
       "absolutePathRequired": "Informe um caminho absoluto de pasta nesta máquina."
+    },
+    "picker": {
+      "favorites": "Favoritos",
+      "recent": "Projetos recentes",
+      "pin": "Fixar {{name}}",
+      "unpin": "Desafixar {{name}}",
+      "description": "Escolha uma pasta existente no host conectado. A pasta de trabalho só muda após a confirmação.",
+      "shortcuts": "Locais salvos",
+      "favoriteHint": "Clique na estrela de uma pasta para adicioná-la aqui.",
+      "loading": "Carregando pastas…",
+      "truncated": "Exibindo 500 pastas. Continue digitando o caminho para reduzir a lista.",
+      "hidden": "Mostrar pastas ocultas",
+      "select": "Confirmar",
+      "title": "Escolher pasta de trabalho",
+      "back": "Voltar",
+      "forward": "Avançar",
+      "history": "Última pasta visitada",
+      "editPath": "Editar caminho",
+      "location": "Localização atual",
+      "filter": "Filtrar esta pasta",
+      "pathNotFound": "Nenhuma pasta correspondente. Verifique o caminho.",
+      "empty": "Sem subpastas",
+      "noMatches": "Nenhuma pasta correspondente.",
+      "retry": "Tentar novamente",
+      "cancel": "Cancelar",
+      "switchDirectory": "Alterar diretório de trabalho"
     }
   }
 }

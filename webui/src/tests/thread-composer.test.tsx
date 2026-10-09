@@ -8,6 +8,28 @@ import { encodeImage } from "@/lib/imageEncode";
 import { SESSION_DRAG_TYPE } from "@/lib/session-drag";
 import type { ChatSummary, CliAppInfo, McpPresetInfo, SlashCommand, WorkspaceScopePayload } from "@/lib/types";
 
+function workspacePickerProps(scope: WorkspaceScopePayload) {
+  const resolvePath = (path: string) => path.startsWith("~/") ? `/Users/test/${path.slice(2)}` : path;
+  return {
+    onLoadWorkspaceProjects: async () => ({
+      schema_version: 1,
+      default_access_mode: "default" as const,
+      default_scope: scope,
+      recent_projects: [],
+      favorite_projects: [],
+      controls: { can_change_project: true, can_use_full_access: true },
+    }),
+    onBrowseWorkspaceDirectories: async (path: string) => ({
+      path: resolvePath(path), parent: null, entries: [], partial: false,
+      truncated: false, host: "test-host", platform: "Linux",
+    }),
+    onResolveWorkspaceProject: async (path: string) => ({
+      path: resolvePath(path), name: path.replace(/\\/g, "/").split("/").filter(Boolean).pop() || path,
+    }),
+    onFavoriteWorkspaceProject: async () => [],
+  };
+}
+
 vi.mock("@/lib/imageEncode", () => ({
   encodeImage: vi.fn(async (file: File) => ({
     ok: true,
@@ -866,6 +888,34 @@ describe("ThreadComposer", () => {
     expect(onPresetChange).toHaveBeenCalledWith("dflash");
   });
 
+  it("switches the same primary button between voice and send as the draft changes", () => {
+    const onSend = vi.fn();
+    render(<ThreadComposer onSend={onSend} onTranscribeAudio={vi.fn(async () => "voice")} />);
+    const input = screen.getByRole("textbox");
+    const action = screen.getByRole("button", { name: "Voice input" });
+    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: "   " } });
+    expect(screen.getByRole("button", { name: "Voice input" })).toBe(action);
+    fireEvent.change(input, { target: { value: "send this" } });
+    expect(screen.getByRole("button", { name: "Send message" })).toBe(action);
+    expect(screen.queryByRole("button", { name: "Voice input" })).not.toBeInTheDocument();
+    fireEvent.click(action);
+    expect(onSend).toHaveBeenCalledWith("send this", undefined, undefined);
+    expect(screen.getByRole("button", { name: "Voice input" })).toBe(action);
+  });
+
+  it("uses send for an attachment-only draft and restores voice after removal", async () => {
+    mockBlobUrls();
+    const { container } = render(<ThreadComposer onSend={vi.fn()} onTranscribeAudio={vi.fn(async () => "voice")} />);
+    fireEvent.change(container.querySelector('input[type="file"]')!, {
+      target: { files: [new File(["image"], "photo.png", { type: "image/png" })] },
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Voice input" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remove attachment" }));
+    expect(screen.getByRole("button", { name: "Voice input" })).toBeInTheDocument();
+  });
+
   it("transcribes voice input into the composer without sending", async () => {
     mockVoiceRecorder();
     const onSend = vi.fn();
@@ -1106,10 +1156,11 @@ describe("ThreadComposer", () => {
 
   it("ignores the delayed click emitted after a long-press voice recording", async () => {
     const { getUserMedia } = mockVoiceRecorder();
+    const onSend = vi.fn();
     const onTranscribeAudio = vi.fn(async () => "held once");
     render(
       <ThreadComposer
-        onSend={vi.fn()}
+        onSend={onSend}
         onTranscribeAudio={onTranscribeAudio}
         placeholder="Type your message..."
       />,
@@ -1131,8 +1182,9 @@ describe("ThreadComposer", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
 
+    expect(onSend).not.toHaveBeenCalled();
     expect(getUserMedia).toHaveBeenCalledTimes(1);
     expect(onTranscribeAudio).toHaveBeenCalledTimes(1);
   });
@@ -1153,7 +1205,8 @@ describe("ThreadComposer", () => {
 
     const input = screen.getByLabelText("Message input");
     fireEvent.change(input, { target: { value: "draft" } });
-    fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+    fireEvent.keyDown(window, { key: "D", code: "KeyD", ctrlKey: true, shiftKey: true });
+    expect(await screen.findByLabelText("Recording 0:00")).toBeInTheDocument();
     await waitForVoiceCapture();
     fireEvent.click(await screen.findByRole("button", { name: "Stop recording" }));
 
@@ -1342,6 +1395,19 @@ describe("ThreadComposer", () => {
     expect(screen.getByRole("progressbar", { name: "Context 50%" })).toBeVisible();
   });
 
+  it.each([
+    ["restricted", "Default Permission", "File access and command execution are restricted to the current working directory."],
+    ["full", "Full Access", "Allows file access and command execution outside the current working directory."],
+  ] as const)("explains %s workspace access on hover", async (mode, label, explanation) => {
+    const user = userEvent.setup();
+    render(<ThreadComposer onSend={vi.fn()} workspaceScope={{ project_path: "/tmp/project", project_name: "project", access_mode: mode, restrict_to_workspace: mode === "restricted" }} onWorkspaceScopeChange={vi.fn()} />);
+    const access = screen.getByRole("button", { name: `Workspace access mode: ${label}` });
+    expect(access).not.toHaveAttribute("title");
+    await user.hover(access);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(explanation);
+    expect(access).toHaveAttribute("aria-describedby");
+  });
+
   it("toggles workspace access directly by click and keyboard", async () => {
     const user = userEvent.setup();
     const onWorkspaceScopeChange = vi.fn();
@@ -1403,7 +1469,7 @@ describe("ThreadComposer", () => {
     expect(shortLabel).toHaveClass("hidden");
   });
 
-  it("keeps project selection as a compact composer dropdown", async () => {
+  it("opens project selection in a searchable dialog", async () => {
     const user = userEvent.setup();
     const onWorkspaceScopeChange = vi.fn();
     const defaultScope = {
@@ -1423,27 +1489,26 @@ describe("ThreadComposer", () => {
           restrict_to_workspace: false,
         }}
         workspaceDefaultScope={defaultScope}
-        workspaceControls={{ can_change_project: true, can_use_full_access: true }}
+        {...workspacePickerProps(defaultScope)}
+        workspaceControls={{ can_change_project: true, can_use_full_access: true, can_browse_directories: true, can_resolve_project: true }}
         onWorkspaceScopeChange={onWorkspaceScopeChange}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Choose project" }));
+    await user.click(screen.getByRole("button", { name: "Switch working directory" }));
 
-    expect(await screen.findByRole("button", { name: /Default workspace/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "/Users/test/.nanobot/workspace" })).toBeInTheDocument();
     expect(screen.getByRole("dialog")).toBeInTheDocument();
 
-    const input = screen.getByLabelText("Paste path");
+    await user.click(screen.getByRole("button", { name: /^Edit path:/ }));
+    const input = screen.getByRole("combobox");
     fireEvent.change(input, { target: { value: "relative/project" } });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
-
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Enter an absolute folder path on this machine.",
-    );
+    expect(screen.queryByRole("option", { name: "relative/project" })).not.toBeInTheDocument();
     expect(onWorkspaceScopeChange).not.toHaveBeenCalled();
 
     fireEvent.change(input, { target: { value: "/Users/test/project-alpha" } });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
 
     expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
       project_path: "/Users/test/project-alpha",
@@ -1452,13 +1517,15 @@ describe("ThreadComposer", () => {
       restrict_to_workspace: false,
     }));
 
-    await user.click(screen.getByRole("button", { name: "Choose project" }));
-    const reopenedInput = await screen.findByLabelText("Paste path");
+    await user.click(screen.getByRole("button", { name: "Switch working directory" }));
+    await user.click(screen.getByRole("button", { name: /^Edit path:/ }));
+    const reopenedInput = await screen.findByRole("combobox");
     fireEvent.change(reopenedInput, { target: { value: "~/Pictures/Photos" } });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
 
     expect(onWorkspaceScopeChange).toHaveBeenLastCalledWith(expect.objectContaining({
-      project_path: "~/Pictures/Photos",
+      project_path: "/Users/test/Pictures/Photos",
       project_name: "Photos",
       access_mode: "full",
       restrict_to_workspace: false,
@@ -1467,10 +1534,12 @@ describe("ThreadComposer", () => {
 
   it.each([
     ["Windows", "D:\\Users\\test\\.nanobot\\workspace", "D:\\path\\to\\project"],
+    ["Windows UNC", "\\\\server\\share\\workspace", "\\\\server\\share\\project"],
     ["macOS", "/Users/test/.nanobot/workspace", "/Users/name/project"],
     ["Linux", "/home/test/.nanobot/workspace", "/home/name/project"],
-  ])("uses a %s path example for the project picker", async (_, projectPath, placeholder) => {
+  ])("accepts a %s project path", async (_, projectPath, selectedPath) => {
     const user = userEvent.setup();
+    const onWorkspaceScopeChange = vi.fn();
     const defaultScope = {
       project_path: projectPath,
       project_name: "workspace",
@@ -1485,17 +1554,21 @@ describe("ThreadComposer", () => {
         variant="hero"
         workspaceScope={defaultScope}
         workspaceDefaultScope={defaultScope}
+        {...workspacePickerProps(defaultScope)}
         workspaceControls={{ can_change_project: true, can_use_full_access: true }}
-        onWorkspaceScopeChange={vi.fn()}
+        onWorkspaceScopeChange={onWorkspaceScopeChange}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Choose project" }));
+    await user.click(screen.getByRole("button", { name: "Switch working directory" }));
 
-    expect(await screen.findByLabelText("Paste path")).toHaveAttribute("placeholder", placeholder);
+    fireEvent.change(await screen.findByRole("combobox"), { target: { value: selectedPath } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled());
+    fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+    await waitFor(() => expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({ project_path: selectedPath })));
   });
 
-  it("slides project controls closed without offering a compact replacement", () => {
+  it("groups the directory and access beside attachments and hides them with workspace controls", () => {
     const defaultScope = {
       project_path: "/Users/test/.nanobot/workspace",
       project_name: "workspace",
@@ -1510,58 +1583,71 @@ describe("ThreadComposer", () => {
         workspaceControlsHidden={workspaceControlsHidden}
         workspaceScope={defaultScope}
         workspaceDefaultScope={defaultScope}
+        {...workspacePickerProps(defaultScope)}
         workspaceControls={{ can_change_project: true, can_use_full_access: true }}
         onWorkspaceScopeChange={vi.fn()}
       />
     );
     const { container, rerender } = render(composer(false));
-    const drawer = container.querySelector("[data-composer-workspace-drawer]");
-
-    expect(drawer).toHaveClass("inline-disclosure");
-    expect(drawer?.firstElementChild).toHaveClass("inline-disclosure-clip");
-    expect(drawer?.firstElementChild?.firstElementChild).toHaveClass("inline-disclosure-content");
-    expect(drawer).toHaveAttribute("data-state", "open");
-    expect(drawer).not.toHaveAttribute("aria-hidden");
-    expect(container.querySelector("[data-composer-workspace-compact]")).not.toBeInTheDocument();
-
+    const trigger = screen.getByRole("button", { name: "Switch working directory" });
+    expect(trigger).toHaveTextContent("workspace");
+    expect(trigger.closest(".thread-composer-footer-primary")).not.toBeNull();
+    expect(trigger.closest(".thread-composer-workspace-group")).toContainElement(screen.getByRole("button", { name: "Workspace access mode: Full Access" }));
+    expect(container.querySelector("[data-composer-workspace-drawer]")).not.toBeInTheDocument();
     rerender(composer(true));
-
-    expect(container.querySelector("[data-composer-workspace-drawer]")).toBe(drawer);
-    expect(drawer).toHaveAttribute("data-state", "closed");
-    expect(drawer).toHaveAttribute("aria-hidden", "true");
-    expect(within(drawer as HTMLElement).getByRole("button", {
-      hidden: true,
-      name: "Choose project",
-    })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Choose project" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", {
-      name: "Workspace access mode: Full Access",
-    })).not.toBeInTheDocument();
-
+    expect(screen.queryByRole("button", { name: "Switch working directory" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Workspace access mode: Full Access" })).not.toBeInTheDocument();
     rerender(composer(false));
-
-    expect(container.querySelector("[data-composer-workspace-drawer]")).toBe(drawer);
-    expect(drawer).toHaveAttribute("data-state", "open");
-    expect(within(drawer as HTMLElement).getByRole("button", {
-      name: "Choose project",
-    })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Switch working directory" })).toBeEnabled();
   });
 
-  it("uses the native folder picker for project selection on native host", async () => {
+  it("places the directory left and access right on narrow composers, moving them into the toolbar on desktop", () => {
+    let width = 390;
+    vi.spyOn(HTMLFormElement.prototype, "getBoundingClientRect").mockImplementation(() => rect({ width, height: 160 }));
+    const defaultScope = { project_path: "/srv/workspace", project_name: "workspace", access_mode: "full" as const };
+    const { container } = render(<ThreadComposer variant="hero" onSend={vi.fn()} workspaceScope={defaultScope}
+      workspaceDefaultScope={defaultScope}
+        {...workspacePickerProps(defaultScope)} workspaceControls={{ can_change_project: true }} onWorkspaceScopeChange={vi.fn()} />);
+    const input = screen.getByRole("textbox");
+    const row = container.querySelector(".thread-composer-workspace-row")!;
+    const trigger = screen.getByRole("button", { name: "Switch working directory" });
+    expect(row).toContainElement(trigger);
+    expect(trigger.closest(".ml-auto")).toBeNull();
+    const access = screen.getByRole("button", { name: "Workspace access mode: Full Access" });
+    expect(row).toContainElement(access);
+    expect(access.closest(".ml-auto")).not.toBeNull();
+    width = 800;
+    fireEvent(window, new Event("resize"));
+    expect(screen.getByRole("button", { name: "Switch working directory" }).closest(".thread-composer-footer-primary")).not.toBeNull();
+    expect(container.querySelector("[data-composer-workspace-drawer]")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toBe(input);
+    expect(screen.getAllByRole("button", { name: "Switch working directory" })).toHaveLength(1);
+  });
+
+  it("browses and selects the connected host's project in one dialog on a native client", async () => {
+    const user = userEvent.setup();
     const onWorkspaceScopeChange = vi.fn();
-    const pickFolder = vi.fn().mockResolvedValue("/Users/test/native-project");
     const defaultScope = {
       project_path: "/Users/test/.nanobot/workspace",
       project_name: "workspace",
       access_mode: "full" as const,
       restrict_to_workspace: false,
     };
+    const project = { path: `${defaultScope.project_path}/project`, name: "project" };
+    const onBrowseWorkspaceDirectories = vi.fn((rawPath: string) => {
+      const path = rawPath.replace(/\/$/, "");
+      return Promise.resolve({
+        path, parent: path === defaultScope.project_path ? "/Users/test/.nanobot" : defaultScope.project_path,
+        entries: path === defaultScope.project_path ? [project] : [],
+        truncated: false, host: "dev-mac", platform: "Darwin",
+      });
+    });
+    const onResolveWorkspaceProject = vi.fn().mockResolvedValue(project);
     Object.defineProperty(window, "nanobotHost", {
       configurable: true,
       value: {
         getRuntimeInfo: vi.fn(),
         restartEngine: vi.fn(),
-        pickFolder,
         openLogs: vi.fn(),
         exportDiagnostics: vi.fn(),
       },
@@ -1574,43 +1660,44 @@ describe("ThreadComposer", () => {
         variant="hero"
         workspaceScope={defaultScope}
         workspaceDefaultScope={defaultScope}
+        {...workspacePickerProps(defaultScope)}
         workspaceControls={{
           can_change_project: true,
           can_use_full_access: true,
-          can_pick_folder: true,
+          can_browse_directories: true,
+          can_resolve_project: true,
         }}
+        onBrowseWorkspaceDirectories={onBrowseWorkspaceDirectories}
+        onResolveWorkspaceProject={onResolveWorkspaceProject}
         onWorkspaceScopeChange={onWorkspaceScopeChange}
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Choose project" }));
-
-    await waitFor(() => expect(pickFolder).toHaveBeenCalled());
-    expect(screen.queryByRole("button", { name: /Default workspace/ })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Switch working directory" }));
+    expect(screen.getByRole("dialog", { name: "Choose a working folder" })).toBeInTheDocument();
+    await user.click(await screen.findByRole("option", { name: project.path }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled());
+    expect(onWorkspaceScopeChange).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose a working folder" })).not.toBeInTheDocument());
+    expect(onResolveWorkspaceProject).toHaveBeenCalledWith(project.path);
     expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
-      project_path: "/Users/test/native-project",
-      project_name: "native-project",
+      project_path: project.path,
+      project_name: project.name,
       access_mode: "full",
       restrict_to_workspace: false,
     }));
   });
 
-  it("does not use a native host picker when the gateway disallows folder picking", async () => {
+  it("selects an entered host path in Restricted mode when Full Access is unavailable", async () => {
     const user = userEvent.setup();
     const onWorkspaceScopeChange = vi.fn();
-    const pickFolder = vi.fn().mockResolvedValue("/Users/test/native-project");
-    const onPickWorkspaceFolder = vi.fn().mockResolvedValue("/srv/nas-project");
     const defaultScope = {
       project_path: "/srv/nanobot/workspace",
       project_name: "workspace",
       access_mode: "full" as const,
       restrict_to_workspace: false,
     };
-    Object.defineProperty(window, "nanobotHost", {
-      configurable: true,
-      value: { pickFolder },
-    });
-
     render(
       <ThreadComposer
         onSend={vi.fn()}
@@ -1618,26 +1705,24 @@ describe("ThreadComposer", () => {
         variant="hero"
         workspaceScope={defaultScope}
         workspaceDefaultScope={defaultScope}
+        {...workspacePickerProps(defaultScope)}
         workspaceControls={{
           can_change_project: true,
           can_use_full_access: false,
-          can_pick_folder: false,
         }}
-        onPickWorkspaceFolder={onPickWorkspaceFolder}
         onWorkspaceScopeChange={onWorkspaceScopeChange}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Choose project" }));
+    await user.click(screen.getByRole("button", { name: "Switch working directory" }));
 
-    expect(await screen.findByLabelText("Paste path")).toBeInTheDocument();
-    expect(pickFolder).not.toHaveBeenCalled();
-    expect(onPickWorkspaceFolder).not.toHaveBeenCalled();
+    expect(await screen.findByRole("combobox")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Paste path"), {
+    fireEvent.change(screen.getByRole("combobox"), {
       target: { value: "/srv/nas-project" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Use Path" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
 
     expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
       project_path: "/srv/nas-project",
@@ -1646,71 +1731,6 @@ describe("ThreadComposer", () => {
     }));
   });
 
-  it("uses the gateway folder picker for a locally hosted WebUI", async () => {
-    const onWorkspaceScopeChange = vi.fn();
-    const pickFolder = vi.fn().mockResolvedValue("/Users/test/gateway-project");
-    const defaultScope = {
-      project_path: "/Users/test/.nanobot/workspace",
-      project_name: "workspace",
-      access_mode: "full" as const,
-      restrict_to_workspace: false,
-    };
-
-    render(
-      <ThreadComposer
-        onSend={vi.fn()}
-        placeholder="Ask anything..."
-        variant="hero"
-        workspaceScope={defaultScope}
-        workspaceDefaultScope={defaultScope}
-        workspaceControls={{
-          can_change_project: true,
-          can_use_full_access: true,
-          can_pick_folder: true,
-        }}
-        onPickWorkspaceFolder={pickFolder}
-        onWorkspaceScopeChange={onWorkspaceScopeChange}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Choose project" }));
-
-    await waitFor(() => expect(pickFolder).toHaveBeenCalled());
-    expect(screen.queryByLabelText("Paste path")).not.toBeInTheDocument();
-    expect(onWorkspaceScopeChange).toHaveBeenCalledWith(expect.objectContaining({
-      project_path: "/Users/test/gateway-project",
-      project_name: "gateway-project",
-      access_mode: "full",
-      restrict_to_workspace: false,
-    }));
-  });
-
-  it("uses the web path menu when no native host picker is available", async () => {
-    const user = userEvent.setup();
-    const defaultScope = {
-      project_path: "/Users/test/.nanobot/workspace",
-      project_name: "workspace",
-      access_mode: "full" as const,
-      restrict_to_workspace: false,
-    };
-
-    render(
-      <ThreadComposer
-        onSend={vi.fn()}
-        placeholder="Ask anything..."
-        variant="hero"
-        workspaceScope={defaultScope}
-        workspaceDefaultScope={defaultScope}
-        workspaceControls={{ can_change_project: true, can_use_full_access: true }}
-        onWorkspaceScopeChange={vi.fn()}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Choose project" }));
-
-    expect(await screen.findByRole("button", { name: /Default workspace/ })).toBeInTheDocument();
-    expect(screen.getByLabelText("Paste path")).toBeInTheDocument();
-  });
 
   it("closes the sustained goal through its existing drawer", () => {
     const { container, rerender } = render(
