@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified October 5, 2026 — upstream `6ff96f2a8`, fork main `852d64f29` / scrapling `dd7580102`)
+## Customizations (verified October 9, 2026 — upstream `3fb9417da`, fork main `fb36a9b69` / scrapling `c6d3d83eb`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False`; `DEFAULT_SEARXNG_URL` constant forces
