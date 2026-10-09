@@ -1722,7 +1722,7 @@
     },
     "composer": {
       "placeholderThread": "Nhập tin nhắn…",
-      "placeholderHero": "Bạn đang nghĩ gì?",
+      "placeholderHero": "Mô tả điều bạn muốn làm",
       "placeholderOpening": "Đang mở chủ đề mới…",
       "placeholderStreaming": "Mô hình đang trả lời…",
       "inputAria": "Ô nhập tin nhắn",
@@ -1915,11 +1915,12 @@
       "workspace": {
         "accessAria": "Chế độ truy cập không gian làm việc",
         "projectAria": "Chọn dự án",
-        "projectPlaceholder": "Chọn dự án",
         "default": "Quyền mặc định",
         "defaultShort": "Mặc định",
         "full": "Toàn quyền truy cập",
-        "fullShort": "Toàn quyền"
+        "fullShort": "Toàn quyền",
+        "defaultDescription": "Quyền truy cập tệp và chạy lệnh bị giới hạn trong thư mục làm việc hiện tại.",
+        "fullDescription": "Cho phép truy cập tệp và chạy lệnh ngoài thư mục làm việc hiện tại."
       }
     },
     "scrollToBottom": "Cuộn xuống cuối",
@@ -2282,11 +2283,34 @@
   },
   "workspace": {
     "dialog": {
-      "defaultProject": "Không gian làm việc mặc định",
       "manual": "Dán đường dẫn",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "Dùng đường dẫn",
       "absolutePathRequired": "Nhập đường dẫn thư mục tuyệt đối trên máy này."
+    },
+    "picker": {
+      "favorites": "Yêu thích",
+      "recent": "Dự án gần đây",
+      "pin": "Ghim {{name}}",
+      "unpin": "Bỏ ghim {{name}}",
+      "description": "Chọn thư mục có sẵn trên máy chủ đang kết nối. Thư mục làm việc chỉ thay đổi sau khi bạn xác nhận.",
+      "shortcuts": "Vị trí đã lưu",
+      "favoriteHint": "Nhấn ngôi sao bên cạnh thư mục để thêm vào đây.",
+      "loading": "Đang tải thư mục…",
+      "truncated": "Hiển thị 500 thư mục. Tiếp tục nhập đường dẫn để thu hẹp danh sách.",
+      "hidden": "Hiện thư mục ẩn",
+      "select": "Xác nhận",
+      "title": "Chọn thư mục làm việc",
+      "back": "Quay lại",
+      "forward": "Tiến tới",
+      "history": "Thư mục vừa truy cập",
+      "editPath": "Sửa đường dẫn",
+      "location": "Vị trí hiện tại",
+      "filter": "Lọc thư mục này",
+      "pathNotFound": "Không có thư mục phù hợp. Hãy kiểm tra đường dẫn.",
+      "empty": "Không có thư mục con",
+      "noMatches": "Không có thư mục phù hợp.",
+      "retry": "Thử lại",
+      "cancel": "Hủy",
+      "switchDirectory": "Đổi thư mục làm việc"
     }
   }
 }

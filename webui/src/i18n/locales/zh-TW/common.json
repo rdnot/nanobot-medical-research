@@ -1722,7 +1722,7 @@
     },
     "composer": {
       "placeholderThread": "輸入訊息…",
-      "placeholderHero": "任何問題都可以問…",
+      "placeholderHero": "描述你想做的事",
       "placeholderOpening": "正在開啟新話題…",
       "placeholderStreaming": "模型正在回覆…",
       "inputAria": "訊息輸入框",
@@ -1915,11 +1915,12 @@
       "workspace": {
         "accessAria": "工作區存取模式",
         "projectAria": "選擇專案",
-        "projectPlaceholder": "選擇專案",
         "default": "預設權限",
         "defaultShort": "預設",
         "full": "完整存取權",
-        "fullShort": "完整"
+        "fullShort": "完整",
+        "defaultDescription": "檔案存取與命令執行限制在目前工作目錄內。",
+        "fullDescription": "允許存取目前工作目錄外的檔案，並在目錄外執行命令。"
       }
     },
     "scrollToBottom": "捲動到底部",
@@ -2282,11 +2283,34 @@
   },
   "workspace": {
     "dialog": {
-      "defaultProject": "預設工作區",
       "manual": "貼上路徑",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "使用路徑",
       "absolutePathRequired": "請輸入這台機器上的絕對資料夾路徑。"
+    },
+    "picker": {
+      "favorites": "收藏",
+      "recent": "最近專案",
+      "pin": "收藏 {{name}}",
+      "unpin": "取消收藏 {{name}}",
+      "description": "選擇目前連線主機上已有的資料夾。瀏覽目錄不會變更工作區，確認後才會生效。",
+      "shortcuts": "快捷位置",
+      "favoriteHint": "點擊資料夾旁的星號收藏。",
+      "loading": "正在載入資料夾…",
+      "truncated": "已顯示 500 個資料夾，繼續輸入路徑以縮小範圍。",
+      "hidden": "顯示隱藏資料夾",
+      "select": "確認",
+      "title": "選擇工作資料夾",
+      "back": "返回",
+      "forward": "前進",
+      "history": "上一次造訪的目錄",
+      "editPath": "編輯路徑",
+      "location": "目前位置",
+      "filter": "篩選目前資料夾",
+      "pathNotFound": "沒有相符的資料夾，請檢查路徑後重試。",
+      "empty": "無子資料夾",
+      "noMatches": "沒有相符的資料夾。",
+      "retry": "重試",
+      "cancel": "取消",
+      "switchDirectory": "切換工作目錄"
     }
   }
 }

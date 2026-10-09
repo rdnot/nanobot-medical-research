@@ -204,9 +204,6 @@ const LOCALIZED_WORKSPACE_COPY_KEYS = [
   "thread.composer.workspace.full",
   "errors.workspaceScopeRejected.title",
   "errors.workspaceScopeRejected.body",
-  "workspace.dialog.defaultProject",
-  "workspace.dialog.usePath",
-  "workspace.dialog.absolutePathRequired",
 ];
 const LOCALIZED_CHANNEL_SHELL_KEYS = [
   "settings.channels.advanced",

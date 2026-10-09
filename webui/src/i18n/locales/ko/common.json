@@ -1722,7 +1722,7 @@
     },
     "composer": {
       "placeholderThread": "메시지를 입력하세요…",
-      "placeholderHero": "무슨 생각을 하고 있나요?",
+      "placeholderHero": "하고 싶은 일을 알려 주세요",
       "placeholderOpening": "새 주제를 여는 중…",
       "placeholderStreaming": "모델이 응답 중입니다…",
       "inputAria": "메시지 입력",
@@ -1915,11 +1915,12 @@
       "workspace": {
         "accessAria": "작업공간 접근 모드",
         "projectAria": "프로젝트 선택",
-        "projectPlaceholder": "프로젝트 선택",
         "default": "기본 권한",
         "defaultShort": "기본",
         "full": "전체 접근 권한",
-        "fullShort": "전체"
+        "fullShort": "전체",
+        "defaultDescription": "파일 접근과 명령 실행이 현재 작업 디렉터리 안으로 제한됩니다.",
+        "fullDescription": "현재 작업 디렉터리 밖의 파일 접근과 명령 실행을 허용합니다."
       }
     },
     "scrollToBottom": "맨 아래로 스크롤",
@@ -2282,11 +2283,34 @@
   },
   "workspace": {
     "dialog": {
-      "defaultProject": "기본 작업공간",
       "manual": "경로 붙여넣기",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "경로 사용",
       "absolutePathRequired": "이 머신의 절대 폴더 경로를 입력하세요."
+    },
+    "picker": {
+      "favorites": "즐겨찾기",
+      "recent": "최근 프로젝트",
+      "pin": "{{name}} 고정",
+      "unpin": "{{name}} 고정 해제",
+      "description": "연결된 호스트의 기존 폴더를 선택하세요. 확인하기 전까지 작업 폴더는 변경되지 않습니다.",
+      "shortcuts": "저장된 위치",
+      "favoriteHint": "폴더 옆의 별을 눌러 즐겨찾기에 추가하세요.",
+      "loading": "폴더 불러오는 중…",
+      "truncated": "폴더 500개를 표시합니다. 경로를 계속 입력하여 목록을 좁히세요.",
+      "hidden": "숨김 폴더 표시",
+      "select": "확인",
+      "title": "작업 폴더 선택",
+      "back": "뒤로",
+      "forward": "앞으로",
+      "history": "직전에 방문한 폴더",
+      "editPath": "경로 편집",
+      "location": "현재 위치",
+      "filter": "현재 폴더 필터링",
+      "pathNotFound": "일치하는 폴더가 없습니다. 경로를 확인해 주세요.",
+      "empty": "하위 폴더 없음",
+      "noMatches": "일치하는 폴더가 없습니다.",
+      "retry": "다시 시도",
+      "cancel": "취소",
+      "switchDirectory": "작업 디렉터리 변경"
     }
   }
 }

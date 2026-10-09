@@ -4780,7 +4780,6 @@ async def test_bootstrap_exposes_native_surface(bus: MagicMock) -> None:
             bus,
             token_issue_secret="native-secret",
             runtime_surface="native",
-            runtime_capabilities_overrides={"can_pick_folder": True},
         ),
     )
 
@@ -4795,7 +4794,6 @@ async def test_bootstrap_exposes_native_surface(bus: MagicMock) -> None:
         assert response.status_code == 200
         body = response.json()
         assert body["runtime_surface"] == "native"
-        assert body["runtime_capabilities"]["can_pick_folder"] is True
         assert body["runtime_capabilities"]["can_restart_engine"] is True
         assert body["token"].startswith("nbwt_")
         assert body["api_token"].startswith("nbwt_")

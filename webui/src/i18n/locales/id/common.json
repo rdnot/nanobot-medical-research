@@ -1722,7 +1722,7 @@
     },
     "composer": {
       "placeholderThread": "Ketik pesan Anda…",
-      "placeholderHero": "Apa yang sedang Anda pikirkan?",
+      "placeholderHero": "Jelaskan apa yang ingin Anda lakukan",
       "placeholderOpening": "Membuka topik baru…",
       "placeholderStreaming": "Model sedang merespons…",
       "inputAria": "Input pesan",
@@ -1915,11 +1915,12 @@
       "workspace": {
         "accessAria": "Mode akses ruang kerja",
         "projectAria": "Pilih proyek",
-        "projectPlaceholder": "Pilih proyek",
         "default": "Izin bawaan",
         "defaultShort": "Bawaan",
         "full": "Akses penuh",
-        "fullShort": "Penuh"
+        "fullShort": "Penuh",
+        "defaultDescription": "Akses file dan eksekusi perintah dibatasi pada direktori kerja saat ini.",
+        "fullDescription": "Mengizinkan akses file dan eksekusi perintah di luar direktori kerja saat ini."
       }
     },
     "scrollToBottom": "Gulir ke bawah",
@@ -2282,11 +2283,34 @@
   },
   "workspace": {
     "dialog": {
-      "defaultProject": "Ruang kerja bawaan",
       "manual": "Tempel path",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "Gunakan path",
       "absolutePathRequired": "Masukkan path folder absolut di mesin ini."
+    },
+    "picker": {
+      "favorites": "Favorit",
+      "recent": "Proyek terbaru",
+      "pin": "Sematkan {{name}}",
+      "unpin": "Lepas {{name}}",
+      "description": "Pilih folder yang ada di host terhubung. Folder kerja tidak berubah sampai Anda mengonfirmasi.",
+      "shortcuts": "Lokasi tersimpan",
+      "favoriteHint": "Klik bintang di samping folder untuk menambahkannya di sini.",
+      "loading": "Memuat folder…",
+      "truncated": "Menampilkan 500 folder. Lanjutkan mengetik jalur untuk mempersempit daftar.",
+      "hidden": "Tampilkan folder tersembunyi",
+      "select": "Konfirmasi",
+      "title": "Pilih folder kerja",
+      "back": "Kembali",
+      "forward": "Maju",
+      "history": "Folder terakhir dikunjungi",
+      "editPath": "Edit jalur",
+      "location": "Lokasi saat ini",
+      "filter": "Filter folder ini",
+      "pathNotFound": "Tidak ada folder yang cocok. Periksa jalurnya.",
+      "empty": "Tidak ada subfolder",
+      "noMatches": "Tidak ada folder yang cocok.",
+      "retry": "Coba lagi",
+      "cancel": "Batal",
+      "switchDirectory": "Ganti direktori kerja"
     }
   }
 }

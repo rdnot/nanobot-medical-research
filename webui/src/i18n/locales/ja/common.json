@@ -1722,7 +1722,7 @@
     },
     "composer": {
       "placeholderThread": "メッセージを入力…",
-      "placeholderHero": "何を考えていますか？",
+      "placeholderHero": "やりたいことを入力",
       "placeholderOpening": "新しいトピックを開いています…",
       "placeholderStreaming": "モデルが応答しています…",
       "inputAria": "メッセージ入力欄",
@@ -1915,11 +1915,12 @@
       "workspace": {
         "accessAria": "ワークスペースのアクセスモード",
         "projectAria": "プロジェクトを選択",
-        "projectPlaceholder": "プロジェクトを選択",
         "default": "既定の権限",
         "defaultShort": "既定",
         "full": "フルアクセス",
-        "fullShort": "フル"
+        "fullShort": "フル",
+        "defaultDescription": "ファイルへのアクセスとコマンド実行は現在の作業ディレクトリ内に制限されます。",
+        "fullDescription": "現在の作業ディレクトリ外でのファイルへのアクセスとコマンド実行を許可します。"
       }
     },
     "scrollToBottom": "一番下へスクロール",
@@ -2282,11 +2283,34 @@
   },
   "workspace": {
     "dialog": {
-      "defaultProject": "既定のワークスペース",
       "manual": "パスを貼り付け",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "パスを使用",
       "absolutePathRequired": "このマシン上の絶対フォルダーパスを入力してください。"
+    },
+    "picker": {
+      "favorites": "お気に入り",
+      "recent": "最近のプロジェクト",
+      "pin": "{{name}} を固定",
+      "unpin": "{{name}} の固定を解除",
+      "description": "接続先ホストにあるフォルダーを選択します。確定するまで作業フォルダーは変更されません。",
+      "shortcuts": "保存した場所",
+      "favoriteHint": "フォルダの星をクリックして追加します。",
+      "loading": "フォルダーを読み込み中…",
+      "truncated": "500 個のフォルダーを表示しています。パスの入力を続けて絞り込んでください。",
+      "hidden": "隠しフォルダーを表示",
+      "select": "確認",
+      "title": "作業フォルダーを選択",
+      "back": "戻る",
+      "forward": "進む",
+      "history": "直前に訪問したフォルダー",
+      "editPath": "パスを編集",
+      "location": "現在の場所",
+      "filter": "このフォルダーを絞り込み",
+      "pathNotFound": "一致するフォルダーがありません。パスを確認してください。",
+      "empty": "サブフォルダーなし",
+      "noMatches": "一致するフォルダーがありません。",
+      "retry": "再試行",
+      "cancel": "キャンセル",
+      "switchDirectory": "作業ディレクトリを切り替える"
     }
   }
 }

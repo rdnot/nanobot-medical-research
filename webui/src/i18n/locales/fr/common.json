@@ -1722,7 +1722,7 @@
     },
     "composer": {
       "placeholderThread": "Saisissez votre message…",
-      "placeholderHero": "Qu’avez-vous en tête ?",
+      "placeholderHero": "Décrivez ce que vous souhaitez faire",
       "placeholderOpening": "Ouverture d’un nouveau sujet…",
       "placeholderStreaming": "Le modèle est en train de répondre…",
       "inputAria": "Champ de message",
@@ -1915,11 +1915,12 @@
       "workspace": {
         "accessAria": "Mode d’accès à l’espace de travail",
         "projectAria": "Choisir un projet",
-        "projectPlaceholder": "Sélectionner un projet",
         "default": "Autorisation par défaut",
         "defaultShort": "Par défaut",
         "full": "Accès complet",
-        "fullShort": "Complet"
+        "fullShort": "Complet",
+        "defaultDescription": "L’accès aux fichiers et l’exécution des commandes sont limités au dossier de travail actuel.",
+        "fullDescription": "Autorise l’accès aux fichiers et l’exécution des commandes hors du dossier de travail actuel."
       }
     },
     "scrollToBottom": "Faire défiler vers le bas",
@@ -2282,11 +2283,34 @@
   },
   "workspace": {
     "dialog": {
-      "defaultProject": "Espace de travail par défaut",
       "manual": "Coller un chemin",
-      "manualPlaceholder": "/Users/name/project",
-      "usePath": "Utiliser le chemin",
       "absolutePathRequired": "Saisissez un chemin absolu de dossier sur cette machine."
+    },
+    "picker": {
+      "favorites": "Favoris",
+      "recent": "Projets récents",
+      "pin": "Épingler {{name}}",
+      "unpin": "Désépingler {{name}}",
+      "description": "Choisissez un dossier existant sur l’hôte connecté. Le dossier de travail ne change qu’après confirmation.",
+      "shortcuts": "Emplacements enregistrés",
+      "favoriteHint": "Cliquez sur l’étoile d’un dossier pour l’ajouter ici.",
+      "loading": "Chargement des dossiers…",
+      "truncated": "500 dossiers affichés. Continuez à saisir le chemin pour réduire la liste.",
+      "hidden": "Afficher les dossiers cachés",
+      "select": "Confirmer",
+      "title": "Choisir un dossier de travail",
+      "back": "Précédent",
+      "forward": "Suivant",
+      "history": "Dernier dossier visité",
+      "editPath": "Modifier le chemin",
+      "location": "Emplacement actuel",
+      "filter": "Filtrer ce dossier",
+      "pathNotFound": "Aucun dossier correspondant. Vérifiez le chemin.",
+      "empty": "Aucun sous-dossier",
+      "noMatches": "Aucun dossier correspondant.",
+      "retry": "Réessayer",
+      "cancel": "Annuler",
+      "switchDirectory": "Changer de dossier de travail"
     }
   }
 }
