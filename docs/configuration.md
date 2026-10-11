@@ -1306,6 +1306,8 @@ Contributor notes for adding new providers live in [`development.md`](./developm
 
 Model presets let you name a complete model configuration and select one per session with `/model <preset>`. They are the recommended way to configure models because the same names can be reused for new-session defaults, chat-command switching, and fallback chains.
 
+For browser setup, follow [Configure Your Model](./quick-start.md#2-configure-your-model). The WebUI accepts token values such as `32k` or `1m`; JSON configuration uses integer token counts.
+
 Existing configs do not need to change. Direct `agents.defaults.model`, `provider`, `maxTokens`, `contextWindowTokens`, `temperature`, and `reasoningEffort` fields still define the implicit `default` preset. For new configs, prefer top-level `modelPresets` plus `agents.defaults.modelPreset`.
 
 ```json
@@ -1434,7 +1436,7 @@ Declare `anthropic_messages` alone in a preset. Requests use the same provider c
 
 OpenAI Codex, xAI Grok subscriptions, and Azure OpenAI use Responses; Anthropic uses Messages, and Bedrock uses Converse. These connections show their protocol name instead of an editable selector. Selecting Responses for a custom service does not enable OpenAI-native [context compaction](#responses-state-and-compaction).
 
-Advanced options is collapsed by default; opening or closing it preserves API settings. Changing a preset's model or provider resets its API selection to Auto unless the same update supplies a new declaration. Each fallback preset keeps its own API settings. Existing `agents.defaults.api` and inline fallback `api` values are preserved when converting to named presets.
+**Advanced options** opens in a separate dialog; closing it returns to the preset editor. Changing a preset's model or provider resets its API selection to Auto unless the same update supplies a new declaration. Each fallback preset keeps its own API settings. Existing `agents.defaults.api` and inline fallback `api` values are preserved when converting to named presets.
 
 ### Model Fallbacks
 
@@ -2080,6 +2082,25 @@ For API keys, tokens, and other secrets, see [Environment Variables for Secrets]
 | `tools.webuiAllowRemotePackageInstall` | `false` | When `false`, the WebUI can install missing optional packages only from a browser opened on the same machine as nanobot. Set to `true` only when a trusted remote admin is allowed to install Python packages into this nanobot environment. |
 | `tools.ssrfWhitelist` | `[]` | CIDR ranges exempted from the shared SSRF guard used by web fetches and HTTP/SSE MCP connections. Prefer exact host CIDRs such as `192.168.1.50/32`; broad ranges increase SSRF exposure. |
 | `channels.*.allowFrom` | omitted | Access control per channel. Omit to use pairing-only mode; set `["*"]` to allow everyone; or list specific user IDs. See [Pairing](#pairing) for details. |
+
+Each new user request includes the current project and file-access restriction in model-only
+context. This uses the same policy resolver as the tools, including restrictions from
+a configured exec sandbox. It does not grant access or change OS permissions.
+The context is stored with that request, not rewritten in earlier messages. New requests
+refresh it after a project switch or context compaction. It is hidden from the chat view.
+This adds a small amount of input text per user request. Tool continuations and transient
+retries reuse the stored context; they do not add another copy. Access-mode changes do not
+rewrite the system prompt, tool definitions, or previous messages. Changing the project or
+compacting history can change the prompt prefix. Cache hits still depend on the provider.
+
+To diagnose a path error, the agent can call `my(action="check", key="workspace_sandbox")`.
+This read-only result shows the current tool directory and workspace restriction, including
+the restriction from `tools.exec.sandbox`. The older `workspace` value is an agent-directory
+display; it does not select the current project or grant access.
+Check `exec_config` for the configured shell sandbox and extra binds. Those binds do not grant
+file-tool access or permit an external shell `working_dir`. OS file permissions still apply.
+The `workspace_sandbox.enforced` field reports external sandbox markers, not whether a
+configured shell sandbox has started successfully.
 
 **Docker security**: The official Docker image runs as a non-root user (`nanobot`, UID 1000) with bubblewrap pre-installed. The default `docker-compose.yml` drops all Linux capabilities except the `CHOWN`, `SETGID`, and `SETUID` capabilities required by the root entrypoint to initialize bind-mount ownership and become UID 1000. It enables `no-new-privileges` so the final non-root process cannot regain those bootstrap capabilities, and keeps Docker's default AppArmor/seccomp profiles enabled. If you enable `"tools.exec.sandbox": "bwrap"` inside Docker, start Compose with `docker-compose.bwrap.yml` as an additional override so bubblewrap can create nested namespaces. The host must also allow unprivileged user namespaces; the override cannot bypass a host-level namespace restriction.
 
