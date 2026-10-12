@@ -1111,7 +1111,7 @@ def register_builtin_commands(router: CommandRouter) -> None:
     router.priority("/status", cmd_status)
     router.priority("/s", cmd_status)
     router.exact("/new", cmd_new)
-    router.exact("/compact", cmd_compact)
+    router.exact("/compact", cmd_compact, session_queue=True)
     router.exact("/status", cmd_status)
     router.exact("/s", cmd_status)
     router.exact("/model", cmd_model)

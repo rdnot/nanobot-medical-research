@@ -385,6 +385,7 @@ export function SettingsPage({
                 setProviderPanel({ kind: "manage" });
               }}
               onSave={saveModelSettings}
+              onSaveRequestSettings={controller.saveModelRequestSettings}
               onMigrate={handleMigrateModelConfigurations}
               onBeginCreate={beginModelPresetCreation}
               onCancelCreate={cancelModelPresetCreation}
@@ -458,6 +459,7 @@ export function SettingsPage({
               saving={imageGenerationSaving}
               onChangeForm={setImageGenerationForm}
               onSave={saveImageGenerationSettings}
+              onSaveRequestSettings={controller.saveImageRequestSettings}
               onOpenProviders={() => selectSection("models")}
               showBrandLogos={localPrefs.brandLogos}
               onRestart={restartViaSettingsSurface}
@@ -518,7 +520,9 @@ export function SettingsPage({
               olostepFeature={featureCatalog.find((feature) => feature.name === "olostep")}
               olostepInstalling={nanobotFeatureAction === "enable:olostep"}
               capabilityError={nanobotFeaturesError}
-            />
+            >
+              {settings.runtime_config ? runtimeConfiguration("network") : null}
+            </WebSettings>
           </div>
         );
       case "channels":

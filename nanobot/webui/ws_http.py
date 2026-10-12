@@ -376,6 +376,7 @@ class GatewayHTTPHandler:
         channel_runtime_status: Callable[[], dict[str, Any]] | None = None,
         mcp_runtime_status: Callable[[], Mapping[str, str]] | None = None,
         mcp_reload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
+        image_generation_reload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         skill_state_action: Callable[[set[str]], None] | None = None,
         recovery_action: (
             Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None
@@ -434,6 +435,7 @@ class GatewayHTTPHandler:
             channel_runtime_status=channel_runtime_status,
             mcp_runtime_status=mcp_runtime_status,
             mcp_reload=mcp_reload,
+            image_generation_reload=image_generation_reload,
             mcp_oauth_redirect_uri=self._mcp_oauth_redirect_uri,
         )
 
@@ -445,26 +447,6 @@ class GatewayHTTPHandler:
         so remote clients can use the manual server-path picker as well.
         """
         return True
-
-    def workspace_full_access_available(
-        self,
-        connection: Any,
-        headers: Any | None = None,
-    ) -> bool:
-        """Return whether this request may opt into Full Access.
-
-        A reverse proxy can make a remote browser look like a localhost TCP
-        peer. Inspect the original browser headers before granting this
-        capability so proxy-local requests keep the remote restriction.
-        """
-        if self._runtime_surface == "native":
-            return True
-        if headers is None:
-            request = getattr(connection, "request", None)
-            headers = getattr(request, "headers", None)
-        if not isinstance(headers, Mapping):
-            return False
-        return _is_local_browser_request(connection, headers)
 
     # -- Token management ---------------------------------------------------
 
@@ -1679,10 +1661,6 @@ class GatewayHTTPHandler:
         return _http_json_response(
             self.workspaces.payload(
                 can_change_project=self.workspace_project_selection_available(connection),
-                can_use_full_access=self.workspace_full_access_available(
-                    connection,
-                    request.headers,
-                ),
             )
         )
 

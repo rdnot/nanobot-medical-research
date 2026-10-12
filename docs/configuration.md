@@ -328,6 +328,16 @@ Without an API declaration, direct OpenAI calls Chat Completions normally and ro
 
 Use only `chat_completions` and/or `responses` for OpenAI. The connection declaration sets a default; an explicit preset declaration overrides it. Omit `api` or set it to `null` for Auto. A Responses-only declaration prevents Chat fallback; include both APIs to permit it.
 
+### Request overrides for a model preset
+
+In **Settings → Models**, open a preset, then **Advanced options**. Headers, query parameters, and body parameters can override the connection defaults for that preset. Leave a field empty, or use `{}`, to inherit the connection settings again. These controls require a host that supports preset request overrides.
+
+The same fields are available as `extraHeaders`, `extraQuery`, and `extraBody` in a named preset or inline fallback. Each fallback uses its own overrides, not the primary model's overrides. Image generation keeps its separate settings.
+
+Headers match without case sensitivity. Query and body keys match exactly. An overridden body key replaces its complete value, including a nested object or array; `null` is a literal value, not a delete instruction. The adapter then applies its existing request assembly rules, including tool handling. Unsupported adapters reject overrides instead of ignoring them.
+
+Changing the provider in WebUI clears the preset's overrides so credentials cannot follow it to another endpoint. Existing configurations without overrides need no migration. An older version ignores these new preset fields; remove them before downgrading if the request depends on them. No prompt or tool-definition changes are made by this setting.
+
 Use fields accepted by the selected API in `extraBody`. Set `extraBody.tools` to add provider-hosted tools alongside nanobot's function tools. Responses also accepts `extraBody.include` to request additional output fields:
 
 ```json
@@ -1698,6 +1708,13 @@ nanobot uses a shared SSRF guard for built-in web fetches and HTTP/SSE MCP conne
 Keep whitelist entries as narrow as possible, such as a single host CIDR (`192.168.1.50/32`). The whitelist is global for the shared SSRF guard; it is not limited to one tool or one MCP server.
 
 HTTP/SSE MCP connections use the same process-wide proxy environment behavior as `web_fetch`: proxied targets use the configured proxy, and URLs excluded by `NO_PROXY` remain DNS-pinned direct connections.
+
+In WebUI, open **Settings → Capabilities → Web access → Configure → Advanced options**
+to set the web proxy. This setting applies to the agent's web search and page reading,
+not model providers, MCP, or your browser. `127.0.0.1` refers to the machine that runs
+nanobot, not the phone or computer that opens WebUI. Clear the field to use the default
+network settings, which can include proxy environment variables. After saving, restart
+nanobot when WebUI requests it. You can configure the proxy before enabling web access.
 
 > [!TIP]
 > Use `proxy` in `tools.web` to route web requests through a proxy:

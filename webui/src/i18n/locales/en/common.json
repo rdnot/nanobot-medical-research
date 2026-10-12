@@ -339,6 +339,9 @@
       "description": "nanobot web UI — chat with your nanobot workspace."
     },
     "pairing": {
+      "haveCode": "Already received a code?",
+      "deliveryFailed": "Couldn't send the pairing code. Check this bot's send-message permissions and gateway logs, then send it another private message to retry.",
+      "deliverySending": "Sending a pairing code to your chat. If it doesn't arrive, send the bot another private message to retry.",
       "title": "Pair account",
       "description": "Enter the pairing code received in chat.",
       "code": "Pairing code",
@@ -499,7 +502,7 @@
         },
         "tools_web_proxy": {
           "label": "Web proxy",
-          "help": "Proxy URL; leave blank for the default network.\n\nProxy URL for web tools. Leave empty to use the default network configuration."
+          "help": "Used for the agent's web search and page reading. Leave blank to use the default network settings, including proxy environment variables.\n\n127.0.0.1 refers to the machine that runs nanobot. This setting does not change model, MCP, or browser connections."
         },
         "tools_web_user_agent": {
           "label": "User agent",
@@ -693,6 +696,7 @@
       "voiceInput": "Transcription"
     },
     "models": {
+      "requestOverridesHint": "Leave fields empty to use provider settings. Changing the provider clears these values.",
       "otherPresets": "Fallback presets",
       "catalogAuthRequired": "Authorization expired. Please sign in again.",
       "catalogUnavailable": "Refresh failed. Click to retry",
@@ -1188,7 +1192,13 @@
       "manageProviders": "Manage providers",
       "configureProvider": "Configure {{provider}}…",
       "sharedProviderHelp": "Changes affect all presets that use this provider.",
-      "parameterCount": "{{count}} entries",
+      "parameterCount": "Entries: {{count}}",
+      "useProviderSettings": "Use provider settings",
+      "applyToDraft": "Use in preset",
+      "draftHint": "Save the new preset to apply these settings.",
+      "invalidObject": "Enter a JSON object, for example: {\"key\":\"value\"}.",
+      "stringValuesRequired": "Use text values for headers and query parameters.",
+      "maskedSecretMissing": "No saved secret matches this mask. Enter the actual value or remove the entry.",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "Local",
@@ -1228,6 +1238,8 @@
       "thirdPartyBrands": "Product names, logos, and brands are property of their respective owners. Use is for identification only and does not imply endorsement."
     },
     "image": {
+      "imagesApiHint": "Uses the OpenAI Images API at this connection's URL. Check that the endpoint supports image generation.",
+      "requestOverridesHint": "Only for images. Leave fields empty to use provider settings. Changing the provider clears these values.",
       "selectProvider": "Select provider",
       "selectAspect": "Select aspect",
       "selectSize": "Select size",
@@ -2468,6 +2480,7 @@
     }
   },
   "common": {
+    "retry": "Retry",
     "dismiss": "Dismiss",
     "close": "Close",
     "current": "Current",
