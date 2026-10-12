@@ -43,6 +43,8 @@ nanobot channels login feishu
 
 Open the printed URL or scan the QR code. nanobot writes the generated `appId`, `appSecret`, `domain`, and `enabled` fields into the active config.
 
+In WebUI, open **Channels → Feishu** and choose **Connect** for the first bot, or **Add another assistant** below your existing assistants. Each new assistant has its own settings and sender approvals; adding one does not replace an existing bot. Cancel the QR flow to stop an unfinished authorization.
+
 If QR login is unavailable, create a Feishu/Lark app manually and merge this shape into `~/.nanobot/config.json`:
 
 ```json
@@ -98,6 +100,9 @@ After approval, DM the bot again or mention it in a group chat:
 - If streaming cards fail, confirm `cardkit:card:write` or set `"streaming": false`.
 - If no messages arrive, check Feishu/Lark event permissions, Long Connection mode, and `nanobot gateway --verbose`.
 - If a first DM returns a pairing code, approve it before testing normal replies.
+- If WebUI cannot approve a pending code, check the reported error and select **Retry**. You do not need another code while the current one is valid.
+- If WebUI reports that the pairing code could not be sent, the DM reached nanobot but its reply failed. Check the gateway log for the Feishu error and request ID, check that the app has permission to send messages as a bot (`im:message:send_as_bot`), and publish any permission changes. Then send another private message to retry; nanobot reuses the unexpired code. Pairing replies use plain text and do not need streaming-card permissions.
+- If neither a code nor a pairing request appears, check the running gateway, the app's receive-message subscription, and which assistant you messaged. A saved App ID and App Secret mean **Configured**, not that message delivery has been tested. Do not set `allowFrom` to `*` to work around pairing failures.
 
 ## Next: memory, automations, MCP tools
 

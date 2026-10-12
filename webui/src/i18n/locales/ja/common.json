@@ -339,6 +339,9 @@
       "description": "nanobot Web UI — nanobot ワークスペースと会話します。"
     },
     "pairing": {
+      "haveCode": "コードを受け取りましたか？",
+      "deliveryFailed": "ペアリングコードを送信できませんでした。ボットのメッセージ送信権限とゲートウェイのログを確認し、もう一度ボットにダイレクトメッセージを送ってください。",
+      "deliverySending": "チャットにペアリングコードを送信しています。届かない場合は、もう一度ボットにダイレクトメッセージを送ってください。",
       "title": "アカウント連携",
       "description": "チャットで受け取った連携コードを入力します。",
       "code": "ペアリングコード",
@@ -416,7 +419,7 @@
         "tools_exec_allowed_env_keys": {"label": "環境変数", "help": "コマンドに追加で渡す変数名を1行に1つ指定します。\n\nコマンドに渡す環境変数を追加します。1 行に 1 つ指定してください。動作に必要な基本の環境変数は引き続き渡されます。"},
         "tools_exec_allow_patterns": {"label": "許可コマンド", "help": "許可ルールに完全一致するコマンドのみ実行します。\n\n1 行に 1 つ正規表現を指定します。設定すると、コマンドの各部分がいずれかのルールに完全一致する場合のみ実行できます。許可されたコマンドには組み込み・追加の禁止ルールを適用しませんが、ネットワークとワークスペースの制限は適用されます。"},
         "tools_exec_deny_patterns": {"label": "禁止コマンド", "help": "これらのルールに一致するコマンドを禁止します。\n\n追加の禁止ルールを正規表現で 1 行に 1 つ指定します。明示的な許可ルールは、組み込み・追加の禁止ルールより優先されます。"},
-        "tools_web_proxy": {"label": "ウェブプロキシ", "help": "プロキシの URL です。空欄では既定のネットワークを使います。\n\nウェブツール用のプロキシ URL。空欄の場合は既定のネットワークを使用します。"},
+        "tools_web_proxy": {"label": "ウェブプロキシ", "help": "エージェントのウェブ検索とページ読み取りに使用します。空欄では、プロキシ環境変数を含む既定のネットワーク設定を使用します。\n\n127.0.0.1 は nanobot を実行するマシンです。モデル、MCP、ブラウザーの接続には影響しません。"},
         "tools_web_user_agent": {"label": "User-Agent ヘッダー", "help": "ウェブ要求の User-Agent です。空欄では既定値を使います。\n\nカスタムの User-Agent ヘッダー。空欄の場合は既定値を使用します。"},
         "tools_restrict_to_workspace": {"label": "ワークスペース制限", "help": "ワークスペースの全体制限です。WebUI のチャット権限は別に設定します。\n\nツール全体のアクセス方針です。WebUI の会話ごとの権限は別途設定します。"},
         "tools_ssrf_whitelist": {"label": "許可 IP", "help": "許可する IP または CIDR を1行に1つ指定します。\n\n送信リクエストの保護から除外する IP/CIDR 範囲。1 行に 1 つ指定します。"},
@@ -766,6 +769,12 @@
       "configureProvider": "{{provider}} を設定…",
       "sharedProviderHelp": "変更はこのプロバイダーを使用するすべてのプリセットに適用されます。",
       "parameterCount": "{{count}} 項目",
+      "useProviderSettings": "プロバイダー設定を使用",
+      "applyToDraft": "プリセットに追加",
+      "draftHint": "新しいプリセットを保存すると、この設定が適用されます。",
+      "invalidObject": "JSON オブジェクトを入力してください。例：{\"key\":\"value\"}。",
+      "stringValuesRequired": "ヘッダーとクエリパラメーターの値には文字列を使用してください。",
+      "maskedSecretMissing": "このマスクに対応する保存済みのシークレットがありません。実際の値を入力するか、この項目を削除してください。",
       "providerGroupOAuth": "OAuth",
       "providerGroupApiKey": "API Key",
       "providerGroupLocal": "ローカル",
@@ -802,6 +811,8 @@
       "capabilityOpenAISearchHelp": "対応するモデルがウェブ検索を使えます。\n\nResponses API 対応モデルがウェブを検索できるようにします。検索状況はチャットに表示されます。"
     },
     "image": {
+      "imagesApiHint": "この接続先で OpenAI Images API を使います。画像生成に対応していることを確認してください。",
+      "requestOverridesHint": "画像専用です。空欄はプロバイダー設定を使用します。プロバイダーを変更すると、ここに入力した値は消去されます。",
       "selectProvider": "プロバイダーを選択",
       "selectAspect": "比率を選択",
       "selectSize": "サイズを選択",
@@ -819,6 +830,7 @@
       "installing": "必要なパッケージをインストール中…"
     },
     "models": {
+      "requestOverridesHint": "空欄はプロバイダー設定を使用します。プロバイダーを変更すると、ここに入力した値は消去されます。",
       "otherPresets": "フォールバックプリセット",
       "catalogAuthRequired": "認証が失効しました。再度ログインしてください。",
       "catalogUnavailable": "更新できません。クリックして再試行",
@@ -2268,6 +2280,7 @@
     }
   },
   "common": {
+    "retry": "再試行",
     "dismiss": "閉じる",
     "close": "閉じる",
     "current": "現在",

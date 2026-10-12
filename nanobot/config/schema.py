@@ -115,7 +115,15 @@ class ModelAPIConfig(ProviderAPIConfig):
         return self
 
 
-class InlineFallbackConfig(Base):
+class RequestOverrides(Base):
+    """Optional request differences; omitted fields inherit connection defaults."""
+
+    extra_headers: dict[str, str] | None = Field(default=None, repr=False)
+    extra_query: dict[str, str] | None = Field(default=None, repr=False)
+    extra_body: dict[str, Any] | None = Field(default=None, repr=False)
+
+
+class InlineFallbackConfig(RequestOverrides):
     """One inline fallback model configuration."""
 
     model: str
@@ -130,7 +138,7 @@ class InlineFallbackConfig(Base):
 FallbackCandidate = str | InlineFallbackConfig
 
 
-class ModelPresetConfig(Base):
+class ModelPresetConfig(RequestOverrides):
     """A named set of model + generation parameters for quick switching."""
 
     model: str
