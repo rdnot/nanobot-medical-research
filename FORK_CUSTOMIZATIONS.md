@@ -13,10 +13,11 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified October 13, 2026 — upstream `cd2a86371`, fork main `2158c8fc7` / scrapling `f021b088e`)
+## Customizations (verified October 13, 2026 — upstream `db804ef94`, fork main `81e2ca5c2` / scrapling `4e91ad8ab`)
 
 ### `nanobot/agent/tools/web.py`
-- `WebFetchConfig.use_jina_reader` defaults to `False`; `DEFAULT_SEARXNG_URL` constant forces
+- `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
+  `nanobot/agent/tools/web_config.py`, so the fork default lives there now; `DEFAULT_SEARXNG_URL` constant forces
   the SearXNG provider when set.
 - `_fetch_raw` → `_fetch_curl_cffi` (Chrome impersonation, manual redirect loop with per-hop
   SSRF validation) → `_fetch_httpx` (upstream pinned-DNS transport + `_get_with_safe_redirects`).
