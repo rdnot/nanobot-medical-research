@@ -20,7 +20,6 @@ from urllib.parse import parse_qsl, quote, urljoin, urlparse
 
 import httpx
 from loguru import logger
-from pydantic import Field
 
 from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
 from nanobot.agent.tools.context import ToolContext, tool_log_content_allowed
@@ -30,7 +29,7 @@ from nanobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
-from nanobot.config_base import Base
+from nanobot.agent.tools.web_config import WebFetchConfig, WebSearchConfig, WebToolsConfig
 
 # Scrapling (stealth Playwright) availability. The package itself is imported
 # lazily inside _fetch_scrapling so the CLI never pays the Playwright import
@@ -68,29 +67,6 @@ SEARCH_PROVIDER_OPTIONS: tuple[dict[str, str], ...] = (
     {"name": "keenable", "label": "Keenable", "credential": "optional_api_key"},
     {"name": "anysearch", "label": "AnySearch", "credential": "optional_api_key"},
 )
-
-
-class WebSearchConfig(Base):
-    """Web search configuration."""
-    provider: str = "duckduckgo"
-    api_key: str = ""
-    base_url: str = ""
-    max_results: int = 5
-    timeout: int = 30
-
-
-class WebFetchConfig(Base):
-    """Web fetch tool configuration."""
-    use_jina_reader: bool = False  # FORK: default off — prefer curl_cffi/scrapling tiered fetcher
-
-
-class WebToolsConfig(Base):
-    """Web tools configuration."""
-    enable: bool = True
-    proxy: str | None = None
-    user_agent: str | None = None
-    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
-    fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
 
 
 def _strip_tags(text: str) -> str:
