@@ -541,7 +541,7 @@ def _readability_to_markdown(raw_html: str) -> str:
 @tool_parameters(
     tool_parameters_schema(
         query=StringSchema("Search query"),
-        count=IntegerSchema(description="Results (1-10)", minimum=1, maximum=10),
+        count=IntegerSchema(description="Maximum results; uses the configured default if omitted.", minimum=1, maximum=10),
         timeRange=StringSchema(
             "Optional time filter for providers that support it: "
             "OneDay, OneWeek, OneMonth, OneYear, or YYYY-MM-DD..YYYY-MM-DD",
@@ -563,11 +563,8 @@ class WebSearchTool(Tool):
 
     name = "web_search"  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
     description = (  # pyright: ignore[reportIncompatibleMethodOverride, reportAssignmentType]
-        "Search the web. Returns titles, URLs, and snippets. "
-        "count defaults to 5 (max 10). "
-        "Some providers support timeRange, authLevel, and queryRewrite. "
-
-        "Use web_fetch to read a specific page in full."
+        "Search the web for titles, URLs, and snippets. "
+        "Use web_fetch to read a specific page."
     )
 
     config_key = "web"
@@ -1334,7 +1331,8 @@ class WebFetchTool(Tool):
         "Fetch a URL and extract readable content (HTML → markdown/text). "
         "Also extracts PDF text and returns images for visual analysis. "
         "Output is capped at maxChars (default 500 000); HTTP errors and "
-        "blocked redirects are returned as tool errors."
+        "blocked redirects are returned as tool errors. "
+        "May fail on login-walled or JavaScript-heavy pages."
     )
 
     config_key = "web"
