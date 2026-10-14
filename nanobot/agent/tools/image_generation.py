@@ -41,18 +41,18 @@ if TYPE_CHECKING:
 @tool_parameters(
     tool_parameters_schema(
         prompt=StringSchema(
-            "Detailed image generation or edit prompt. Include style, subject, composition, colors, and constraints.",
+            "Detailed image generation or edit instructions.",
             min_length=1,
         ),
         reference_images=ArraySchema(
-            StringSchema("Local path of an existing image artifact or user-provided image to use as an edit reference."),
-            description="Optional local image paths. Use generated artifact paths for iterative edits.",
+            StringSchema(""),
+            description="Existing local image paths for edits, including prior generated artifacts.",
         ),
         aspect_ratio=StringSchema(
-            "Optional output aspect ratio, e.g. 1:1, 16:9, 9:16, 4:3.",
+            "Output aspect ratio, e.g. 1:1 or 16:9.",
         ),
         image_size=StringSchema(
-            "Optional output size hint supported by the configured provider, e.g. 1K, 2K, 4K, or 1024x1024.",
+            "Provider-supported output size hint, e.g. 1K or 1024x1024.",
         ),
         count=IntegerSchema(
             description="Number of images to generate in this turn.",
@@ -104,9 +104,7 @@ class ImageGenerationTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Generate or edit images and store them as persistent artifacts. "
-            "Returns artifact ids and local paths. For edits, pass prior generated image paths "
-            "or user image paths as reference_images."
+            "Generate or edit images as persistent artifacts. Returns artifact IDs and local paths."
         )
 
     def _provider_config(self) -> ProviderConfig | None:
