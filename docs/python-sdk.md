@@ -559,14 +559,15 @@ async with Nanobot.from_config() as bot:
 
 | Method | Description |
 |--------|-------------|
-| `await ingest(session_key, messages, metadata=None, source=None, save=True)` | Import existing transcript messages without running the model. |
-| `get(session_key)` | Return a `SessionSnapshot`, or `None` if missing. |
-| `list()` | Return compact `SessionInfo` rows. |
-| `export(session_key)` | Return a trusted full `SessionSnapshot`, including model-only runtime context, suitable for JSON serialization. |
-| `await restore(snapshot, session_key=None, save=True)` | Restore a trusted exported snapshot into an empty session; the returned snapshot is display-safe. |
-| `clear(session_key)` | Clear and persist one session. |
-| `delete(session_key)` | Delete one session from disk and cache. |
-| `flush()` | Flush cached sessions to durable storage. |
+| `await ingest(session_key, messages, metadata=None, source=None)` | Import existing transcript messages without running the model. |
+| `await get(session_key)` | Return a `SessionSnapshot`, or `None` if missing. |
+| `await list()` | Return compact `SessionInfo` rows. |
+| `await export(session_key)` | Return a trusted full `SessionSnapshot`, including model-only runtime context, suitable for JSON serialization. |
+| `await restore(snapshot, session_key=None)` | Restore a trusted exported snapshot into an empty session; the returned snapshot is display-safe. |
+| `await clear(session_key)` | Clear and persist one session. |
+| `await delete(session_key)` | Delete one session from disk and cache. |
+
+Session writes commit before returning. Returned snapshots are detached; changing a snapshot does not save it. See [Session storage](cli-reference.md#session-storage) for upgrade and backup instructions.
 
 Ingested messages must include `role` and `content`. Roles may be `user`, `assistant`, `tool`, or `system`. Other fields, such as `timestamp`, `source_session_id`, or `source_date`, are persisted as message metadata.
 
@@ -598,7 +599,7 @@ Both compaction methods serialize with turns for the same session key. Call them
 
 Host applications can attach external context without copying or modifying the nanobot agent loop. A context provider receives a `RequestContext` before each model turn and may return one or more `RuntimeContextBlock` values. Use `attributes` for caller-owned routing data; nanobot keeps it separate from trusted channel metadata and does not persist it in session messages.
 
-`on_session_turn_persisted()` invokes its callback after a non-ephemeral turn has been saved. The callback receives `SessionTurnPersisted` and may read the completed transcript through `bot.sessions`. Callbacks run in registration order, and async callbacks are awaited before the run continues. They are observational: callback exceptions are logged and suppressed so the completed local turn remains successful. Durable external synchronization must catch failures and persist retry work before the callback returns. During SDK runs, callbacks execute while the session is still serialized and must not await `bot.run()`, `bot.runtime.compact_session()`, or `bot.runtime.compact_idle_session()` for the same session.
+`on_session_turn_persisted()` invokes its callback after a non-ephemeral turn has been saved. The callback receives `SessionTurnPersisted` and may read the completed transcript through `bot.sessions`. Callbacks run in registration order, and async callbacks are awaited before the run continues. They are observational: callback exceptions are logged and suppressed so the completed local turn remains successful. Durable external synchronization must catch failures and persist retry work before the callback returns. During SDK runs, callbacks execute while the session is still serialized. Schedule `bot.run()`, `bot.runtime.compact_session()`, or `bot.runtime.compact_idle_session()` for the same session after the callback returns.
 
 ```python
 import json
@@ -639,7 +640,7 @@ async def run_with_external_memory(external_memory, enqueue_retry) -> None:
             return external_context_block(text)
 
         async def sync_saved_turn(event: SessionTurnPersisted):
-            snapshot = bot.sessions.get(event.context.session_key)
+            snapshot = await bot.sessions.get(event.context.session_key)
             if snapshot is not None:
                 try:
                     await external_memory.sync(
