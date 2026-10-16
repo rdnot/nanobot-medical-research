@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified October 15, 2026 — upstream `841d2b880`, merge main `7c377fcfb` / scrapling `999ef43f0`)
+## Customizations (verified October 16, 2026 — upstream `559107172`, merge main `ae2099f62` / scrapling `ea9be4c7c`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
@@ -75,7 +75,10 @@ is marked `# UPSTREAM` where that helps during merges.
   write and half of that for `edit_file.new_text`. Tools never load the config file.
 
 ### `nanobot/agent/tools/shell.py`
-- `ExecTool` default timeout 90 s and a longer description.
+- Upstream's #6228 rewrite (max_runtime/idle limits, `ExecToolConfig` default 3600 s)
+  superseded the fork's old 90 s default — a superset of the fork's motive, so the fork
+  now keeps upstream's limits and only carries its longer, more instructive
+  `description` (platform note, yield_time_ms sessions, runtime-budget note).
 
 ### `nanobot/command/builtin.py`
 - `/s` alias for `/status`; `/c` (`cmd_clear`: cancels the active turn, drops file state,
