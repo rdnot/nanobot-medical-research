@@ -238,9 +238,9 @@ class _ExecSession:
         finally:
             stopped.cancel()
             await asyncio.gather(stopped, return_exceptions=True)
-        from nanobot.agent.tools.shell import (  # pyright: ignore[reportPrivateUsage]
-            ExecTool,
-            _reap_pid,
+        from nanobot.agent.tools.shell import (
+            ExecTool,  # pyright: ignore[reportPrivateUsage]
+            _reap_pid,  # pyright: ignore[reportPrivateUsage]
         )
 
         ExecTool._release_process_tree(self.process)  # pyright: ignore[reportPrivateUsage]
