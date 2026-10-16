@@ -2318,7 +2318,8 @@ class AgentLoop:
             # message.  Mark messages with _command so get_history can filter
             # them out of LLM context.  /new is excluded because it
             # intentionally clears the session.
-            if cmd_ctx.raw.lower() != "/new" and ctx.commit_session:
+            # FORK: /c clears the session the same way (without archiving).
+            if cmd_ctx.raw.lower() not in ("/new", "/c") and ctx.commit_session:
                 ctx.input_persisted_early = await self._persist_user_message_early(
                     ctx.msg, session, _command=True
                 )
