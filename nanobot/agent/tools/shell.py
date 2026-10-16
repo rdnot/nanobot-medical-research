@@ -298,7 +298,7 @@ class ExecTool(Tool):
             f"{platform_note}"
             "For long-running or interactive commands, pass yield_time_ms; "
             "if the command keeps running, exec returns a session_id that can "
-            "be polled or written to with write_stdin. Output is truncated at "
+            "be polled or written to with exec_session. Output is truncated at "
             "10 000 chars. The hard runtime budget (max_runtime, legacy alias "
             "timeout; the two are mutually exclusive) defaults to 1 hour."
         )

@@ -274,14 +274,14 @@ async def cmd_clear(ctx: CommandContext) -> OutboundMessage:
     loop = ctx.loop
     await loop._cancel_active_tasks(ctx.key)  # pyright: ignore[reportPrivateUsage]
     loop.discard_session_file_state(ctx.key)
-    session = ctx.session or loop.sessions.get_or_create(ctx.key)
-    session.clear()
-    loop.sessions.save(session)
-    loop.sessions.invalidate(session.key)
+    # The async session owner holds the transcript; the synchronous
+    # SessionManager.save() refuses once it is running.
+    await shield_and_drain(loop.sessions.state.reset(ctx.key))
     return OutboundMessage(
         channel=ctx.msg.channel,
         chat_id=ctx.msg.chat_id,
         content="🐈 Session cleared (no memory consolidation).",
+        metadata=dict(ctx.msg.metadata or {}),
     )
 
 

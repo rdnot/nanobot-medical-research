@@ -44,6 +44,8 @@ is marked `# UPSTREAM` where that helps during merges.
   `ToolContext.max_output_tokens` for the write/edit size limits.
 - `_build_tools_summary` puts search queries, URLs and file paths in inline code (backticks
   inside a value are replaced) so the WebUI never auto-links a URL into a text-less link.
+- `_dispatch_command` skips persisting the command turn for `/c` as it does for `/new`
+  (both reset the session; persisting into the reset session would conflict).
 
 ### `nanobot/channels/websocket/runtime.py`, WebUI and TUI (`tools_summary` kind)
 - `send_projected_message` tags the summary (`_tools_summary` metadata) with
@@ -82,7 +84,8 @@ is marked `# UPSTREAM` where that helps during merges.
 
 ### `nanobot/command/builtin.py`
 - `/s` alias for `/status`; `/c` (`cmd_clear`: cancels the active turn, drops file state,
-  clears without consolidation); `/rerun` (`cmd_rerun`: runs `workspace/rerun.bat`,
+  resets through `sessions.state.reset()` without consolidation — the synchronous
+  `SessionManager.save()` refuses once the async session owner runs); `/rerun` (`cmd_rerun`: runs `workspace/rerun.bat`,
   intentionally unsandboxed); help text entries.
 
 ### `nanobot/channels/whatsapp/runtime.py`
@@ -114,7 +117,7 @@ is marked `# UPSTREAM` where that helps during merges.
 
 ### Tests
 - Fork-specific: `tests/tools/test_web_fetch_fork.py`, `tests/tools/test_fork_fs_limits.py`,
-  `tests/agent/test_fork_loop_hook.py`,
+  `tests/agent/test_fork_loop_hook.py`, `tests/command/test_fork_clear_command.py`,
   `nanobot/channels/whatsapp/tests/test_markdown_to_whatsapp.py`,
   `tests/channels/test_fork_tools_summary_ws.py`, `webui/src/tests/fork-tools-summary.test.tsx`,
   `tui/src/client/fork-tools-summary.test.ts`, `tui/src/app/fork-tools-summary.test.ts`.
