@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -52,7 +53,7 @@ from nanobot.providers.base import LLMUsage
 from nanobot.runtime_context import RUNTIME_CONTEXT_INPUT_META, WEBUI_QUOTE_SOURCE
 from nanobot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
 from nanobot.session import webui_turns as wth
-from nanobot.session.manager import SessionManager
+from nanobot.session.manager import Session, SessionManager
 from nanobot.session.model_selection import SESSION_MODEL_PRESET_METADATA_KEY
 from nanobot.session.session_handles import session_handle_for_name
 from nanobot.webui.gateway_services import GatewayServices, build_gateway_services
@@ -2034,7 +2035,7 @@ async def test_webui_set_workspace_scope_rejects_running_chat(bus: MagicMock, tm
             },
         },
     )
-    channel.gateway.workspaces.persist_scope(
+    await channel.gateway.workspaces.persist_scope(
         "chat-running",
         channel.gateway.workspaces.scope_for_session_key("websocket:chat-running"),
     )
@@ -2972,6 +2973,56 @@ async def test_stream_transcript_persists_without_subscribers() -> None:
     assert _thread_conversation_events(body)[-1]["role"] == "assistant"
     assert _thread_conversation_events(body)[-1]["content"] == "hello world"
     assert _thread_conversation_events(body)[-1]["latencyMs"] == 42
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("temporary", [False, True])
+async def test_stream_policy_does_not_copy_history_on_runtime_loop(
+    bus, tmp_path, monkeypatch, temporary,
+) -> None:
+    import nanobot.session.state as session_state
+
+    sessions = SessionManager(tmp_path)
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"]}, bus,
+        gateway=_basic_handler(bus, session_manager=sessions, workspace_path=tmp_path),
+    )
+    owner = object()
+    chat_id = (
+        await channel.gateway.temporary_chats.create(owner, trusted_webui=True)
+        if temporary else "history-copy"
+    )
+    history = [
+        {"role": "user", "content": f"history {i}"} for i in range(1000)
+    ]
+    draft = await sessions.state.import_messages(f"websocket:{chat_id}", history)
+    await sessions.state.checkpoint_view(draft, {"messages": history})
+    runtime_thread = threading.get_ident()
+    original_copy = session_state.deepcopy
+
+    def copy_off_loop(value, *args, **kwargs):
+        if (
+            isinstance(value, Session) and value.messages
+            or isinstance(value, dict) and "runtime_checkpoint" in value
+        ):
+            assert threading.get_ident() != runtime_thread, "history copied on runtime loop"
+        return original_copy(value, *args, **kwargs)
+
+    monkeypatch.setattr(session_state, "deepcopy", copy_off_loop)
+    append = MagicMock()
+    monkeypatch.setattr("nanobot.webui.transcript.append_transcript_object", append)
+    try:
+        policy = channel.gateway.temporary_chats.message_policy(owner, chat_id, "hello")
+        assert (policy is not None) is temporary
+        await channel.send_delta(chat_id, "one", stream_id="s1")
+        await channel.send_delta(chat_id, " two", stream_id="s1")
+        await channel.send_delta(chat_id, "", stream_id="s1", stream_end=True)
+        await channel.send_reasoning_delta(chat_id, "plan", stream_id="r1")
+        await channel.send_reasoning_end(chat_id, stream_id="r1")
+        assert append.call_count == (0 if temporary else 2)
+    finally:
+        channel.gateway.temporary_chats.close()
+        await sessions.state.aclose()
 
 
 @pytest.mark.asyncio
@@ -3913,7 +3964,8 @@ async def test_hydrate_noop_without_session_manager() -> None:
 async def test_hydrate_skips_when_no_goal_on_disk() -> None:
     bus = MagicMock()
     sm = MagicMock()
-    sm.read_session_metadata.return_value = None
+    sm.state.read_metadata = AsyncMock()
+    sm.state.read_metadata.return_value = None
     channel = WebSocketChannel(
         {"enabled": True, "allowFrom": ["*"]},
         bus,
@@ -3929,7 +3981,8 @@ async def test_hydrate_skips_when_no_goal_on_disk() -> None:
 async def test_hydrate_notifies_when_goal_active_on_disk() -> None:
     bus = MagicMock()
     sm = MagicMock()
-    sm.read_session_metadata.return_value = {
+    sm.state.read_metadata = AsyncMock()
+    sm.state.read_metadata.return_value = {
         "metadata": {
             "goal_state": {
                 "status": "active",
@@ -3960,7 +4013,8 @@ async def test_hydrate_notifies_when_goal_active_on_disk() -> None:
 async def test_hydrate_restores_blocked_attention_on_disk() -> None:
     bus = MagicMock()
     sm = MagicMock()
-    sm.read_session_metadata.return_value = {
+    sm.state.read_metadata = AsyncMock()
+    sm.state.read_metadata.return_value = {
         "metadata": {
             "goal_state": {
                 "status": "blocked",
@@ -5694,13 +5748,17 @@ def test_sessions_list_includes_active_run_started_at(monkeypatch) -> None:
             "updated_at": "2026-05-19T10:01:00Z",
         },
     ]
-    monkeypatch.setattr(ws_http_module, "list_webui_sessions", lambda _session_manager: sessions)
+    session_manager.state.query_metadata = AsyncMock(side_effect=lambda project: project([]))
+    monkeypatch.setattr(ws_http_module, "list_webui_sessions", lambda _session_manager, _stored: sessions)
     handle = session_handle_for_name("websocket:chat-1", "luma")
     monkeypatch.setattr(
         ws_http_module,
         "SessionHandleResolver",
         lambda _session_manager: SimpleNamespace(
-            list_all_by_key=lambda: {handle.session_key: handle}
+            handles_from_metadata=MagicMock(return_value={handle.session_key: handle}),
+            alist_all_by_key=AsyncMock(
+                return_value={handle.session_key: handle}
+            )
         ),
     )
     channel = WebSocketChannel(
@@ -6675,3 +6733,48 @@ async def test_webui_access_mode_can_toggle_back_to_full(bus, tmp_path, headers)
         assert channel.gateway.workspaces.scope_for_session_key(
             "websocket:handshake-scope"
         ).access_mode == mode
+
+
+@pytest.mark.parametrize("command_type", ["new_chat", "attach", "set_workspace_scope", "message"])
+async def test_webui_commands_keep_session_io_off_event_loop(
+    bus: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command_type: str,
+) -> None:
+    import threading
+
+    sessions = SessionManager(tmp_path / "sessions")
+    sessions.save(sessions.get_or_create("websocket:io-chat"))
+    channel = WebSocketChannel(
+        {"enabled": True, "allowFrom": ["*"], "host": "127.0.0.1"},
+        bus,
+        gateway=_basic_handler(bus, session_manager=sessions, workspace_path=tmp_path),
+    )
+    conn = AsyncMock()
+    conn.remote_address = ("127.0.0.1", 50123)
+    loop_thread = threading.get_ident()
+    calls: list[str] = []
+
+    def require_worker(name):
+        operation = getattr(sessions._store, name)
+
+        def checked(*args, **kwargs):
+            assert threading.get_ident() != loop_thread, name
+            calls.append(name)
+            return operation(*args, **kwargs)
+
+        return checked
+
+    for name in ("read_metadata", "load", "save", "replace_metadata"):
+        monkeypatch.setattr(sessions._store, name, require_worker(name))
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {"type": command_type, "chat_id": "io-chat", "content": "/help", "webui": True},
+    )
+
+    assert "read_metadata" in calls
+    if command_type in {"set_workspace_scope", "message"}:
+        assert "load" in calls
+        assert "save" in calls or "replace_metadata" in calls
+    assert all(json.loads(call.args[0])["event"] != "error" for call in conn.send.await_args_list)
+    await channel._cleanup_connection(conn)

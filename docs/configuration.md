@@ -131,7 +131,7 @@ If a referenced variable is unset, nanobot fails fast and reports the exact conf
 
 ### Loading variables at startup
 
-Pick whatever fits your deployment — nanobot only reads `os.environ` at startup, so any mechanism that populates the process environment works.
+Set the variables in the environment that starts nanobot. Choose the method that fits your deployment:
 
 **systemd** — use `EnvironmentFile=` in the service unit to load variables from a file that only the deploying user can read:
 
@@ -212,7 +212,7 @@ Internal variables such as `NANOBOT_RESTART_*` and `NANOBOT_PATH_*` are set by n
 
 ## Langfuse Observability
 
-nanobot can trace OpenAI-compatible provider calls through Langfuse's OpenAI SDK wrapper. This is configured with environment variables, not `config.json`.
+Use Langfuse to trace OpenAI-compatible model calls and Codex OAuth calls. Configure it with environment variables, not `config.json`.
 
 Install the optional package in the same Python environment that runs nanobot:
 
@@ -236,11 +236,11 @@ $env:LANGFUSE_PUBLIC_KEY = "pk-lf-..."
 $env:LANGFUSE_BASE_URL = "https://cloud.langfuse.com"
 ```
 
-When `LANGFUSE_SECRET_KEY` is set and the `langfuse` package is installed, nanobot uses `langfuse.openai.AsyncOpenAI` for OpenAI-compatible providers so model requests are sent to Langfuse in the background. If the secret key is set but `langfuse` is missing, nanobot logs a warning and falls back to the regular OpenAI client.
+When `LANGFUSE_SECRET_KEY` is set and the `langfuse` package is installed, tracing is enabled for OpenAI-compatible providers and the Codex OAuth provider (`openai_codex`). If the package is missing, nanobot logs a warning and model calls continue without tracing.
 
 Use the Langfuse region or self-hosted URL that matches your project. The [Langfuse OpenAI SDK docs](https://langfuse.com/integrations/model-providers/openai-py) use `LANGFUSE_BASE_URL` for cloud regions and self-hosted instances.
 
-Tracing covers the providers that go through nanobot's OpenAI-compatible client path. Native providers that do not use that client may not produce Langfuse OpenAI-wrapper traces.
+Other native provider integrations are not covered by this tracing setup.
 
 ## Providers
 
@@ -417,7 +417,7 @@ The `azure_openai` provider talks to your Azure OpenAI resource via the OpenAI *
 
 **Mode 2: Microsoft Entra ID (Azure AD) via `DefaultAzureCredential`**
 
-Omit `apiKey` (or leave it empty / unset). The provider falls back to [`DefaultAzureCredential`](https://learn.microsoft.com/azure/developer/python/sdk/authentication/credential-chains#defaultazurecredential-overview) and acquires a bearer token scoped to `https://cognitiveservices.azure.com/.default` for every request. The Azure SDK's own MSAL-backed cache returns valid tokens without a network round-trip.
+Omit `apiKey` (or leave it empty) to use your Azure identity through [`DefaultAzureCredential`](https://learn.microsoft.com/azure/developer/python/sdk/authentication/credential-chains#defaultazurecredential-overview).
 
 ```json
 {
@@ -526,7 +526,7 @@ Use the normal AWS credential chain (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KE
 }
 ```
 
-You can also set `providers.bedrock.apiKey` to a Bedrock API key; nanobot exports it as `AWS_BEARER_TOKEN_BEDROCK` for the AWS SDK.
+You can also supply a Bedrock API key through `providers.bedrock.apiKey` or the `AWS_BEARER_TOKEN_BEDROCK` environment variable.
 
 Credential options:
 
@@ -643,7 +643,7 @@ Anthropic models on Bedrock can also require Anthropic use-case registration and
 
 **4. Model IDs**
 
-Use Bedrock model IDs or inference profile IDs with a `bedrock/` prefix in nanobot config. nanobot removes the prefix before calling AWS.
+Use Bedrock model IDs or inference profile IDs with a `bedrock/` prefix in nanobot config.
 
 Examples:
 
@@ -680,7 +680,7 @@ Model-specific fields can be supplied with `extraBody`; nanobot merges it into C
 
 Use `apiBase` only for a custom Bedrock Runtime endpoint URL, such as a VPC endpoint or proxy. It is not needed for normal AWS regions.
 
-Current scope: nanobot passes `messages`, `system`, `inferenceConfig`, `toolConfig`, and `additionalModelRequestFields`. Bedrock Prompt Management, Guardrails, `serviceTier`, and other top-level Converse options are not first-class config fields yet.
+Bedrock Prompt Management, Guardrails, `serviceTier`, and other top-level Converse options are not available as dedicated configuration fields.
 
 **6. Quick checks**
 
@@ -1724,9 +1724,7 @@ Telegram `richMessages` defaults to `false`. Enable it only to opt in to Bot API
 
 ### Retry Behavior
 
-Retry is intentionally simple.
-
-When a channel `send()` raises, nanobot retries at the channel-manager layer. By default, `channels.sendMaxRetries` is `3`, and that count includes the initial send.
+When message delivery fails, nanobot retries. `channels.sendMaxRetries` defaults to `3`, including the initial attempt.
 
 - **Attempt 1**: Send immediately
 - **Attempt 2**: Retry after `1s`
@@ -1736,9 +1734,7 @@ When a channel `send()` raises, nanobot retries at the channel-manager layer. By
 - **Permanent failures**: Invalid tokens, revoked access, or banned channels will exhaust the retry budget and fail cleanly
 
 > [!NOTE]
-> This design is deliberate: channel implementations should raise on delivery failure, and the channel manager owns the shared retry policy.
->
-> Some channels may still apply small API-specific retries internally. For example, Telegram separately retries timeout and flood-control errors before surfacing a final failure to the manager.
+> Some channels make additional retries for specific errors, so the total number of delivery attempts can exceed `channels.sendMaxRetries`. Telegram, for example, also retries timeouts and flood-control errors.
 >
 > If a channel is completely unreachable, nanobot cannot notify the user through that same channel. Watch logs for `Failed to send to {channel} after N attempts` to spot persistent delivery failures.
 
@@ -2270,11 +2266,15 @@ For API keys, tokens, and other secrets, see [Environment Variables for Secrets]
 | `tools.maxSessionMessagesPerMinute` | `6` | Maximum messages one source session may send during any rolling 60-second window. Additional sends are rejected to stop runaway agent loops. |
 | `tools.exec.sandbox` | `""` | Sandbox backend for shell commands. `"bwrap"` (Linux) or `"seatbelt"` (macOS) restricts filesystem access to the workspace (read-write), media (read-only), required system paths and configured extra binds. The workspace's parent is denied except for allowed roots; keep secrets outside the workspace and binds. Automatically enables workspace restriction for file tools. `"bwrap"` requires bubblewrap (`apt install bubblewrap`; pre-installed in Docker). `"seatbelt"` uses macOS `sandbox-exec(1)`; it sets `HOME` and `TMPDIR` to the workspace rather than sharing host temporary directories. Use `mktemp "$TMPDIR/job.XXXXXX"` for macOS shell scratch files. Neither backend restricts network access. Windows logs a warning and runs commands without OS sandboxing. |
 | `tools.exec.enable` | `true` | When `false`, the shell `exec` tool is not registered at all. Use this to completely disable shell command execution. |
-| `tools.exec.timeout` | `60` | Default hard timeout in seconds for shell commands. Config values may exceed the per-call tool cap; set `0` to disable the hard timeout for trusted long-running commands. |
+| `tools.exec.maxRuntime` | `3600` | Default hard runtime in seconds for shell commands, measured from process start even while output is arriving. Set `0` only in trusted configuration to allow unlimited runtime. |
+| `tools.exec.maxRuntimeLimit` | `86400` | Positive upper bound in seconds for explicit model-requested hard runtimes. Independent of `maxRuntime`; it does not limit or change the trusted default. |
+| `tools.exec.idleTimeout` | `300` | Seconds without stdout or stderr before the idle action applies. Set `0` to disable inactivity checks. |
+| `tools.exec.idleAction` | `"report"` | `"report"` reports inactivity without stopping the command; `"terminate"` stops it. |
+| `tools.exec.timeout` | alias | Legacy name for `maxRuntime`, not an inactivity timeout. Existing explicit values, including `0`, keep their hard-runtime meaning. Do not set both names. |
 | `tools.exec.pathPrepend` | `""` | Extra directories to prepend to `PATH` when running shell commands. Use this when configured tools should win executable lookup precedence, such as a Python virtual environment's `bin` or `Scripts` directory. |
 | `tools.exec.pathAppend` | `""` | Extra directories to append to `PATH` when running shell commands (e.g. `/usr/sbin` for `ufw`). |
-| `tools.exec.sandboxRoBinds` | `[]` | Extra absolute paths to expose read-only inside the exec sandbox (`--ro-bind-try` for `"bwrap"`, an SBPL `file-read*` rule for `"seatbelt"`), such as `/home/user/.local/bin` or `/home/user/.cargo/bin` when those paths are also in `pathPrepend`/`pathAppend`. These roots are also accepted by the shell absolute-path guard only while a sandbox is active. Bind only directories whose contents are safe for agent commands to read; paths equal to or containing the active workspace are ignored so they cannot uncover its masked parent directory. |
-| `tools.exec.sandboxRwBinds` | `[]` | Extra absolute paths to expose read-write inside the exec sandbox (`--bind-try` for `"bwrap"`, an SBPL `file-read* file-write*` rule for `"seatbelt"`), for trusted tool caches or scratch directories. Use sparingly: paths listed here are intentionally writable by shell commands inside the sandbox. Paths equal to or containing the active workspace are ignored. |
+| `tools.exec.sandboxRoBinds` | `[]` | Extra absolute paths to expose read-only inside the exec sandbox, such as `/home/user/.local/bin` or `/home/user/.cargo/bin` when those paths are also in `pathPrepend`/`pathAppend`. These roots are also accepted by the shell absolute-path guard only while a sandbox is active. Bind only directories whose contents are safe for agent commands to read; paths equal to or containing the active workspace are ignored so they cannot uncover its masked parent directory. |
+| `tools.exec.sandboxRwBinds` | `[]` | Extra absolute paths to expose read-write inside the exec sandbox, for trusted tool caches or scratch directories. Use sparingly: paths listed here are intentionally writable by shell commands inside the sandbox. Paths equal to or containing the active workspace are ignored. |
 | `tools.webuiAllowRemotePackageInstall` | `false` | When `false`, the WebUI can install missing optional packages only from a browser opened on the same machine as nanobot. Set to `true` only when a trusted remote admin is allowed to install Python packages into this nanobot environment. |
 | `tools.ssrfWhitelist` | `[]` | CIDR ranges exempted from the shared SSRF guard used by web fetches and HTTP/SSE MCP connections. Prefer exact host CIDRs such as `192.168.1.50/32`; broad ranges increase SSRF exposure. |
 | `channels.*.allowFrom` | omitted | For channels using the common sender allowlist, omit to require pairing, set `["*"]` to allow everyone, or list specific user IDs. Slack and Mattermost instead use `dm.policy` / `dm.allowFrom` for DMs and default to open DMs; review their group policy separately. See [Pairing](#pairing). |
@@ -2284,6 +2284,36 @@ Each new user request includes the current project and file-access restriction i
 To diagnose a path error, the agent can call `my(action="check", key="workspace_sandbox")`. This read-only result shows the current tool directory and workspace restriction, including the restriction from `tools.exec.sandbox`. The older `workspace` value is an agent-directory display; it does not select the current project or grant access. Check `exec_config` for the configured shell sandbox and extra binds. Those binds do not grant file-tool access or permit an external shell `working_dir`. OS file permissions still apply. The `workspace_sandbox.enforced` field reports external sandbox markers, not whether a configured shell sandbox has started successfully.
 
 **Docker security**: The official Docker image runs as a non-root user (`nanobot`, UID 1000) with bubblewrap pre-installed. The default `docker-compose.yml` drops all Linux capabilities except the `CHOWN`, `SETGID`, and `SETUID` capabilities required by the root entrypoint to initialize bind-mount ownership and become UID 1000. It enables `no-new-privileges` so the final non-root process cannot regain those bootstrap capabilities, and keeps Docker's default AppArmor/seccomp profiles enabled. If you enable `"tools.exec.sandbox": "bwrap"` inside Docker, start Compose with `docker-compose.bwrap.yml` as an additional override so bubblewrap can create nested namespaces. The host must also allow unprivileged user namespaces; the override cannot bypass a host-level namespace restriction.
+
+
+### Shell command timing
+
+Shell commands have separate hard-runtime and inactivity checks. By default, a command can run for up to one hour. Five minutes without stdout or stderr produces an inactivity report but does not kill it. Output resets the inactivity clock; it never extends the hard-runtime deadline. A command that keeps printing can still reach its hard limit.
+
+Configure these defaults under `tools.exec` in `config.json`, then restart the gateway:
+
+```json
+{
+  "tools": {
+    "exec": {
+      "maxRuntime": 3600,
+      "maxRuntimeLimit": 86400,
+      "idleTimeout": 300,
+      "idleAction": "report"
+    }
+  }
+}
+```
+
+All durations are integer seconds. Snake-case configuration names (`max_runtime`, `max_runtime_limit`, `idle_timeout`, and `idle_action`) are also accepted; saved configuration uses camelCase. The command runtime control in Settings changes the hard-runtime default. Choose a preset, enter a custom duration in whole seconds up to `maxRuntimeLimit`, or select **No time limit**. Longer trusted defaults can be set in `config.json`; editing other settings preserves them. The agent can inspect the loaded defaults with `my(action="check", key="exec_config")`.
+
+The model may explicitly request a different hard runtime up to `maxRuntimeLimit`. This positive limit applies only to explicit tool-call arguments, not to the configured default. `maxRuntime` may exceed it or be `0` for unlimited runtime; changing `maxRuntime` does not change `maxRuntimeLimit`, which defaults to 86400 seconds. When the model omits the runtime argument, the command uses the trusted default. The model cannot explicitly request unlimited runtime. Set `idleTimeout` to `0` as well if a trusted command must run without either timing check.
+
+For existing configurations, `timeout` remains a hard-runtime alias: `"timeout": 60` still stops a command after 60 seconds, and `"timeout": 0` still means no hard deadline. Use either `timeout` or `maxRuntime`, not both.
+
+The tool result distinguishes a hard-runtime termination from inactivity. With `idleAction: "report"`, a silent command continues running under its hard-runtime limit. With `idleAction: "terminate"`, inactivity stops the command and the result reports that reason. Both limits apply without polling. Commands are cleaned up when they finish, reach an enforced limit, or their owning session is cancelled or deleted; normal operation does not require manual process management. `yield_time_ms` and an `exec_session` wait timeout only control how long a tool call waits before returning; neither stops the command nor resets its runtime or inactivity clock.
+
+Silence is not proof that a command is stuck: builds, downloads, and buffered programs can be quiet while working. Only bytes received through stdout or stderr count as activity; output redirected to files is not observed, and reading logs does not refresh the inactivity clock. Inactivity checks do not detect prompts or supply answers. Choose `"terminate"` only when stopping a quiet command is acceptable, and use a finite hard runtime when total execution time must remain bounded. Shell sessions are not durable jobs and should not be used as a replacement for a scheduler or service manager. A command that detaches a background service and exits is not a managed job; these timing checks do not manage that service afterward.
 
 
 ## Pairing
@@ -2398,9 +2428,9 @@ The gateway can run a protected heartbeat cron job that periodically checks `HEA
 
 If `HEARTBEAT.md` has tasks under `## Active Tasks`, the agent executes them and sends only useful/actionable results to the most recently active chat target. If the file has no active tasks, or the result is routine with nothing useful to report, the heartbeat is skipped silently.
 
-This is intentionally different from user-created cron jobs. A cron job created with the `cron` tool runs as a scheduled turn in its origin chat/session and normally delivers the result back to that channel. Use `HEARTBEAT.md` for recurring background checks that should not notify the user on every run.
+Use `HEARTBEAT.md` for recurring background checks that should not notify you on every run. For a scheduled task that normally sends its result back to the chat where it was created, use the `cron` tool.
 
-The heartbeat job is backed by the same cron service as user-created reminders. It is stored under the active workspace (`<workspace>/cron/jobs.json`) and shows up in `cron(action="list")` as `heartbeat`, but it is system-managed and cannot be removed with the `cron` tool. Disable it through config and restart the gateway if you do not want periodic heartbeat checks.
+The heartbeat appears as `heartbeat` when you list cron jobs, but cannot be removed with the `cron` tool. To disable periodic checks, set `gateway.heartbeat.enabled` to `false` and restart the gateway.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -2410,7 +2440,7 @@ The heartbeat job is backed by the same cron service as user-created reminders. 
 
 ### Custom heartbeat evaluator prompt
 
-The notification gate runs on a built-in system prompt. Advanced users can override it, but you rarely need to — it's strongly advised to first read the evaluator code and the default `evaluator.md`. To override, drop your prompt at `<workspace>/prompts/evaluator.md`. It must still instruct the model to call the `evaluate_notification` tool; otherwise the gate fails closed and stays silent.
+To customize which heartbeat results trigger a notification, place your prompt at `<workspace>/prompts/evaluator.md`. Start from the bundled `evaluator.md` prompt and keep its instruction to call `evaluate_notification`; without that call, no notification is sent.
 
 
 ## Subagent Concurrency
@@ -2460,19 +2490,12 @@ When a session is idle for longer than a configured threshold, nanobot summarize
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `agents.defaults.idleCompactAfterMinutes` | `15` | Minutes of idle time before auto-compaction starts. Set to `0` to disable. The default is close to a typical LLM KV cache expiry window, so stale sessions get compacted before the user returns. |
+| `agents.defaults.idleCompactAfterMinutes` | `15` | Minutes of idle time before auto-compaction starts. Set to `0` to disable. |
 | `agents.defaults.idleCompactCheckIntervalSeconds` | `60` | Minimum number of seconds between scans for idle sessions. Set to `0` to scan on every idle tick (~1 s). |
 
 `sessionTtlMinutes` remains accepted as a legacy alias for backward compatibility, but `idleCompactAfterMinutes` is the preferred config key going forward.
 
-How it works:
-1. **Idle detection**: On each idle tick (~1 s), checks whether an idle-session scan is due. By default, the full scan runs at most once per minute.
-2. **Background compaction**: The conversation so far is summarized for the next turn.
-3. **Session preservation**: The complete session history remains stored for later inspection and reuse.
-4. **Restart-safe resume**: The compacted context remains available after a process restart.
-
-> [!NOTE]
-> Auto compact shortens the context sent to the model without deleting the session's structured message history.
+The compacted context remains available after restarting nanobot.
 
 Use `/compact` in chat to compact the current session without waiting for the idle threshold.
 
@@ -2533,13 +2556,13 @@ When enabled, all incoming messages — regardless of which channel they arrive 
 
 | Behavior | `false` (default) | `true` |
 |----------|-------------------|--------|
-| Session key | `channel:chat_id` | `unified:default` |
+| Conversation scope | Separate for each channel and chat | Shared across channels and chats |
 | Cross-channel continuity | No | Yes |
 | `/new` clears | Current channel session | Shared session |
 | `/stop` finds tasks | By channel session | By shared session |
-| Existing `session_key_override` (e.g. Telegram thread) | Respected | Still respected — not overwritten |
+| Separate conversations explicitly assigned by a channel (e.g. Telegram threads) | Kept separate | Still kept separate |
 
-> This is designed for single-user, multi-device setups. It is **off by default** — existing users see zero behavior change.
+> Use this only for single-user, multi-device setups: messages from different chats can share conversation context. It is **off by default**.
 
 ## Disabled Skills
 
@@ -2570,13 +2593,13 @@ Disabled skills are excluded from the main agent's skill summary, from always-on
 
 ### Agent Plugins v1
 
-nanobot discovers [Agent Plugins](https://agent-plugins.org/) under `<workspace>/plugins/`; a v1 package has `plugin.json` and may add `mcp.json`, `skills/<name>/SKILL.md`, or both. Agent Plugins are the common package and activation boundary for installable capabilities; they do not replace native providers, channels, tools, standalone workspace skills, or directly configured MCP servers.
+Install [Agent Plugins](https://agent-plugins.org/) under `<workspace>/plugins/`, then review and enable them in **Apps**. Copying a package into that directory does not activate it. Plugins can add skills and MCP servers; existing provider, channel, tool, skill, and MCP settings remain available.
 
 Directory presence means installed; activation is explicit in **Apps**. Skills use progressive loading and `$skill-name` invocation, with workspace > plugin > built-in precedence. Enabled `stdio` servers receive contained `PLUGIN_ROOT` and isolated `PLUGIN_DATA` paths; explicit `tools.mcpServers` entries win collisions. Invalid or escaping components are ignored. An enabled package is treated as immutable: changing any packaged file disables it until the user reviews and enables it again. Runtime state belongs under `PLUGIN_DATA`, not the package root.
 
-Enabled plugins run as the nanobot user; permissions are descriptive, not an OS sandbox. The optional `extensions.dev.nanobot.logo` accepts a contained PNG, JPEG, or WebP up to 256 KiB.
+Changing any packaged file disables the plugin until you review and enable it again.
 
-CLI Apps use the same skills-only package layout while their installer manages executables, updates, and removal. Future catalogs can place packages before using this activation path.
+Enabled plugins run with the same operating-system permissions as nanobot. Their declared permissions are descriptive, **not an OS sandbox**. Install and enable only plugins you trust.
 
 ## Tool Hint Max Length
 
