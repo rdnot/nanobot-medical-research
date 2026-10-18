@@ -1,7 +1,10 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertCircle } from "lucide-react";
 
 import { CodeBlock } from "@/components/CodeBlock";
+import { MarkdownText } from "@/components/MarkdownText";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { ImageLightbox } from "@/components/ImageLightbox";
 import { fileKindForPath, splitFilePath } from "@/components/FileReferenceChip";
 import type { FilePreviewPayload } from "@/lib/types";
@@ -11,14 +14,18 @@ export type FilePreviewPanelState =
   | { status: "error"; message?: string; routeMissing?: boolean }
   | { status: "ready"; payload: FilePreviewPayload };
 
-export function FilePreviewPanelView({ path, state, imageOpen, onImageOpenChange, onImageError }: {
+export function FilePreviewPanelView({ path, state, imageOpen, onImageOpenChange, onImageError, onOpenFilePreview }: {
   path: string;
   state: FilePreviewPanelState;
   imageOpen: boolean;
   onImageOpenChange: (open: boolean) => void;
   onImageError: () => void;
+  onOpenFilePreview?: (path: string) => void;
 }) {
   const { t } = useTranslation();
+  const [mode, setMode] = useState<"preview" | "source">("preview");
+  const markdown = state.status === "ready" && state.payload.kind !== "image"
+    && state.payload.language === "markdown";
   const displayPath = state.status === "ready" ? state.payload.display_path : path;
   const { name } = splitFilePath(displayPath);
   const fileName = name || displayPath;
@@ -32,7 +39,14 @@ export function FilePreviewPanelView({ path, state, imageOpen, onImageOpenChange
 
   return (
     <section aria-label={t("filePreview.aria")} data-testid="file-preview-panel" className="flex min-h-0 flex-1 flex-col">
-          <div data-file-preview-scroll tabIndex={0}
+          {markdown ? (
+            <div className="flex shrink-0 items-center justify-end px-4 py-2">
+              <SegmentedControl value={mode} onChange={setMode} ariaLabel={t("filePreview.displayMode")}
+                options={[{ value: "preview", label: t("filePreview.preview") }, { value: "source", label: t("filePreview.source") }]}
+                itemClassName="px-3 [@media(pointer:coarse)]:min-h-9" />
+            </div>
+          ) : null}
+          <div key={mode} data-file-preview-scroll tabIndex={0}
             className="min-h-0 flex-1 overflow-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60">
             {state.status === "loading" ? (
               <div role="status" aria-label={t("filePreview.loading", { defaultValue: "Loading preview..." })}
@@ -77,7 +91,12 @@ export function FilePreviewPanelView({ path, state, imageOpen, onImageOpenChange
                     })}
                   </div>
                 ) : null}
-                <CodeBlock
+                {markdown && mode === "preview" ? (
+                  <MarkdownText documentPath={state.payload.path} onOpenFilePreview={onOpenFilePreview}
+                    className="px-5 pb-6 pt-1 text-sm [overflow-wrap:anywhere] sm:px-6 [&>:first-child]:mt-0">
+                    {state.payload.content}
+                  </MarkdownText>
+                ) : <CodeBlock
                   language={state.payload.language}
                   code={state.payload.content}
                   chrome="none"
@@ -86,7 +105,7 @@ export function FilePreviewPanelView({ path, state, imageOpen, onImageOpenChange
                   wrapLongLines={false}
                   viewportHighlight
                   className="min-h-full"
-                />
+                />}
               </div>
             )}
           </div>

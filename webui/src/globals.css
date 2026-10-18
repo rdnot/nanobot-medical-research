@@ -855,6 +855,16 @@
     left: 1.75rem;
   }
 
+  .thread-prompt-rail-scroll {
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+    mask-image: linear-gradient(to bottom, transparent, #000 16px, #000 calc(100% - 16px), transparent);
+  }
+
+  .thread-prompt-rail-scroll::-webkit-scrollbar {
+    display: none;
+  }
+
   @media (min-width: 768px) {
     .thread-prompt-rail {
       display: block;

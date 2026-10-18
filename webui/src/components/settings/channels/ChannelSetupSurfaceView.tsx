@@ -136,6 +136,11 @@ export function ChannelSetupSurfaceView({
         </div>
       </div>
       <ChannelRuntimeError message={feature.runtime_error} />
+      {setup.privacyNotice ? (
+        <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
+          {setup.privacyNotice}
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-center gap-4">
         <section className={cn("min-w-0", inlineActions ? "flex-[1_1_20rem]" : "w-full")}>
           <div className="flex flex-wrap items-center justify-between gap-2">

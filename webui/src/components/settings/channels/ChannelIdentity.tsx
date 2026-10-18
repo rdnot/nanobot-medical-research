@@ -50,6 +50,7 @@ export function channelSetup(
   });
   const presentation: ChannelSetupPresentation = {
     ...definition,
+    privacyNotice: setupMessages?.privacyNotice,
     primaryActionLabel: setupMessages?.primaryAction,
     docsLabel: setupMessages?.docsLabel,
     officialLabel: setupMessages?.officialLabel,

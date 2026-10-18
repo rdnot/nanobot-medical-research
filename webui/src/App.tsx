@@ -165,9 +165,9 @@ const DeleteConfirm = lazy(async () => {
   const module = await import("@/components/DeleteConfirm");
   return { default: module.DeleteConfirm };
 });
-const RenameChatDialog = lazy(async () => {
-  const module = await import("@/components/RenameChatDialog");
-  return { default: module.RenameChatDialog };
+const RenameDialog = lazy(async () => {
+  const module = await import("@/components/RenameDialog");
+  return { default: module.RenameDialog };
 });
 
 function SurfaceLoadingFallback({ label }: { label?: string }) {
@@ -1212,6 +1212,7 @@ function Shell({
     state: sidebarState,
     loading: sidebarStateLoading,
     update: updateSidebarState,
+    rename: onRequestRename,
   } =
     useSidebarState(sessions, sessionsLoaded);
   const initialRouteRef = useRef<ShellRoute | null>(null);
@@ -1261,10 +1262,6 @@ function Shell({
   const [pendingDelete, setPendingDelete] = useState<{
     items: SidebarDeleteItem[];
     automations?: SessionAutomationJob[];
-  } | null>(null);
-  const [pendingRename, setPendingRename] = useState<{
-    key: string;
-    label: string;
   } | null>(null);
   const [pendingTabRename, setPendingTabRename] = useState<{
     key: string;
@@ -1981,32 +1978,6 @@ function Shell({
       });
     },
     [updateSidebarState],
-  );
-
-  const onRequestRename = useCallback((key: string, label: string) => {
-    setPendingRename({ key, label });
-  }, []);
-
-  const onConfirmRename = useCallback(
-    (title: string) => {
-      if (!pendingRename) return;
-      const key = pendingRename.key;
-      setPendingRename(null);
-      void updateSidebarState((current) => {
-        const titleOverrides = { ...current.title_overrides };
-        const cleaned = title.trim();
-        if (cleaned) {
-          titleOverrides[key] = cleaned;
-        } else {
-          delete titleOverrides[key];
-        }
-        return {
-          ...current,
-          title_overrides: titleOverrides,
-        };
-      });
-    },
-    [pendingRename, updateSidebarState],
   );
 
   const onRequestRenameTab = useCallback((key: string, label: string) => {
@@ -2926,6 +2897,12 @@ function Shell({
             >
               <SheetContent
                 ref={mobileSidebarRef}
+                onEscapeKeyDown={(event) => {
+                  if (event.target instanceof Element
+                    && event.target.closest("[data-sidebar-topic-rename]")) {
+                    event.preventDefault();
+                  }
+                }}
                 onOpenAutoFocus={(event) => {
                   // Keep opening navigation from focusing the search tooltip trigger.
                   event.preventDefault();
@@ -3089,6 +3066,7 @@ function Shell({
                           headerPortalTarget={context.headerPortalTarget}
                           headerActive={context.active}
                           composerPortalTarget={context.composerPortalTarget}
+                          navigationFrame={context.navigationFrame}
                           composerActive={context.active}
                           composerInputAriaLabel={t("workbench.composerAria", {
                             title: pane.title,
@@ -3177,19 +3155,9 @@ function Shell({
             />
           </Suspense>
         ) : null}
-        {pendingRename ? (
-          <Suspense fallback={null}>
-            <RenameChatDialog
-              open
-              title={pendingRename.label}
-              onCancel={() => setPendingRename(null)}
-              onConfirm={onConfirmRename}
-            />
-          </Suspense>
-        ) : null}
         {pendingTabRename ? (
           <Suspense fallback={null}>
-            <RenameChatDialog
+            <RenameDialog
               open
               title={pendingTabRename.label}
               dialogTitle={t("workbench.renameGroupTitle")}
@@ -3202,7 +3170,7 @@ function Shell({
         ) : null}
         {pendingProjectRename ? (
           <Suspense fallback={null}>
-            <RenameChatDialog
+            <RenameDialog
               open
               title={pendingProjectRename.label}
               dialogTitle={t("chat.renameProjectTitle")}
