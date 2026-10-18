@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified October 16, 2026 — upstream `559107172`, merge main `ae2099f62` / scrapling `ea9be4c7c`)
+## Customizations (verified October 18, 2026 — upstream `b702ac633`, merge main `76d0f8f20`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
@@ -91,6 +91,12 @@ is marked `# UPSTREAM` where that helps during merges.
 ### `nanobot/channels/whatsapp/runtime.py`
 - `_markdown_to_whatsapp()` applied in `WhatsAppChannel.send`.
 
+### `nanobot/channels/manager.py`
+- `_dispatch_outbound_loop` breaks when `asyncio.current_task().cancelling()` before each
+  iteration. On Python 3.11 `asyncio.wait_for` can return a ready queue item and swallow a racing
+  cancel; the fork's extra tools-summary message made that race common at shutdown, so
+  `stop_all()` hung (`tests/channels/test_fork_dispatcher_cancel.py`).
+
 ### `nanobot/config/schema.py`
 - `AgentDefaults.max_tool_result_chars` 400,000 (upstream 16,000).
 
@@ -119,14 +125,18 @@ is marked `# UPSTREAM` where that helps during merges.
 - Fork-specific: `tests/tools/test_web_fetch_fork.py`, `tests/tools/test_fork_fs_limits.py`,
   `tests/agent/test_fork_loop_hook.py`, `tests/command/test_fork_clear_command.py`,
   `nanobot/channels/whatsapp/tests/test_markdown_to_whatsapp.py`,
-  `tests/channels/test_fork_tools_summary_ws.py`, `webui/src/tests/fork-tools-summary.test.tsx`,
+  `tests/channels/test_fork_tools_summary_ws.py`, `tests/channels/test_fork_dispatcher_cancel.py`,
+  `webui/src/tests/fork-tools-summary.test.tsx`,
   `tui/src/client/fork-tools-summary.test.ts`, `tui/src/app/fork-tools-summary.test.ts`.
 - Adapted upstream tests: `tests/tools/test_web_fetch_security.py` (curl_cffi tier pinned
   to unavailable; upstream redirect/SSRF tests restored), `test_web_fetch_jina_privacy.py`,
   `test_web_fetch_url_sanitization.py`, `test_private_tool_logging.py`,
   `test_tool_descriptions.py`, `test_filesystem_tools.py`, `test_read_enhancements.py`,
   retry-count tests (`tests/providers/test_provider_retry.py`,
-  `tests/agent/test_runner_fallback.py`), WebUI settings tests (`use_jina_reader` default).
+  `tests/agent/test_runner_fallback.py`), WebUI settings tests (`use_jina_reader` default),
+  outbound collectors that skip `_tools_summary` (`tests/cron/test_cron_reply_contract.py`,
+  `tests/webui/test_automation_chat_binding.py`), and the image media-type case test in
+  `test_web_fetch_security.py` (one request, no httpx image preflight; params dropped).
 
 ## Dependencies
 Everything is declared in `pyproject.toml`; `pip install -e .` or `uv sync` installs it.
