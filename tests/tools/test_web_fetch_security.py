@@ -436,12 +436,20 @@ async def test_web_fetch_image_media_type_is_case_insensitive(
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
         result = await tool.execute(url="https://example.com/image.png")
 
+    # FORK: no httpx image preflight — the tiered fetcher (curl_cffi pinned off by the
+    # autouse fixture -> httpx) makes ONE request, so a failed first request is the
+    # fetch error, not a preflight followed by a fallback request.
+    if preflight_fails:
+        assert is_tool_error_result(result)
+        assert len(requests) == 1
+        return
     assert isinstance(result, list), f"Expected native image blocks, requests={len(requests)}"
     image = next(block for block in result if block["type"] == "image_url")
     prefix, encoded = image["image_url"]["url"].split(";base64,", 1)
-    assert prefix == f"data:{expected_mime}"
+    # FORK: _build_image_blocks keeps only the lower-cased media type (params dropped).
+    assert prefix == f"data:{expected_mime.split(';')[0]}"
     assert base64.b64decode(encoded, validate=True) == png
-    assert len(requests) == (2 if preflight_fails else 1)
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio
