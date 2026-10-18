@@ -182,7 +182,8 @@ async def test_saved_cron_separates_source_chat_from_explicit_recipient(tmp_path
         messages = []
         while bus.outbound_size:
             message = await bus.consume_outbound()
-            if message.event is None and message.content:
+            # FORK: skip the tools-summary bubble published after a turn that used tools.
+            if message.event is None and message.content and not message.metadata.get("_tools_summary"):
                 messages.append(message)
         expected = [(origin, chat_id)]
         if explicit_send and origin == "websocket":

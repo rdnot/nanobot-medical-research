@@ -862,6 +862,13 @@ class ChannelManager:
         next_recovery = 0.0
 
         while True:
+            # FORK: Python 3.11's asyncio.wait_for returns a ready item and swallows a
+            # cancel that races it (fixed in 3.12), so stop_all() could wait forever on a
+            # dispatcher that keeps polling. The fork's tools-summary bubble makes that race
+            # common at shutdown; honor the pending cancel after finishing the item.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                break
             try:
                 if time.monotonic() >= next_recovery:
                     next_recovery = time.monotonic() + RETRY_SECONDS
