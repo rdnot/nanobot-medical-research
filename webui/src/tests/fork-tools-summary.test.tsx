@@ -47,6 +47,8 @@ interface RowReport {
   text: string;
   toggle: string | null;
   expanded: string | null;
+  /** aria-labels of icon-only labels (upstream renders the "Edited" verb as a file-type icon). */
+  expandedLabels: string[];
 }
 
 /** Render the thread, open every row's block menu, and record the activity toggle. */
@@ -56,15 +58,17 @@ function inspectRows(events: ThreadProjectionEvent[]): { rows: RowReport[]; mess
   const rows: RowReport[] = [];
   for (const unit of Array.from(container.querySelectorAll<HTMLElement>("[data-thread-display-unit]"))) {
     const trigger = unit.querySelector<HTMLElement>("[data-message-block-menu-trigger]");
-    const report: RowReport = { text: unit.textContent ?? "", toggle: null, expanded: null };
+    const report: RowReport = { text: unit.textContent ?? "", toggle: null, expanded: null, expandedLabels: [] };
     if (trigger) {
       fireEvent.click(trigger);
       const action = document.querySelector<HTMLElement>("[data-message-block-activity-action]");
       if (action) {
         report.toggle = action.textContent;
         fireEvent.click(action);
-        report.expanded =
-          document.querySelector("[data-testid='agent-activity-content']")?.textContent ?? null;
+        const content = document.querySelector("[data-testid='agent-activity-content']");
+        report.expanded = content?.textContent ?? null;
+        report.expandedLabels = Array.from(content?.querySelectorAll("[aria-label]") ?? [])
+          .map((el) => el.getAttribute("aria-label") ?? "");
       }
       fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     }
@@ -89,7 +93,9 @@ function expectIntactTrace(events: ThreadProjectionEvent[]): void {
   expect(answerRow?.toggle).toBe("Worked for 9s");
   expect(answerRow?.expanded).toContain("The user wants me to edit");
   expect(answerRow?.expanded).toContain("Completed Search");
-  expect(answerRow?.expanded).toContain("Edited test_tools.md");
+  // The file edit step survives (upstream shows its "Edited" verb as an icon label).
+  expect(answerRow?.expanded).toContain("test_tools.md");
+  expect(answerRow?.expandedLabels).toContain("Edited");
   expect(answerRow?.expanded).toContain("Read bbc");
 
   // The summary is a visible bubble with no activity toggle of its own.

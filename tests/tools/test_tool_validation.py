@@ -158,6 +158,20 @@ async def test_registry_executes_decorated_tool_end_to_end() -> None:
     assert "Invalid parameters" in err
 
 
+@pytest.mark.parametrize("schema_type", ["integer", ["integer", "null"], ["integer", "string"]])
+def test_integer_schema_accepts_integral_json_numbers(schema_type) -> None:
+    assert Schema.validate_json_schema_value(3.0, {"type": schema_type}) == []
+
+
+async def test_registry_casts_integral_json_number_to_integer() -> None:
+    reg = ToolRegistry()
+    reg.register(DecoratedSampleTool())
+
+    result = await reg.execute("decorated_sample", {"query": "hello", "count": 3.0})
+
+    assert result == "ok:3"
+
+
 def test_validate_params_missing_required() -> None:
     tool = SampleTool()
     errors = tool.validate_params({"query": "hi"})
@@ -178,6 +192,51 @@ def test_validate_params_enum_and_min_length() -> None:
     errors = tool.validate_params({"query": "h", "count": 2, "mode": "slow"})
     assert any("query must be at least 2 chars" in e for e in errors)
     assert any("mode must be one of" in e for e in errors)
+
+
+@pytest.mark.parametrize(
+    "value, allowed, valid",
+    [
+        (True, 1, False),
+        (False, 0, False),
+        (1, True, False),
+        (0, False, False),
+        ([True], [1], False),
+        ({"enabled": True}, {"enabled": 1}, False),
+        (1.0, 1, True),
+        (True, True, True),
+        ("x", "x", True),
+        ({"a": 1, "b": 2}, {"b": 2.0, "a": 1.0}, True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_registry_enforces_json_enum_equality(value, allowed, valid) -> None:
+    calls = []
+
+    class EnumTool(SampleTool):
+        @property
+        def parameters(self) -> dict[str, Any]:
+            return {
+                "type": "object",
+                "properties": {"value": {"enum": [allowed]}},
+                "required": ["value"],
+            }
+
+        async def execute(self, **kwargs: Any) -> str:
+            calls.append(kwargs["value"])
+            return "ok"
+
+    registry = ToolRegistry()
+    registry.register(EnumTool())
+
+    result = await registry.execute("sample", {"value": value})
+
+    if valid:
+        assert result == "ok"
+        assert calls == [value]
+    else:
+        assert "value must be one of" in result
+        assert calls == []
 
 
 def test_validate_params_nested_object_and_array() -> None:

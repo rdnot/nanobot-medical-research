@@ -92,7 +92,7 @@ from .ws_test_client import http_get as _http_get
 
 # -- Shared helpers (aligned with test_websocket_integration.py) ---------------
 
-_PORT = 29876
+_PORT = 0
 
 
 async def _register_running_turn(
@@ -180,12 +180,36 @@ def _basic_handler(bus: Any, **kw: Any) -> GatewayServices:
     )
 
 
-async def _connect_when_ready(url: str) -> Any:
-    while True:
-        try:
-            return await websockets.connect(url)
-        except OSError:
-            await asyncio.sleep(0.02)
+@pytest.fixture
+async def start_listener():
+    """Start test-owned ephemeral listeners and join them even if setup/assertions fail."""
+    listeners = []
+
+    async def start(channel: WebSocketChannel):
+        assert channel.config.port == 0
+        task = asyncio.create_task(channel.start())
+        listeners.append((channel, task))
+        async with asyncio.timeout(5):
+            while True:
+                if task.done():
+                    await task
+                    raise AssertionError("listener stopped before becoming ready")
+                server = channel._server
+                if server is not None and server.sockets and server.is_serving():
+                    return server.sockets[0].getsockname()[1], task
+                await asyncio.sleep(0.01)
+
+    try:
+        yield start
+    finally:
+        for channel, task in reversed(listeners):
+            try:
+                await asyncio.wait_for(channel.stop(), timeout=5)
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
+            finally:
+                if not task.done():
+                    task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
 
 async def _wait_for_connection_cleanup(
@@ -875,8 +899,8 @@ def test_issue_route_secret_matches_empty_secret() -> None:
 
 
 @pytest.mark.asyncio
-async def test_token_issue_route_requires_secret_when_static_token_configured(bus: MagicMock) -> None:
-    port = 29882
+async def test_token_issue_route_requires_secret_when_static_token_configured(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(
         bus,
         port=port,
@@ -885,8 +909,7 @@ async def test_token_issue_route_requires_secret_when_static_token_configured(bu
         websocketRequiresToken=True,
     )
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         denied = await _http_get(f"http://127.0.0.1:{port}/custom-token")
@@ -4155,17 +4178,14 @@ async def test_stop_is_idempotent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_client_receives_ready_and_agent_sees_inbound(bus: MagicMock) -> None:
-    port = 29876
+async def test_end_to_end_client_receives_ready_and_agent_sees_inbound(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
 
-    server_task = asyncio.create_task(channel.start())
+    port, server_task = await start_listener(channel)
 
     try:
-        client = await asyncio.wait_for(
-            _connect_when_ready(f"ws://127.0.0.1:{port}/ws?client_id=tester"),
-            timeout=5,
-        )
+        client = await websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=tester")
         async with client:
             ready_raw = await client.recv()
             ready = json.loads(ready_raw)
@@ -4194,12 +4214,11 @@ async def test_end_to_end_client_receives_ready_and_agent_sees_inbound(bus: Magi
 
 
 @pytest.mark.asyncio
-async def test_token_rejects_handshake_when_mismatch(bus: MagicMock) -> None:
-    port = 29877
+async def test_token_rejects_handshake_when_mismatch(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port, path="/", token="secret")
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         with pytest.raises(websockets.exceptions.InvalidStatus) as excinfo:
@@ -4212,12 +4231,11 @@ async def test_token_rejects_handshake_when_mismatch(bus: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_wrong_path_returns_404(bus: MagicMock) -> None:
-    port = 29878
+async def test_wrong_path_returns_404(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         with pytest.raises(websockets.exceptions.InvalidStatus) as excinfo:
@@ -4237,8 +4255,8 @@ def test_registry_discovers_websocket_channel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_route_issues_token_then_websocket_requires_it(bus: MagicMock) -> None:
-    port = 29879
+async def test_http_route_issues_token_then_websocket_requires_it(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(
         bus, port=port,
         tokenIssuePath="/auth/token",
@@ -4246,8 +4264,7 @@ async def test_http_route_issues_token_then_websocket_requires_it(bus: MagicMock
         websocketRequiresToken=True,
     )
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         deny = await _http_get(f"http://127.0.0.1:{port}/auth/token")
@@ -4286,8 +4303,9 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
     bus: MagicMock,
     monkeypatch,
     tmp_path,
+    start_listener,
 ) -> None:
-    port = 29891
+    port = 0
     config_path = tmp_path / "config.json"
     config = Config()
     config.agents.defaults.model = "openai/gpt-4o"
@@ -4321,8 +4339,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
     channel = _ch(bus, port=port, image_generation_reload=image_reload)
     channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     webui_client = None
     try:
@@ -4702,6 +4719,7 @@ async def test_image_settings_hot_reload_without_restart(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     provider_name: str,
+    start_listener,
 ) -> None:
     from nanobot.agent.loop import AgentLoop
     from nanobot.agent.tools.image_generation import (
@@ -4709,7 +4727,7 @@ async def test_image_settings_hot_reload_without_restart(
         reload_image_generation_tool,
     )
 
-    port = 29935
+    port = 0
     config_path = tmp_path / "config.json"
     config = Config.model_validate({"providers": {"SenseNova": {
         "apiKey": "named-image-key", "apiBase": "https://images.test/v1",
@@ -4730,8 +4748,7 @@ async def test_image_settings_hot_reload_without_restart(
 
     channel = _ch(runtime_bus, port=port, image_generation_reload=image_reload)
     channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
     webui_client = None
     try:
         webui_token = channel.gateway.tokens.issue_token(300, audience="webui")
@@ -4788,8 +4805,9 @@ async def test_image_settings_fall_back_to_restart_when_hot_reload_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     runtime_available: bool,
+    start_listener,
 ) -> None:
-    port = 29936
+    port = 0
     config_path = tmp_path / "config.json"
     config = Config()
     config.providers.openrouter.api_key = "image-key"
@@ -4805,8 +4823,7 @@ async def test_image_settings_fall_back_to_restart_when_hot_reload_fails(
 
     channel = _ch(bus, port=port, image_generation_reload=image_reload if runtime_available else None)
     channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
     webui_client = None
     try:
         webui_token = channel.gateway.tokens.issue_token(300, audience="webui")
@@ -4831,13 +4848,12 @@ async def test_image_settings_fall_back_to_restart_when_hot_reload_fails(
 
 
 @pytest.mark.asyncio
-async def test_commands_api_returns_slash_command_metadata(bus: MagicMock) -> None:
-    port = 29892
+async def test_commands_api_returns_slash_command_metadata(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
     channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         denied = await _http_get(f"http://127.0.0.1:{port}/api/commands")
@@ -4865,8 +4881,8 @@ async def test_commands_api_returns_slash_command_metadata(bus: MagicMock) -> No
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_exposes_native_surface(bus: MagicMock) -> None:
-    port = 29893
+async def test_bootstrap_exposes_native_surface(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = WebSocketChannel(
         {
             "enabled": True,
@@ -4885,8 +4901,7 @@ async def test_bootstrap_exposes_native_surface(bus: MagicMock) -> None:
         ),
     )
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         response = await _http_get(
@@ -4992,12 +5007,11 @@ def test_update_provider_settings_ignores_api_type_for_non_openai(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_server_pushes_streaming_deltas_to_client(bus: MagicMock) -> None:
-    port = 29880
+async def test_end_to_end_server_pushes_streaming_deltas_to_client(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port, streaming=True)
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=stream-tester") as client:
@@ -5045,12 +5059,11 @@ async def test_end_to_end_server_pushes_streaming_deltas_to_client(bus: MagicMoc
 
 
 @pytest.mark.asyncio
-async def test_token_issue_rejects_when_at_capacity(bus: MagicMock) -> None:
-    port = 29881
+async def test_token_issue_rejects_when_at_capacity(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port, tokenIssuePath="/auth/token", tokenIssueSecret="s")
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         # Fill issued tokens to capacity
@@ -5073,12 +5086,11 @@ async def test_token_issue_rejects_when_at_capacity(bus: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_allow_from_rejects_unauthorized_client_id(bus: MagicMock) -> None:
-    port = 29882
+async def test_allow_from_rejects_unauthorized_client_id(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port, allowFrom=["alice", "bob"])
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         with pytest.raises(websockets.exceptions.InvalidStatus) as exc_info:
@@ -5313,12 +5325,11 @@ async def test_side_channel_command_does_not_register_queued_turn(
 
 
 @pytest.mark.asyncio
-async def test_client_id_truncation(bus: MagicMock) -> None:
-    port = 29883
+async def test_client_id_truncation(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         long_id = "x" * 200
@@ -5332,12 +5343,11 @@ async def test_client_id_truncation(bus: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_utf8_binary_frame_ignored(bus: MagicMock) -> None:
-    port = 29884
+async def test_non_utf8_binary_frame_ignored(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=bin-test") as client:
@@ -5353,8 +5363,8 @@ async def test_non_utf8_binary_frame_ignored(bus: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_static_token_accepts_issued_token_as_fallback(bus: MagicMock) -> None:
-    port = 29885
+async def test_static_token_accepts_issued_token_as_fallback(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(
         bus, port=port,
         token="static-secret",
@@ -5362,8 +5372,7 @@ async def test_static_token_accepts_issued_token_as_fallback(bus: MagicMock) -> 
         tokenIssueSecret="route-secret",
     )
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         # Get an issued token
@@ -5384,12 +5393,11 @@ async def test_static_token_accepts_issued_token_as_fallback(bus: MagicMock) -> 
 
 
 @pytest.mark.asyncio
-async def test_allow_from_empty_list_denies_all(bus: MagicMock) -> None:
-    port = 29886
+async def test_allow_from_empty_list_denies_all(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port, allowFrom=[])
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         with pytest.raises(websockets.exceptions.InvalidStatus) as exc_info:
@@ -5402,13 +5410,12 @@ async def test_allow_from_empty_list_denies_all(bus: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_websocket_requires_token_without_issue_path(bus: MagicMock) -> None:
+async def test_websocket_requires_token_without_issue_path(bus: MagicMock, start_listener) -> None:
     """When websocket_requires_token is True but no token or issue path configured, all connections are rejected."""
-    port = 29887
+    port = 0
     channel = _ch(bus, port=port, websocketRequiresToken=True)
 
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         # No token at all → 401
@@ -5435,11 +5442,10 @@ async def test_websocket_requires_token_without_issue_path(bus: MagicMock) -> No
 
 
 @pytest.mark.asyncio
-async def test_multiplex_legacy_still_works(bus: MagicMock) -> None:
-    port = 29930
+async def test_multiplex_legacy_still_works(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=legacy") as client:
@@ -5473,11 +5479,10 @@ async def test_multiplex_legacy_still_works(bus: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_multiplex_new_chat_roundtrip(bus: MagicMock) -> None:
-    port = 29931
+async def test_multiplex_new_chat_roundtrip(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=mp") as client:
@@ -5609,11 +5614,10 @@ async def test_webui_message_envelope_appends_user_transcript(
 
 
 @pytest.mark.asyncio
-async def test_multiplex_two_chats_isolated(bus: MagicMock) -> None:
-    port = 29932
+async def test_multiplex_two_chats_isolated(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=two") as client:
@@ -5646,11 +5650,10 @@ async def test_multiplex_two_chats_isolated(bus: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_multiplex_invalid_frames_return_error(bus: MagicMock) -> None:
-    port = 29933
+async def test_multiplex_invalid_frames_return_error(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=bad") as client:
@@ -5682,11 +5685,10 @@ async def test_multiplex_invalid_frames_return_error(bus: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_multiplex_cleanup_on_disconnect(bus: MagicMock) -> None:
-    port = 29934
+async def test_multiplex_cleanup_on_disconnect(bus: MagicMock, start_listener) -> None:
+    port = 0
     channel = _ch(bus, port=port)
-    server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
+    port, server_task = await start_listener(channel)
 
     try:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=dc") as client:

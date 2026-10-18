@@ -616,7 +616,11 @@ interface ProviderModelInfo {
   description?: string | null;
   owned_by?: string | null;
   context_window?: number | null;
+  max_output_tokens?: number;
+  input_modalities?: string[];
+  output_modalities?: string[];
   reasoning_efforts?: string[];
+  default_reasoning_effort?: string;
   supports_backend_search?: boolean;
   api?: ModelAPIConfig | null;
 }
@@ -1695,8 +1699,24 @@ export interface OutboundMcpPresetMention {
 interface WebuiThreadPagePayload {
   before_cursor?: string | null;
   has_more_before?: boolean;
+  after_cursor?: string | null;
+  has_more_after?: boolean;
   user_message_offset?: number;
   loaded_event_count?: number;
+}
+
+export interface PromptSummary {
+  id: string;
+  preview: string;
+  answerPreview: string;
+  createdAt: number;
+  cursor: string;
+  turnId: string;
+}
+
+export interface PromptIndex {
+  prompts: PromptSummary[];
+  revision?: string;
 }
 
 export interface WebuiThreadPersistedPayload {

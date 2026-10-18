@@ -21,6 +21,7 @@ import type {
   ModelConfigurationUpdate,
   NetworkSafetySettingsUpdate,
   PairingPayload,
+  PromptIndex,
   ProviderCreationUpdate,
   ProviderModelsPayload,
   ProviderOAuthCompletionResult,
@@ -235,6 +236,7 @@ export interface FetchWebuiThreadOptions {
   limit?: number;
   direction?: "latest";
   before?: string | null;
+  after?: string | null;
   signal?: AbortSignal;
   revision?: string;
   cached?: WebuiThreadPersistedPayload;
@@ -418,6 +420,7 @@ export async function fetchWebuiThread(
   if (options?.limit !== undefined) params.set("limit", String(options.limit));
   if (options?.direction) params.set("direction", options.direction);
   if (options?.before) params.set("before", options.before);
+  if (options?.after) params.set("after", options.after);
   const query = params.toString();
   const suffix = query ? `?${query}` : "";
   const url = `${resolvedBase}/api/sessions/${encodeURIComponent(key)}/webui-thread${suffix}`;
@@ -433,6 +436,34 @@ export async function fetchWebuiThread(
   if (res.status === 404) return null;
   if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`);
   return parseWebuiThreadPayload(await res.json());
+}
+
+export async function fetchPromptIndex(token: string, key: string, signal: AbortSignal, cached?: PromptIndex): Promise<PromptIndex> {
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  const query = cached?.revision ? `?since=${encodeURIComponent(cached.revision)}` : "";
+  if (cached?.revision) headers["If-None-Match"] = `"${cached.revision}"`;
+  const res = await fetchWithTimeout(`/api/sessions/${encodeURIComponent(key)}/webui-thread/prompts${query}`, {
+    headers, credentials: "same-origin", cache: "no-store", signal,
+  });
+  if (res.status === 304 && cached) return cached;
+  if (!res.ok) throw new ApiError(res.status, `HTTP ${res.status}`);
+  const body: unknown = await res.json();
+  if (!isRecord(body) || !Array.isArray(body.prompts)) throw new Error("Invalid prompt index");
+  const replaceFrom = body.replaceFrom ?? 0;
+  if (typeof replaceFrom !== "number" || !Number.isSafeInteger(replaceFrom)
+    || replaceFrom < 0 || replaceFrom > (cached?.prompts.length ?? 0)
+    || (body.revision != null && typeof body.revision !== "string")) throw new Error("Invalid prompt index revision");
+  const prompts = body.prompts.map((item: unknown) => {
+    if (!isRecord(item) || typeof item.id !== "string" || typeof item.preview !== "string"
+      || typeof item.answerPreview !== "string" || typeof item.cursor !== "string" || typeof item.turnId !== "string"
+      || typeof item.createdAt !== "number" || !Number.isFinite(item.createdAt)) {
+      throw new Error("Invalid prompt summary");
+    }
+    return { id: item.id, preview: item.preview, answerPreview: item.answerPreview,
+      cursor: item.cursor, createdAt: item.createdAt, turnId: item.turnId };
+  });
+  return { prompts: [...(cached?.prompts.slice(0, replaceFrom) ?? []), ...prompts],
+    revision: typeof body.revision === "string" ? body.revision : undefined };
 }
 
 export async function fetchWebuiThreadTraceDetail(

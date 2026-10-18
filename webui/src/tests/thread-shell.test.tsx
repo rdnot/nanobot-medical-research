@@ -720,6 +720,47 @@ describe("ThreadShell", () => {
     expect(detailCalls).toBe(2);
   });
 
+  it("hydrates deferred activity in an independently paged navigation window", async () => {
+    const client = makeClient();
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/prompts")) return Promise.resolve(httpJson({ prompts: [{
+        id: "old-user", preview: "Old question", answerPreview: "old answer", createdAt: 1,
+        cursor: "0", turnId: "old-turn",
+      }] }));
+      if (url.includes("/trace-detail?")) return Promise.resolve(httpJson({
+        message_id: "history-aaaaaaaaaaaaaaaaaaaa", events: [{
+          event: "message", chat_id: "trace-navigation", projection_id: "old-trace", kind: "progress",
+          text: 'exec({"command":"echo historical"})',
+        }],
+      }));
+      if (url.includes("after=0")) return Promise.resolve(httpJson({
+        schemaVersion: 3, projection: "events", events: [
+          { event: "user_message", chat_id: "trace-navigation", projection_id: "old-user", text: "Old question", starts_turn: true },
+          { event: "message", chat_id: "trace-navigation", projection_id: "old-trace", kind: "progress", text: "exec(…)",
+            trace_detail: { ref: "1.history-aaaaaaaaaaaaaaaaaaaa", bytes: 40_000, traceCount: 1 } },
+          { event: "message", chat_id: "trace-navigation", projection_id: "old-answer", text: "old answer" },
+        ], page: { user_message_offset: 0, has_more_before: false, has_more_after: true, after_cursor: "1" },
+      }));
+      if (url.includes("/webui-thread")) return Promise.resolve(httpJson({
+        schemaVersion: 3, messages: [{ id: "latest-answer", role: "assistant", content: "latest answer", createdAt: 100 }],
+      }));
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+    }));
+    render(wrap(client, <ThreadShell session={session("trace-navigation")} title="Trace navigation" onToggleSidebar={() => {}} />,
+      null, "tok", ["webui.prompt-navigation.v1"]));
+    await screen.findByText("latest answer");
+    fireEvent.click(await screen.findByRole("button", { name: "Message navigation" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Jump to message: Old question" }));
+    await screen.findByText("old answer");
+    const menu = await openMessageActions("old answer");
+    fireEvent.click(within(menu).getByRole("button", { name: /Worked/ }));
+    await waitFor(() => expect(document.body).toHaveTextContent("echo historical"));
+    fireEvent.click(screen.getByRole("button", { name: "Scroll to bottom" }));
+    await screen.findByText("latest answer");
+    expect(screen.queryByText("old answer")).not.toBeInTheDocument();
+  });
+
   it("ignores a deferred trace-detail failure after switching sessions", async () => {
     const client = makeClient();
     const detailUrls: string[] = [];

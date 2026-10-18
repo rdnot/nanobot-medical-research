@@ -56,6 +56,12 @@ Manual config still works. Same-machine localhost WebUI access can run without a
 
 The WebUI is served by the WebSocket channel on port `8765` by default. The gateway health endpoint, `18790` by default, is not the browser UI.
 
+## Navigate a long conversation
+
+On wide conversation panes, the left message rail lists all saved prompts independently of the loaded message page. Scroll the rail to browse, hover to preview, and click to jump directly to a prompt; its edges fade without extending the conversation layout. The header's message navigation also supports searching the prompt summaries. Both lists render a visible window rather than thousands of controls. Older compatible hosts without `webui.prompt-navigation.v1` retain navigation within already-loaded messages.
+
+Jumping reads a bounded page near the selected prompt, not every earlier answer. Browsing keeps at most three server pages, supports scrolling backward and forward, and the bottom arrow returns to the live conversation. A failed read leaves the current content intact and offers retry. The navigation index is a rebuildable, bounded summary cache over the WebUI display transcript; it does not change the SQLite session schema, agent context, configuration, or chat data. On first access to a long uncached conversation, building the summaries requires reading its transcript segments in a worker thread; later accesses reuse unchanged segment summaries. Unchanged directories use conditional requests without a response body. Changed directories transfer only the changed suffix when a previous snapshot is still cached; after a restart or cache eviction, the host sends a complete directory. These caches are held in memory and do not create another persistent chat store.
+
 ## Sharing access
 
 The WebUI is an administration interface for one nanobot instance. Signed-in WebUI users can work with its saved topics and manage models, channels, Apps, automations, and settings within the gateway's supported capabilities. There are no per-user roles or private topic ownership boundaries. Remote package installation has an additional restriction described under [LAN Access](#lan-access); that restriction does not turn other WebUI users into read-only users.
@@ -99,7 +105,7 @@ Returning users may see an illustrated invitation to star nanobot on GitHub. It 
 
 The sidebar is the topic switcher. Each topic keeps its own history, title, workspace selection, and linked automations. Use a new topic when you want a separate context; use fork when you want to continue from an existing point without changing the original thread.
 
-On touch devices, sidebar action buttons stay visible with larger touch areas for topics, conversation groups, panes, and projects. Tap a title to select it or the adjacent action button for its menu. Desktop actions still appear on hover or keyboard focus. Press Escape in an action menu to return focus to its button and continue with Tab, including from the **Move to** submenu. ArrowLeft leaves the submenu and returns to **Move to** without closing the parent menu. Choosing Rename instead moves focus into the dialog; clicking outside a menu keeps focus at the clicked destination.
+On touch devices, sidebar action buttons stay visible with larger touch areas for topics, conversation groups, panes, and projects. Tap a title to select it or the adjacent action button for its menu. Desktop actions still appear on hover or keyboard focus. Press Escape in an action menu to return focus to its button and continue with Tab, including from the **Move to** submenu. ArrowLeft leaves the submenu and returns to **Move to** without closing the parent menu. Choosing **Rename** for a topic moves focus into its sidebar title. Edit the name in place, then press Enter or choose the checkmark to save; press Escape or choose × to cancel. A failed save keeps the draft and an error beside it so you can retry. Project and conversation-group names still use dialogs. Clicking outside a menu keeps focus at the clicked destination.
 
 Drag a topic within its current sidebar group to keep frequently used work in your preferred order. Drag a topic from the sidebar into the composer when you want to reference it in the next message instead of switching to it.
 
@@ -121,7 +127,9 @@ When the agent writes or edits files, the activity item shows the target path, s
 
 Files open as tabs in one preview pane. Select another file to add or switch a tab without reopening the pane; close a tab with its **×**, or close the pane with **Escape**. Tabs and width follow each session while the WebUI remains open. They are kept only in memory and cleared when that session is deleted or the connection ends. The pane overlays the conversation on narrow screens.
 
-Text previews include up to 384 KiB, with a notice when the file is truncated. Large previews show readable text before adding syntax colors; very large or minified source stays plain text. All previewed text remains available for selection and browser search, and the code pane scrolls in both directions.
+Markdown files open in **Preview**, with formatted headings, lists, tables and code blocks. Select **Source** to see the original Markdown with line numbers, then **Preview** to return. The control changes only the display; it does not edit or read the file again. Each newly opened or selected file starts in Preview. Images in Markdown appear as links and do not load automatically. Local links open through the same file access checks; relative paths start from the document's folder. Section-only links remain text. HTML and MDX components do not execute.
+
+Text previews include up to 384 KiB, with a notice when the file is truncated. Large source previews show readable text before adding syntax colors; very large or minified source stays plain text. All previewed text remains available for selection and browser search, and the source pane scrolls in both directions.
 
 PNG, JPEG, GIF and WebP files up to 8 MiB can be previewed as images. Hover or focus an image file reference for a compact quick look, or select it to open the pane. Select the preview image for the full-size viewer, which supports zoom controls, pinch-to-zoom and panning. HTML and SVG files remain read-only source previews rather than executable pages.
 

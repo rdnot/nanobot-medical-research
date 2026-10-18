@@ -96,6 +96,16 @@ class ContextWindowExceededError(RuntimeError):
         )
 
 
+def _request_extends_measured(
+    measured: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+) -> bool:
+    """Return whether measured messages are an unchanged prefix of the request."""
+    return len(current) >= len(measured) and all(
+        current[index] == measured[index] for index in range(len(measured))
+    )
+
+
 def _tool_call_name_is_valid(tool_call: Any) -> bool:
     """Whether a persisted OpenAI-style tool_call carries a usable name.
 
@@ -451,6 +461,7 @@ class ContextGovernor:
         usage: LLMUsage | None,
         *,
         usage_matches_messages: bool,
+        usage_prefixes_messages: bool,
         tool_definitions: list[dict[str, Any]] | None,
         request_context_tokens: int | None = None,
     ) -> tuple[int, str] | None:
@@ -475,6 +486,15 @@ class ContextGovernor:
                 messages,
                 tool_definitions,
             )
+            if (
+                usage_prefixes_messages
+                and usage is not None
+                and usage.reported_tokens > 0
+                and usage.context_tokens is not None
+                and usage.context_tokens > measured
+            ):
+                measured = usage.context_tokens
+                source = "prior provider usage plus pending messages"
         if budget > 0 and measured < budget:
             return None
         return measured, source
@@ -682,11 +702,17 @@ class ContextGovernor:
             and prepared == state.messages
             and tool_definitions == state.tool_definitions
         )
+        usage_prefixes_messages = (
+            state.messages is not None
+            and tool_definitions == state.tool_definitions
+            and _request_extends_measured(state.messages, prepared)
+        )
         pressure = await self.prepare_in_background(
             self.request_pressure, state.config,
             prepared,
             state.usage,
             usage_matches_messages=usage_matches_messages,
+            usage_prefixes_messages=usage_prefixes_messages,
             tool_definitions=tool_definitions,
             request_context_tokens=request_context_tokens,
         )

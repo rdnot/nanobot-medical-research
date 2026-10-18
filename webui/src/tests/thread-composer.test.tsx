@@ -816,7 +816,9 @@ describe("ThreadComposer", () => {
     expect(modelPill).not.toHaveClass("font-semibold");
     const providerLogo = screen.getByTestId("composer-model-logo-openai");
     expect(providerLogo).toBeInTheDocument();
-    expect(providerLogo).not.toHaveClass("border", "bg-background");
+    for (const className of ["border", "bg-background"]) {
+      expect(providerLogo).not.toHaveClass(className);
+    }
     const input = screen.getByPlaceholderText("Type your message...");
     expect(input.className).toContain("min-h-[50px]");
     expect(input.className).toContain("text-[16px]");
@@ -2482,6 +2484,21 @@ describe("ThreadComposer", () => {
     fireEvent.keyDown(input, { key: "Tab" });
 
     expect(input).toHaveValue("use @Blender tonight");
+  });
+
+  it("keeps literal mixed-script spacing in both composer input layers", () => {
+    render(<ThreadComposer onSend={vi.fn()} cliApps={CLI_APPS} />);
+    const input = screen.getByLabelText("Message input");
+    const value = "定位原因, 提 @gimp issue, i并提";
+    fireEvent.change(input, { target: { value, selectionStart: value.length } });
+
+    const display = "定位原因, 提 @\u00a0GIMP issue, i并提";
+    const overlay = input.previousElementSibling;
+    expect(input).toHaveValue(display);
+    expect(overlay).toHaveAttribute("aria-hidden", "true");
+    expect(overlay?.textContent).toBe(display);
+    expect(input).toHaveClass("[text-autospace:no-autospace]");
+    expect(overlay).toHaveClass("[text-autospace:no-autospace]");
   });
 
   it("renders a CLI app mention logo inline without moving the text cursor slot", () => {

@@ -55,6 +55,29 @@ def test_import_is_once_and_private_sources_are_unchanged(tmp_path):
     assert SessionManager(workspace).read_session_snapshot("websocket:old") is None
 
 
+@pytest.mark.parametrize(("newline", "trailing_newline"), [
+    ("\n", True), ("\r\n", True), ("\n", False), ("\r\n", False),
+], ids=["lf", "crlf", "lf-no-final-newline", "crlf-no-final-newline"])
+def test_migration_preserves_unicode_separators(tmp_path, newline, trailing_newline):
+    workspace = tmp_path / "workspace"
+    path = legacy(workspace, content="中文🙂\u0085NEL\u2028LS\u2029PS\nLF\rCR")
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").split("\n")
+               if line.strip()]
+    records.append({"role": "assistant", "content": "reply\u2029\u2028\u0085"})
+    lines = [json.dumps(record, ensure_ascii=False) for record in records]
+    lines[1:1] = ["", " \t"]
+    original = (newline.join(lines) + (newline if trailing_newline else "")).encode("utf-8")
+    path.write_bytes(original)
+
+    manager = SessionManager(workspace)
+    expected = records[1:]
+    assert manager.read_session_snapshot("websocket:old").messages == expected
+    assert not path.exists()
+    assert (manager.sessions_dir / WORKSPACE_BACKUP_DIR / path.name).read_bytes() == original
+    reopened = SessionManager(workspace)
+    assert reopened.read_session_snapshot("websocket:old").messages == expected
+
+
 def test_invalid_source_rolls_back_entire_migration(tmp_path):
     workspace = tmp_path / "workspace"
     path = legacy(workspace)
@@ -293,15 +316,27 @@ async def test_detached_reads_do_not_publish_mutations(tmp_path):
 async def test_checkpoint_does_not_rewrite_messages(tmp_path):
     manager = SessionManager(tmp_path)
     state = manager.state
-    draft = await state.get("chat:a")
-    draft.add_message("user", "hello")
-    await state.prepare_input(draft)
-    path = manager.sessions_dir / "sessions.sqlite3"
-    with sqlite3.connect(path) as db:
-        db.execute("CREATE TRIGGER prohibit_rewrite BEFORE UPDATE ON messages BEGIN SELECT RAISE(ABORT, 'rewritten'); END")
-    await state.checkpoint_view(draft, {"step": 1})
-    assert (await state.get(draft.key)).metadata["runtime_checkpoint"] == {"step": 1}
-    await state.aclose()
+    try:
+        draft = await state.import_messages("chat:a", [
+            {"role": "user", "content": "earlier question"},
+            {"role": "assistant", "content": "earlier answer"},
+        ])
+        draft.add_message("user", "hello")
+        await state.prepare_input(draft)
+        accepted = manager.read_session_snapshot(draft.key).messages
+        assert accepted == draft.messages
+        path = manager.sessions_dir / "sessions.sqlite3"
+        with sqlite3.connect(path) as db:
+            for operation in ("INSERT", "UPDATE", "DELETE"):
+                db.execute(f"""CREATE TRIGGER prohibit_{operation.lower()} BEFORE {operation} ON messages
+                               BEGIN SELECT RAISE(ABORT, 'rewritten'); END""")
+        await state.checkpoint_view(draft, {"step": 1})
+    finally:
+        await state.aclose()
+
+    stored = manager.read_session_snapshot(draft.key)
+    assert stored.messages == accepted
+    assert stored.metadata["runtime_checkpoint"] == {"step": 1}
 
 
 async def test_database_lock_does_not_block_event_loop(tmp_path):
