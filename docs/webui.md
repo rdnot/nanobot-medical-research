@@ -58,9 +58,7 @@ The WebUI is served by the WebSocket channel on port `8765` by default. The gate
 
 ## Navigate a long conversation
 
-On wide conversation panes, the left message rail lists all saved prompts independently of the loaded message page. Scroll the rail to browse, hover to preview, and click to jump directly to a prompt; its edges fade without extending the conversation layout. The header's message navigation also supports searching the prompt summaries. Both lists render a visible window rather than thousands of controls. Older compatible hosts without `webui.prompt-navigation.v1` retain navigation within already-loaded messages.
-
-Jumping reads a bounded page near the selected prompt, not every earlier answer. Browsing keeps at most three server pages, supports scrolling backward and forward, and the bottom arrow returns to the live conversation. A failed read leaves the current content intact and offers retry. The navigation index is a rebuildable, bounded summary cache over the WebUI display transcript; it does not change the SQLite session schema, agent context, configuration, or chat data. On first access to a long uncached conversation, building the summaries requires reading its transcript segments in a worker thread; later accesses reuse unchanged segment summaries. Unchanged directories use conditional requests without a response body. Changed directories transfer only the changed suffix when a previous snapshot is still cached; after a restart or cache eviction, the host sends a complete directory. These caches are held in memory and do not create another persistent chat store.
+On wide screens, use the message rail on the left to browse saved prompts; click one to jump to it. You can also search prompt summaries from the header. The WebUI loads messages near the selected prompt rather than the entire conversation. Scroll backward or forward to browse, or use the bottom arrow to return to the latest messages. If loading fails, your current content stays visible and you can retry. Older compatible hosts may only support navigation among messages that are already loaded.
 
 ## Sharing access
 
@@ -135,6 +133,10 @@ PNG, JPEG, GIF and WebP files up to 8 MiB can be previewed as images. Hover or f
 
 A plain image file link does not automatically insert a large image into the reply. Explicit Markdown images appear inline; image attachments use a compact gallery, showing at most four thumbnails before a count of the remaining images. An image already displayed inline is not duplicated in the attachment gallery.
 
+Mermaid code fences show their source while a reply is being generated, then render a diagram when the reply finishes. Choose **Source** or **Diagram** to switch views, or **Copy source** to copy the original code. **Enlarge diagram** opens a viewer with zoom buttons, pinch-to-zoom and drag-to-pan. With the viewport focused, use **+**, **−** and **0** to zoom or reset, and arrow keys to pan; **Escape** closes the viewer.
+
+If a diagram cannot be rendered, its source stays available with an error message. Links, external images and executable HTML inside diagrams are disabled.
+
 Select a file reference to preview it. Right-click the reference or its preview tab to copy its absolute or project-relative path. Keyboard users can focus a reference and press **Shift+F10**. Paths are resolved on the gateway machine, which may not be the computer running your browser. Files outside the project do not have a project-relative path. If a reference cannot be resolved, you can still copy the original reference; the menu does not invent an absolute path. Finder, external editor and terminal launching are not available from this browser menu.
 
 File previews follow the active topic's access mode. Restricted workspace access previews only files under the selected workspace. Full Access can preview files outside the workspace when that access mode is allowed by the gateway.
@@ -207,7 +209,7 @@ The composer supports plain messages, image attachments, voice input when transc
 
 On touch-primary phones and tablets, **Enter** inserts a newline; tap the send arrow to submit. This also applies when a coarse-pointer tablet has a hardware keyboard attached. On desktop, **Enter** sends and **Shift+Enter** adds a newline. An open slash-command or mention menu takes precedence: Enter selects its item.
 
-While a response is running, the send arrow delivers a ready draft as guidance for the active turn; it does not issue a stop command. Other messages already waiting in the queue stay there. On desktop, Enter queues guidance and a second Enter with an empty input sends that queued message immediately. Queued messages also have a **Send now** action. The primary button shows **Stop** when there is no sendable draft; clear the draft or use `/stop` to stop instead of sending it.
+While a response is running, desktop Enter adds your input to one waiting message. Further inputs append in order, separated by newlines, with their attachments and references retained. The complete message is sent once the current response finishes. Press Enter again with an empty input or choose **Send now** to insert it immediately as guidance for the active turn. The send arrow also includes any waiting content when submitting a new draft. Use **Edit message** to revise the complete message or **Delete message** to discard it. If an addition would exceed the message limits, it stays in the input so you can revise it. The primary button shows **Stop** when there is no sendable draft; stopping or a failed send keeps the waiting message for manual sending.
 
 The agent can inspect an attached topic with `read_session`. It can discover other persisted topics with `list_sessions` and send asynchronous messages with `send_session_message`; topic messaging is not limited by workspace scope. The model badge shows the current model or preset and links to model settings when setup is incomplete.
 

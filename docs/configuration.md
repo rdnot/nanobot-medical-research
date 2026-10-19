@@ -2064,11 +2064,34 @@ Create a key at [serper.dev](https://serper.dev). You can also set `SERPER_API_K
 
 AnySearch works out of the box with no key, via its anonymous quota (lower rate limits). Set `apiKey` (or `ANYSEARCH_API_KEY`) from [anysearch.com](https://anysearch.com/console/api-keys) to lift rate limits. It also offers vertical-domain search and full-page URL content extraction.
 
+**DeepSeek** (keyed, separate Search API):
+<details>
+<summary>Manual configuration</summary>
+
+```json
+{
+  "tools": {
+    "web": {
+      "search": {
+        "provider": "deepseek",
+        "apiKey": "${DEEPSEEK_SEARCH_KEY}"
+      }
+    }
+  }
+}
+```
+
+</details>
+
+Create a key at [platform.deepseek.com](https://platform.deepseek.com). Set `tools.web.search.apiKey` directly or with a `${VAR_NAME}` reference. Missing credentials cause a configuration error, with no provider fallback.
+
+Queries are limited to 128 Unicode characters after trimming whitespace; longer queries are rejected. Pricing is ¥5 per 1,000 successful requests, with an account-wide limit of 5 QPS across API keys. See the [DeepSeek Search API documentation](https://api-docs.deepseek.com/zh-cn/guides/search/) for search syntax and billing details.
+
 #### `tools.web.search`
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `provider` | string | `"duckduckgo"` | Search backend: `brave`, `tavily`, `jina`, `kagi`, `olostep`, `bocha`, `volcengine`, `keenable`, `serper`, `anysearch`, `searxng`, `duckduckgo` |
+| `provider` | string | `"duckduckgo"` | Search backend: `brave`, `tavily`, `jina`, `kagi`, `olostep`, `bocha`, `volcengine`, `keenable`, `serper`, `anysearch`, `deepseek`, `searxng`, `duckduckgo` |
 | `apiKey` | string | `""` | API key for API-backed search providers |
 | `baseUrl` | string | `""` | Base URL for SearXNG |
 | `maxResults` | integer | `5` | Results per search (1–10) |

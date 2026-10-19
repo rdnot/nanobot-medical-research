@@ -1996,7 +1996,7 @@
         "guide": "Send now",
         "delete": "Delete message",
         "edit": "Edit message",
-        "drag": "Drag to reorder"
+        "tooManyMentions": "A message can mention up to {{max}} chats"
       },
       "attachImage": "Attach files",
       "imageMode": {
@@ -2409,6 +2409,25 @@
     "safeResume": "Continuing from saved conversation context.",
     "dismiss": "Dismiss",
     "continue": "Continue"
+  },
+  "diagram": {
+    "graph": "Diagram",
+    "source": "Source",
+    "copy": "Copy source",
+    "enlarge": "Enlarge diagram",
+    "title": "Mermaid diagram",
+    "preparing": "Preparing diagram…",
+    "errors": {
+      "syntax": "Check the diagram syntax in the source.",
+      "unsupported": "This diagram type is not supported. View the source.",
+      "policy": "This diagram uses unsupported styling or resources. View the source.",
+      "limit": "This diagram exceeds the rendering limit. View the source.",
+      "load": "Couldn't load the diagram renderer. Try again.",
+      "deadline": "The diagram took too long to render. Simplify the source or try again.",
+      "worker": "Couldn't render the diagram. Try again.",
+      "image": "Couldn't display the diagram. Try again.",
+      "capability": "Diagram rendering is unavailable in this browser. View the source."
+    }
   },
   "lightbox": {
     "viewAll": "View all {{count}} images",
