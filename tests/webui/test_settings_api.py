@@ -1417,6 +1417,73 @@ def test_update_web_search_settings_can_clear_optional_api_key(
     assert saved.tools.web.search.api_key == ""
 
 
+def test_update_web_search_settings_accepts_deepseek_with_api_key(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.tools.web.search.provider = "duckduckgo"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = update_web_search_settings(
+        {"provider": ["deepseek"], "api_key": ["sk-deepseek-search"]}
+    )
+
+    saved = load_config(config_path)
+    assert saved.tools.web.search.provider == "deepseek"
+    assert saved.tools.web.search.api_key == "sk-deepseek-search"
+    option = next(item for item in payload["web_search"]["providers"] if item["name"] == "deepseek")
+    assert option["label"] == "DeepSeek"
+    assert option["credential"] == "api_key"
+
+
+@pytest.mark.parametrize("environment_key", [None, "ambient-deepseek-key"])
+def test_update_web_search_settings_requires_deepseek_api_key(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    environment_key,
+) -> None:
+    if environment_key is None:
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("DEEPSEEK_API_KEY", environment_key)
+    config_path = tmp_path / "config.json"
+    config = Config()
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    with pytest.raises(WebUISettingsError, match="api_key is required"):
+        update_web_search_settings({"provider": ["deepseek"]})
+
+    assert load_config(config_path).tools.web.search.provider == "duckduckgo"
+
+
+def test_deepseek_explicit_env_reference_survives_settings_updates(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_SEARCH_KEY", "private-deepseek-environment-key")
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.tools.web.search.provider = "deepseek"
+    config.tools.web.search.api_key = "${DEEPSEEK_SEARCH_KEY}"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    for timeout in (30, 45):
+        payload = update_web_search_settings({
+            "provider": ["deepseek"], "timeout": [str(timeout)],
+        })
+        saved = load_config(config_path).tools.web.search
+        assert saved.provider == "deepseek"
+        assert saved.api_key == "${DEEPSEEK_SEARCH_KEY}"
+        assert saved.timeout == timeout
+        assert payload["web_search"]["api_key_hint"]
+        assert "private-deepseek-environment-key" not in str(payload)
+
+
 def test_settings_payload_includes_effective_transcription_config(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

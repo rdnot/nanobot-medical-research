@@ -149,6 +149,8 @@ class Session:
 
     # Owner-private committed snapshot. Never mutate or expose its records as draft data.
     _baseline: Session | None = field(default=None, repr=False, compare=False)
+    # Explicit draft command, committed with history against the latest owner journal.
+    consumed_followup_ids: frozenset[str] = field(default_factory=frozenset, repr=False, compare=False)
     persisted: bool = field(default=False, repr=False, compare=False)
     revision: int = field(default=0, repr=False, compare=False)
     generation: str = field(default_factory=lambda: uuid4().hex, repr=False, compare=False)
@@ -594,6 +596,10 @@ class SessionManager:
     def read_session_snapshot(self, key: str) -> Session | None:
         """Load a detached session snapshot without populating the runtime cache."""
         return self._store.load(key)
+
+    def read_session_version(self, key: str) -> tuple[str, int] | None:
+        """Return a cheap committed version, including delete/recreate identity."""
+        return self._store.read_version(key)
 
     def read_session_metadata(self, key: str) -> dict[str, Any] | None:
         """Read session metadata without loading the transcript."""

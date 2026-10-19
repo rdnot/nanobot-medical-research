@@ -348,7 +348,8 @@ export function AppsCatalogSettings({
           </div>
         ) : null}
         {loading ? (
-          <CatalogSkeleton label={tx("settings.apps.loading", "Loading apps…")} layout="apps" />
+          <CatalogSkeleton label={tx("settings.apps.loading", "Loading apps…")} layout="apps"
+            appActionLabel={filter === "cli" ? undefined : tx("settings.mcp.manage", "Manage")} />
         ) : !items.length && !statusIsError ? (
           <div className="px-3 py-12 text-center text-sm text-muted-foreground">
             <p>{emptyTitle}</p>
@@ -1379,7 +1380,8 @@ function McpPresetLogo({
   return (
     <span
       className={cn(
-        "grid shrink-0 place-items-center font-semibold text-white",
+        "grid shrink-0 place-items-center font-semibold",
+        preset.brand_color ? "text-white" : "text-muted-foreground",
         compact
           ? "h-10 w-10 rounded-control text-[12px]"
           : "h-9 w-9 rounded-[10px] text-[12px]",
