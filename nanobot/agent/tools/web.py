@@ -862,7 +862,6 @@ async def _fetch_scrapling(
                     # network_idle never settles on Reddit/CF sites; rely on the
                     # load event plus the page action instead.
                     "network_idle": False,
-                    "adaptive": True,
                     "timeout": 30000 if solve_cf else 45000,
                 }
                 fetch_kwargs["page_action"] = page_action
