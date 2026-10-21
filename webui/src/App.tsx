@@ -59,6 +59,7 @@ import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useAppViewport } from "@/hooks/useAppViewport";
 import type { SendAttachment, SendOptions } from "@/hooks/useNanobotStream";
 import { ThemeProvider, useTheme } from "@/hooks/useTheme";
+import { useReadingTypography } from "@/hooks/useReadingTypography";
 import { logoFallbackUrls } from "@/lib/provider-brand";
 import { cn } from "@/lib/utils";
 import {
@@ -73,9 +74,12 @@ import {
 import { displayTitle, sortSessions } from "@/lib/chat-groups";
 import { deriveTitle } from "@/lib/format";
 import { NanobotClient } from "@/lib/nanobot-client";
+import { BrowserNotifications, useBrowserNotificationLifecycle } from "@/components/BrowserNotifications";
 import { ThreadMessageCache } from "@/lib/thread-message-cache";
 import { FilePreviewStore } from "@/hooks/useFilePreviewState";
 import { ClientProvider, useClient } from "@/providers/ClientProvider";
+import { useVersionCheck } from "@/providers/VersionCheckProvider";
+import { useUpdateFlow } from "@/providers/UpdateFlowProvider";
 import type {
   BootstrapResponse,
   ChatSummary,
@@ -175,6 +179,7 @@ const SETTINGS_SECTION_KEYS: SettingsSectionKey[] = [
   "overview",
   "about",
   "appearance",
+  "notifications",
   "models",
   "image",
   "voice",
@@ -937,6 +942,8 @@ function resolveRuntimeSurface(
 
 export default function App() {
   useAppViewport();
+  useBrowserNotificationLifecycle();
+  useReadingTypography();
   const { t } = useTranslation();
   const [state, setState] = useState<BootState>({ status: "loading" });
   const bootstrapSecretRef = useRef("");
@@ -1134,7 +1141,10 @@ export default function App() {
       modelName={state.modelName}
       ingressLimits={state.ingressLimits}
       webuiCapabilities={state.webuiCapabilities}
+      checkUpdatesOnConnect={state.runtimeSurface !== "native" && state.webuiCapabilities.includes("webui.core.v1")}
+      allowUpdateFlow={state.runtimeSurface !== "native"}
     >
+      <BrowserNotifications client={state.client} />
       <RemoteInstances><Shell
         runtimeSurface={state.runtimeSurface}
         onModelNameChange={handleModelNameChange}
@@ -1158,6 +1168,8 @@ function Shell({
 }) {
   const { t, i18n } = useTranslation();
   const remoteConnections = useRemoteConnections();
+  const versionCheck = useVersionCheck();
+  const updateFlow = useUpdateFlow();
   const localActive = remoteConnections?.localActive !== false;
   const managingConnections = remoteConnections?.managing === true && !remoteConnections?.activeHostId;
   const { theme, toggle } = useTheme();
@@ -2766,6 +2778,12 @@ function Shell({
     onRequestRenameProject,
     onNewChatInProject,
     onOpenSettings,
+    onOpenUpdates: () => onOpenSettings("about"),
+    availableUpdate: localActive && !isNativeRuntime(effectiveRuntimeSurface)
+      && versionCheck.result?.type === "update" && versionCheck.result.latestVersion !== versionCheck.dismissedVersion
+      ? { version: versionCheck.result.latestVersion, onDismiss: versionCheck.dismiss, onRequestUpdate: updateFlow.open,
+        installationMethod: updateFlow.pending ? null : versionCheck.installationMethod }
+      : undefined,
     onOpenApps,
     onOpenAutomations,
     onOpenChannels,

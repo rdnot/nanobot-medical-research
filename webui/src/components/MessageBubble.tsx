@@ -28,7 +28,6 @@ import { copyTextToClipboard } from "@/lib/clipboard";
 import { formatMessageEndTime } from "@/lib/format-time";
 import { toMediaAttachment } from "@/lib/media";
 import { matchingSlashCommand } from "@/lib/slash-command";
-import { sessionHandleColor } from "@/lib/session-handle";
 import { parseQuotedUserMessage } from "@/lib/user-message-quote";
 import type {
   CliAppInfo,
@@ -384,23 +383,18 @@ function IncomingSessionMessage({
   onOpenFilePreview?: (path: string) => void;
 }) {
   const handle = message.sessionMessage!.session;
-  const color = sessionHandleColor(handle.id);
   const handleName = `@${handle.name}`;
 
   return (
     <div
       data-session-message
-      className="group relative w-full text-[15px]"
-      style={{ lineHeight: "var(--cjk-line-height)" }}
+      className="group relative mr-auto w-fit min-w-0 max-w-[min(85%,36rem)] text-reading"
     >
-      {contextMenu}
-      <div
-        className="min-w-0 rounded-es-[16px] border-s-2 bg-background pb-1 ps-2.5"
-        style={{ borderInlineStartColor: color }}
-      >
-        <div className="mb-1.5 flex items-center text-[12px] text-muted-foreground">
-          <SessionHandleLabel id={handle.id}>{handleName}</SessionHandleLabel>
-        </div>
+      <div className="mb-1.5 flex items-center px-4 text-[12px] text-muted-foreground">
+        <SessionHandleLabel id={handle.id}>{handleName}</SessionHandleLabel>
+      </div>
+      <div className="relative min-w-0 rounded-floating bg-secondary/70 px-4 py-2">
+        {contextMenu}
         <div data-assistant-selectable="true" className="min-w-0">
           <MarkdownText
             preserveStreamingLayout
@@ -484,10 +478,9 @@ export function MessageBubble({
     );
     return (
       <div
-        data-user-text-bubble={hasText && !hasImages && !hasMedia && !quotedContext || undefined}
         className="group relative ml-auto flex w-fit max-w-[min(85%,36rem)] flex-col items-end gap-1.5"
       >
-        {contextMenu}
+        {!hasText ? contextMenu : null}
         {hasImages ? <ImageGallery images={images} align="right" size="compact" /> : null}
         {!hasImages && hasMedia ? (
           <MessageMedia media={media} align="right" />
@@ -499,18 +492,21 @@ export function MessageBubble({
           />
         ) : null}
         {hasText ? (
-          <p
-            data-temporary-message={temporary ? "true" : undefined}
-            className={cn(
-              "ml-auto w-fit max-w-full min-w-0 rounded-floating px-4 py-2",
-              "text-left text-[16px]/[1.75] whitespace-pre-wrap [overflow-wrap:anywhere]",
-              temporary
-                ? "border border-dashed border-muted-foreground/40 bg-transparent"
-                : "bg-secondary/70",
-            )}
-          >
-            {messageText}
-          </p>
+          <div data-user-text-bubble className="relative ml-auto w-fit max-w-full min-w-0">
+            {contextMenu}
+            <p
+              data-temporary-message={temporary ? "true" : undefined}
+              className={cn(
+                "ml-auto w-fit max-w-full min-w-0 rounded-floating px-4 py-2",
+                "text-left text-reading whitespace-pre-wrap [overflow-wrap:anywhere]",
+                temporary
+                  ? "border border-dashed border-muted-foreground/40 bg-transparent"
+                  : "bg-secondary/70",
+              )}
+            >
+              {messageText}
+            </p>
+          </div>
         ) : null}
         {showDeliveryStatus ? (
             <div className="flex min-h-8 items-center justify-end gap-1.5 text-muted-foreground">
@@ -537,8 +533,7 @@ export function MessageBubble({
   return (
     <div
       data-assistant-message
-      className="group/assistant relative w-full text-[15px]"
-      style={{ lineHeight: "var(--cjk-line-height)" }}
+      className="group/assistant relative w-full text-reading"
     >
       {contextMenu}
       {hasReasoning ? (
@@ -579,7 +574,7 @@ function UserQuotedContext({ text, label }: { text: string; label: string }) {
       aria-label={label}
     >
       <Quote className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-      <p className="min-w-0 line-clamp-3 whitespace-pre-wrap text-[13px]/[1.45] [overflow-wrap:anywhere]">
+      <p className="min-w-0 line-clamp-3 whitespace-pre-wrap text-reading-small [overflow-wrap:anywhere]">
         {text}
       </p>
     </blockquote>

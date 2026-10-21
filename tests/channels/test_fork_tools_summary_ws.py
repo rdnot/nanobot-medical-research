@@ -113,39 +113,60 @@ async def test_tools_summary_is_persisted_with_answer_phase() -> None:
     assert captured.get("phase") == "answer"
 
 
-def test_tools_summary_kind_survives_history_replay() -> None:
+async def test_tools_summary_kind_survives_history_replay(tmp_path) -> None:
     """FORK: the thread endpoint must replay the summary with its kind so the
-    WebUI keeps it out of the activity-to-answer grouping after a reload."""
+    WebUI keeps it out of the activity-to-answer grouping after a reload. Covers
+    both durable paths: the live recorder append and the once-only import of
+    legacy ``~/.nanobot/webui/*.jsonl`` transcripts that already carry the kind
+    (an unknown kind there aborts the whole import)."""
+    from nanobot.session.display_history import HistoryKind
+    from nanobot.session.manager import SessionManager
+    from nanobot.webui.history import (
+        HISTORY_IMPORT_MARKER,
+        collect_legacy_history,
+        fact_from_record,
+    )
     from nanobot.webui.transcript import (
         WEBUI_TRANSCRIPT_SCHEMA_VERSION,
-        append_transcript_object,
         build_webui_thread_response,
-        webui_transcript_path,
     )
 
-    key = "websocket:chat-fork-replay"
-    path = webui_transcript_path(key)
-    if path.exists():
-        path.unlink()
-    for record in (
-        {"event": "user", "chat_id": "chat-fork-replay", "text": "do it"},
-        {"event": "stream_end", "chat_id": "chat-fork-replay", "text": "All done."},
-        {
-            "event": "message", "chat_id": "chat-fork-replay",
-            "text": "**Tools used:**\n- search(`sepsis`)",
-            "kind": "tools_summary",
-        },
-        {"event": "turn_end", "chat_id": "chat-fork-replay"},
-    ):
-        append_transcript_object(key, record)
+    def records(chat_id: str) -> list[dict[str, Any]]:
+        return [
+            {"event": "user", "chat_id": chat_id, "text": "do it", "created_at_ms": 1000},
+            {"event": "stream_end", "chat_id": chat_id, "text": "All done.", "created_at_ms": 1001},
+            {
+                "event": "message", "chat_id": chat_id, "created_at_ms": 1002,
+                "text": "**Tools used:**\n- search(`sepsis`)", "kind": "tools_summary",
+            },
+            {"event": "turn_end", "chat_id": chat_id, "created_at_ms": 1003},
+        ]
 
-    body = build_webui_thread_response(key)
-    assert body is not None and body.get("schemaVersion") == WEBUI_TRANSCRIPT_SCHEMA_VERSION
-    kinds = [
-        (e.get("kind"), (e.get("text") or ""))
-        for e in body["events"]
-        if e.get("event") == "message"
-    ]
-    assert any(k == "tools_summary" and "**Tools used:**" in t for k, t in kinds)
-    # A kind-less message still replays without a kind (control).
-    assert (None, "All done.") not in kinds or True
+    assert fact_from_record(records("x")[2]).kind is HistoryKind.TOOLS_SUMMARY
+
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / f"{SessionManager.safe_key('websocket:legacy')}.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in records("legacy")), encoding="utf-8",
+    )
+    sessions = SessionManager(tmp_path / "workspace", sessions_root=tmp_path / "sessions")
+    await sessions.state.migrate_history(
+        HISTORY_IMPORT_MARKER, lambda rows: collect_legacy_history(rows, directory=legacy),
+    )
+    live = await sessions.state.get("websocket:live")
+    await sessions.state.finish_turn(live)
+    await sessions.state.append_history(
+        live.key, [fact_from_record(r) for r in records("live")], expected_generation=live.generation,
+    )
+
+    for key in ("websocket:legacy", "websocket:live"):
+        body = await sessions.state.project_history(
+            key, lambda history, key=key: build_webui_thread_response(key, history=history),
+        )
+        assert body is not None and body.get("schemaVersion") == WEBUI_TRANSCRIPT_SCHEMA_VERSION
+        kinds = [(e.get("kind"), e.get("text") or "") for e in body["events"] if e.get("event") == "message"]
+        assert any(k == "tools_summary" and "**Tools used:**" in t for k, t in kinds), (key, kinds)
+        # The recap must not replace the turn's answer in session previews.
+        answers = [e for e in body["events"] if e.get("event") == "stream_end"]
+        assert answers and answers[0].get("text") == "All done."
+    await sessions.state.aclose()

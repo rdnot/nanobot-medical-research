@@ -49,6 +49,7 @@ from nanobot.providers.registry import (
 )
 from nanobot.providers.request_overrides import isolate_request_overrides
 from nanobot.providers.routing import resolve_automatic_model_api, resolve_model_api
+from nanobot.runtime_admission import RuntimeAdmission
 from nanobot.webui import request_settings
 from nanobot.webui.settings_contracts import (
     QueryParams,
@@ -1724,7 +1725,7 @@ def login_oauth_provider(
 
     if spec.name == "openai_codex":
         try:
-            from nanobot.providers.openai_codex_oauth import start_openai_codex_oauth_login
+            from nanobot.providers.openai_codex_oauth import OpenAICodexOAuthLoginFlow
         except ImportError:
             raise WebUISettingsError(OAUTH_CLI_KIT_MISSING_MESSAGE, status=500) from None
 
@@ -1741,19 +1742,21 @@ def login_oauth_provider(
             if remote_browser_value is not None
             else False
         )
+        flow = OpenAICodexOAuthLoginFlow(
+            proxy=proxy,
+            timeout_s=_WEBUI_OAUTH_TIMEOUT_S,
+            open_browser=not remote_browser,
+        )
+        flow_id = secrets.token_urlsafe(24)
         try:
-            flow = start_openai_codex_oauth_login(
-                proxy=proxy,
-                timeout_s=_WEBUI_OAUTH_TIMEOUT_S,
-                open_browser=not remote_browser,
-            )
+            oauth_flows.register(spec.name, flow_id, flow)
+            flow.start()
         except Exception as exc:
+            oauth_flows.remove(spec.name, flow_id, flow)
             raise WebUISettingsError(
                 f"OpenAI Codex OAuth login failed: {exc}",
                 status=502,
             ) from exc
-        flow_id = secrets.token_urlsafe(24)
-        oauth_flows.register(spec.name, flow_id, flow)
         return {
             "status": "authorization_required",
             "provider": spec.name,
@@ -1776,8 +1779,8 @@ def login_oauth_provider(
         flow_id = secrets.token_urlsafe(24)
         # Own the flow before network I/O, so logout/replacement also cancels a
         # login that is still waiting for GitHub to return its device prompt.
-        oauth_flows.register(spec.name, flow_id, copilot_flow)
         try:
+            oauth_flows.register(spec.name, flow_id, copilot_flow)
             copilot_flow.start()
         except Exception:
             oauth_flows.remove(spec.name, flow_id, copilot_flow)
@@ -1793,7 +1796,7 @@ def login_oauth_provider(
         }
 
     if spec.name == "xai_grok":
-        from nanobot.providers.xai_oauth import start_xai_oauth_login
+        from nanobot.providers.xai_oauth import create_xai_oauth_login
 
         try:
             proxy = resolve_config_env_vars(
@@ -1803,14 +1806,19 @@ def login_oauth_provider(
         except ValueError as exc:
             raise WebUISettingsError(str(exc), status=400) from exc
         try:
-            flow = start_xai_oauth_login(
+            flow = create_xai_oauth_login(
                 proxy=proxy,
                 timeout_s=_WEBUI_OAUTH_TIMEOUT_S,
             )
         except Exception as exc:
             raise WebUISettingsError(f"xAI OAuth login failed: {exc}", status=502) from exc
         flow_id = secrets.token_urlsafe(24)
-        oauth_flows.register(spec.name, flow_id, flow)
+        try:
+            oauth_flows.register(spec.name, flow_id, flow)
+            flow.start()
+        except Exception as exc:
+            oauth_flows.remove(spec.name, flow_id, flow)
+            raise WebUISettingsError(f"xAI OAuth login failed: {exc}", status=502) from exc
         return {
             "status": "authorization_required",
             "provider": spec.name,
@@ -1850,25 +1858,14 @@ def complete_oauth_provider(
 
     try:
         if spec.name == "openai_codex":
-            from nanobot.providers.openai_codex_oauth import (
-                OpenAICodexOAuthInputError,
-                complete_openai_codex_oauth_login,
-            )
+            from nanobot.providers.openai_codex_oauth import OpenAICodexOAuthInputError
 
             try:
-                token = complete_openai_codex_oauth_login(flow, authorization_response)
+                token = flow.complete(authorization_response)
             except OpenAICodexOAuthInputError as exc:
                 raise WebUISettingsError(str(exc), status=400) from exc
-        elif spec.name == "github_copilot":
-            from nanobot.providers.github_copilot_oauth import GitHubCopilotOAuthFlow
-
-            if not isinstance(flow, GitHubCopilotOAuthFlow):
-                raise WebUISettingsError("Invalid GitHub sign-in session. Start again.")
-            token = flow.complete()
         else:
-            from nanobot.providers.xai_oauth import complete_xai_oauth_login
-
-            token = complete_xai_oauth_login(flow, authorization_response)
+            token = flow.complete(authorization_response)
     except WebUISettingsError:
         raise
     except Exception as exc:
@@ -1941,9 +1938,26 @@ def logout_oauth_provider(
 class ModelSettingsHandler:
     """Handle model/provider commands after transport authentication and decoding."""
 
-    def __init__(self, settings: WebUISettingsServices, logger: Any) -> None:
+    def __init__(
+        self, settings: WebUISettingsServices, logger: Any, admission: RuntimeAdmission,
+    ) -> None:
         self.settings = settings
         self.logger = logger
+        self._admission = admission
+        self._remove_pending_work: Callable[[], None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
+
+    async def close(self) -> None:
+        """Keep the registry owned even if its shutdown awaiter is cancelled."""
+        if self._close_task is None or self._close_task.done():
+            self._close_task = asyncio.create_task(asyncio.to_thread(self.settings.oauth_flows.close))
+            self._close_task.add_done_callback(
+                lambda task: task.exception() if not task.cancelled() else None,
+            )
+        await asyncio.shield(self._close_task)
+        if self._remove_pending_work is not None:
+            self._remove_pending_work()
+            self._remove_pending_work = None
 
     def _refresh_runtime_config(self) -> None:
         """Make a successful model-settings mutation visible to live clients now."""
@@ -1956,6 +1970,12 @@ class ModelSettingsHandler:
         request: SettingsRequest,
         operations: ModelSettingsOperations,
     ) -> SettingsRouteResult:
+        if action in {"oauth-login", "oauth-complete", "oauth-logout"}:
+            self._admission.check()
+            if self._remove_pending_work is None:
+                self._remove_pending_work = self._admission.register_pending_work(
+                    lambda: self.settings.oauth_flows.has_pending_work,
+                )
         try:
             if action == "agent-update":
                 payload = await asyncio.to_thread(

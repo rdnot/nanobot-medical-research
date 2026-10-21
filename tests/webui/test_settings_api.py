@@ -1941,6 +1941,13 @@ def test_openai_codex_oauth_login_passes_configured_proxy(
         authorization_url = "https://auth.openai.com/oauth/authorize?state=test"
         remaining_seconds = 600
         expired = False
+        has_pending_work = False
+
+        def start(self):
+            pass
+
+        def wait_closed(self):
+            pass
 
         def cancel(self) -> None:
             captured["cancelled"] = True
@@ -1954,7 +1961,7 @@ def test_openai_codex_oauth_login_passes_configured_proxy(
         return FakeFlow()
 
     monkeypatch.setattr(
-        "nanobot.providers.openai_codex_oauth.start_openai_codex_oauth_login",
+        "nanobot.providers.openai_codex_oauth.OpenAICodexOAuthLoginFlow",
         fake_start,
     )
 
@@ -1981,10 +1988,7 @@ def test_openai_codex_oauth_login_passes_configured_proxy(
             return None
         return SimpleNamespace(access="access-token")
 
-    monkeypatch.setattr(
-        "nanobot.providers.openai_codex_oauth.complete_openai_codex_oauth_login",
-        fake_complete,
-    )
+    monkeypatch.setattr(FakeFlow, "complete", fake_complete, raising=False)
     monkeypatch.setattr(
         "nanobot.webui.settings_api.settings_payload",
         lambda **_kwargs: {"settings": "ready"},
@@ -2026,6 +2030,13 @@ def test_openai_codex_remote_login_uses_headless_dependency_mode(
         authorization_url = "https://auth.openai.com/oauth/authorize?state=test"
         remaining_seconds = 600
         expired = False
+        has_pending_work = False
+
+        def start(self):
+            pass
+
+        def wait_closed(self):
+            pass
 
         def cancel(self) -> None:
             captured["cancelled"] = True
@@ -2035,7 +2046,7 @@ def test_openai_codex_remote_login_uses_headless_dependency_mode(
         return FakeFlow()
 
     monkeypatch.setattr(
-        "nanobot.providers.openai_codex_oauth.start_openai_codex_oauth_login",
+        "nanobot.providers.openai_codex_oauth.OpenAICodexOAuthLoginFlow",
         fake_start,
     )
 
@@ -2109,6 +2120,13 @@ def test_xai_grok_login_starts_fresh_browser_flow_with_proxy(
         authorization_url = "https://auth.x.ai/oauth2/authorize?state=test"
         remaining_seconds = 600
         expired = False
+        has_pending_work = False
+
+        def start(self):
+            pass
+
+        def wait_closed(self):
+            pass
 
         def cancel(self) -> None:
             captured["cancelled"] = True
@@ -2117,7 +2135,7 @@ def test_xai_grok_login_starts_fresh_browser_flow_with_proxy(
         captured.update(proxy=proxy, timeout_s=timeout_s)
         return FakeFlow()
 
-    monkeypatch.setattr("nanobot.providers.xai_oauth.start_xai_oauth_login", fake_start)
+    monkeypatch.setattr("nanobot.providers.xai_oauth.create_xai_oauth_login", fake_start)
 
     payload = login_oauth_provider(
         {"provider": ["xai-grok"]},
@@ -2140,10 +2158,7 @@ def test_xai_grok_login_starts_fresh_browser_flow_with_proxy(
             return None
         return SimpleNamespace(access="access-token")
 
-    monkeypatch.setattr(
-        "nanobot.providers.xai_oauth.complete_xai_oauth_login",
-        fake_complete,
-    )
+    monkeypatch.setattr(FakeFlow, "complete", fake_complete, raising=False)
     monkeypatch.setattr(
         "nanobot.webui.settings_api.settings_payload",
         lambda **_kwargs: {"settings": "ready"},
@@ -2181,7 +2196,7 @@ def test_xai_grok_login_reports_upstream_failure_as_bad_gateway(
     def fake_start(**_kwargs):
         raise failure
 
-    monkeypatch.setattr("nanobot.providers.xai_oauth.start_xai_oauth_login", fake_start)
+    monkeypatch.setattr("nanobot.providers.xai_oauth.create_xai_oauth_login", fake_start)
 
     with pytest.raises(WebUISettingsError) as exc:
         login_oauth_provider(
@@ -2391,7 +2406,7 @@ def test_copilot_explicit_login_does_not_reuse_revoked_credentials(monkeypatch, 
         lambda: SimpleNamespace(access="revoked-token"),
     )
     monkeypatch.setattr(GitHubCopilotOAuthFlow, "start", start)
-    monkeypatch.setattr(GitHubCopilotOAuthFlow, "complete", lambda _: SimpleNamespace(access="new-token"))
+    monkeypatch.setattr(GitHubCopilotOAuthFlow, "complete", lambda *_: SimpleNamespace(access="new-token"))
     monkeypatch.setattr("nanobot.webui.settings_models.invalidate_oauth_model_catalog", invalidate)
     monkeypatch.setattr("nanobot.webui.settings_api.settings_payload", lambda **_: {"ready": True})
     payload = login_oauth_provider({"provider": ["github-copilot"]}, oauth_flows=oauth_flows)
@@ -2429,17 +2444,18 @@ def test_oauth_completion_clears_same_account_catalog_failure(monkeypatch, oauth
 
     class Flow:
         expired = False
+        has_pending_work = False
 
         def cancel(self):
             pass
 
-    def complete(*_args):
-        signed_in[0] = True
-        return SimpleNamespace(access="fixture")
+        def wait_closed(self):
+            pass
 
-    owner = "openai_codex_oauth" if provider == "openai_codex" else "xai_oauth"
-    completion = "complete_openai_codex_oauth_login" if provider == "openai_codex" else "complete_xai_oauth_login"
-    monkeypatch.setattr(f"nanobot.providers.{owner}.{completion}", complete)
+        def complete(self, _response=None):
+            signed_in[0] = True
+            return SimpleNamespace(access="fixture")
+
     oauth_flows.register(provider, "flow-test", Flow())
     before = provider_models_payload({"provider": [provider]})
     assert before["error_kind"] == "auth_required"
