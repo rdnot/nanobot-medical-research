@@ -227,7 +227,12 @@ function Install-WithUv {
         Fail "Could not locate the uv tools directory."
     }
     $Environment = Join-Path $ToolDir $Package
-    if (Test-Path -LiteralPath (Join-Path $Environment "uv-receipt.toml")) {
+    if ($env:NANOBOT_INSTALL_TARGET -and (Test-Path -LiteralPath $Environment)) {
+        # FORK: `uv tool upgrade` re-resolves the requirement recorded in the receipt
+        # (the previous fork wheel URL, deleted when latest-<branch> is rebuilt) and
+        # ignores the new URL. Reinstall from the wheel install-fork.ps1 resolved.
+        & uv tool install --force --python $Python $InstallTarget
+    } elseif (Test-Path -LiteralPath (Join-Path $Environment "uv-receipt.toml")) {
         & uv tool upgrade $InstallTarget
     } elseif (Test-Path -LiteralPath $Environment) {
         Fail "The uv environment exists without its installation record. Repair it with uv before rerunning this installer."
