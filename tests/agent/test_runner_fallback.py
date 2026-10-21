@@ -1307,13 +1307,14 @@ class TestRetryBeforeFailover:
                 [{"role": "user", "content": "hello"}], on_retry_status=record,
             )
 
-        assert len(primary.chat_calls) == 4
+        # FORK: 5 retries = 6 attempts (upstream: 3 retries = 4 attempts)
+        assert len(primary.chat_calls) == 6
         assert len(fallback.chat_calls) == 1
         assert LLMProvider.public_error_kind(result) == "connection"
         assert result.preserve_provider_state_on_error is True
         assert not LLMProvider.is_transient_response(result)  # Retry policy is still terminal.
         assert statuses[-1] == RetryStatusEvent(
-            state="exhausted", attempt=4, max_attempts=4, error_kind="connection",
+            state="exhausted", attempt=6, max_attempts=6, error_kind="connection",
         )
 
     @pytest.mark.asyncio

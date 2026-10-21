@@ -26,6 +26,9 @@ class HistoryKind(StrEnum):
     COMPLETION = "completion"
     FORK_BOUNDARY = "fork_boundary"
     COMPACTION = "compaction"
+    # FORK: the per-turn "Tools used:" recap. Its own kind keeps it out of answer
+    # previews and lets legacy WebUI transcripts that carry it import cleanly.
+    TOOLS_SUMMARY = "tools_summary"
     # Only old transcripts can contain unfinished transport fragments.
     ANSWER_FRAGMENT = "answer_fragment"
     REASONING_FRAGMENT = "reasoning_fragment"

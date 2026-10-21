@@ -33,6 +33,7 @@ _MESSAGE_KINDS = {
     "reasoning": HistoryKind.REASONING,
     "progress": HistoryKind.PROGRESS,
     "tool_hint": HistoryKind.TOOL_ACTIVITY,
+    "tools_summary": HistoryKind.TOOLS_SUMMARY,  # FORK: per-turn "Tools used:" recap
 }
 _CONTENT_FIELDS = frozenset({
     "text", "media_paths", "media", "media_urls", "reply_to", "agent_ui", "cli_apps", "mcp_presets", "session_mentions",
