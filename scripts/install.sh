@@ -194,7 +194,12 @@ install_with_uv() {
   info "Installing or upgrading nanobot from $install_source with uv tool..."
   tool_dir="$(uv tool dir)" || fail "Could not locate the uv tools directory"
   [ -n "$tool_dir" ] || fail "uv returned an empty tools directory"
-  if [ -f "$tool_dir/$package/uv-receipt.toml" ]; then
+  if [ -n "${NANOBOT_INSTALL_TARGET:-}" ] && [ -e "$tool_dir/$package" ]; then
+    # FORK: `uv tool upgrade` re-resolves the receipt's old fork wheel URL (deleted
+    # when latest-<branch> is rebuilt); reinstall from the wheel install-fork.sh resolved.
+    uv tool install --force --python "$python_bin" "$install_target" ||
+      fail "uv could not install nanobot. Resolve the error above and retry; no other installation was attempted."
+  elif [ -f "$tool_dir/$package/uv-receipt.toml" ]; then
     uv tool upgrade "$install_target" || fail "uv could not upgrade nanobot. Resolve the error above and retry; no other installation was attempted."
   elif [ -e "$tool_dir/$package" ]; then
     fail "The uv environment exists without its installation record. Repair it with uv before rerunning this installer."
