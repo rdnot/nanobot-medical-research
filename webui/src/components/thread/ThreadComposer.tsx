@@ -45,7 +45,11 @@ import {
   mcpPresetInitials,
   splitCapabilityMentionSegments,
 } from "@/components/CliAppMentionText";
-import type { CapabilityMentionSegment } from "@/lib/composer-mention-text";
+import {
+  composerMentionText,
+  isCapabilityMentionStart,
+  type CapabilityMentionSegment,
+} from "@/lib/composer-mention-text";
 import { INLINE_TOKEN_HIGHLIGHT_COLOR } from "@/components/InlineTokenHighlight";
 import {
   ArrowUp,
@@ -138,8 +142,8 @@ import {
 } from "@/lib/session-drag";
 import { formatQuotedUserMessage } from "@/lib/user-message-quote";
 import { cn } from "@/lib/utils";
-import { composerMentionText } from "@/lib/composer-mention-text";
 import type { ComposerDraftStore } from "@/lib/composer-draft";
+import { useLocalPreferences } from "@/hooks/useLocalPreferences";
 
 const VOICE_SHORTCUT_CODE = "KeyD";
 const VOICE_SHORTCUT_ARIA = "Control+Shift+D";
@@ -430,7 +434,7 @@ function mentionInsertion(
   const to = Math.min(Math.max(end, from), value.length);
   const prefix = value.slice(0, from);
   const suffix = value.slice(to);
-  const leadingSpace = prefix && !/\s$/.test(prefix) ? " " : "";
+  const leadingSpace = prefix && !isCapabilityMentionStart(value, from) ? " " : "";
   const trailingSpace = /^\s/.test(suffix) ? "" : " ";
   const tokenStart = prefix.length + leadingSpace.length;
   const tokenEnd = tokenStart + name.length + 1;
@@ -970,7 +974,7 @@ function GoalStateStrip({
             id="nanobot-goal-panel-scroll"
             className="min-h-0 flex-1 overflow-y-auto scrollbar-thin px-3 pb-3 pt-2"
           >
-            <MarkdownText className="max-w-none text-[13.5px] leading-relaxed text-foreground/90">
+            <MarkdownText className="max-w-none text-foreground/90">
               {markdownBody}
             </MarkdownText>
           </div>
@@ -1018,6 +1022,20 @@ function GoalStateStrip({
       </div>
     </div>
   );
+}
+
+function autosizeTextarea(input: HTMLTextAreaElement) {
+  const container = input.parentElement!;
+  const previousMinHeight = container.style.minHeight;
+  // Measuring the one-row textarea must not expand the sibling transcript and
+  // clamp its native scroll offset, even temporarily before paint.
+  container.style.minHeight = `${container.getBoundingClientRect().height}px`;
+  try {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 260)}px`;
+  } finally {
+    container.style.minHeight = previousMinHeight;
+  }
 }
 
 export function ThreadComposer({
@@ -1079,7 +1097,7 @@ export function ThreadComposer({
   const [value, setValue] = useState(initialDraft?.text ?? "");
   const [composerFocused, setComposerFocused] = useState(false);
   const blurFrame = useRef<number | null>(null);
-  const [selectedSessionMentions, setSelectedSessionMentions] = useState<SessionMention[]>(
+  const [boundSessionMentions, setBoundSessionMentions] = useState<SessionMention[]>(
     initialDraft?.sessionMentions ?? [],
   );
   const [sessionDragPreview, setSessionDragPreview] = useState<{
@@ -1110,6 +1128,7 @@ export function ThreadComposer({
   // Coarser than hasTouchPrimaryPointer on purpose: tablets with a physical
   // keyboard still get the newline-on-Enter behavior.
   const hasCoarsePointer = useMediaQuery("(pointer: coarse)");
+  const { readingTextSize } = useLocalPreferences();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mentionOverlayRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -1125,10 +1144,7 @@ export function ThreadComposer({
       previousWidth = width;
       setCompactControls(width <= 512);
       const input = textareaRef.current;
-      if (input) {
-        input.style.height = "auto";
-        input.style.height = `${Math.min(input.scrollHeight, 260)}px`;
-      }
+      if (input) autosizeTextarea(input);
     };
     update();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
@@ -1447,12 +1463,12 @@ export function ThreadComposer({
     if (interactionDisabled || cliAppMenuDismissed) return null;
     const caret = Math.min(Math.max(cursorPosition, 0), value.length);
     const beforeCaret = value.slice(0, caret);
-    const match = /(?:^|\s)@([\p{L}\p{N}_-]*)$/iu.exec(beforeCaret);
-    if (!match) return null;
+    const match = /@([\p{L}\p{N}_-]*)$/iu.exec(beforeCaret);
+    if (!match || !isCapabilityMentionStart(value, match.index)) return null;
     const query = match[1].toLowerCase();
     return {
       query,
-      start: caret - query.length - 1,
+      start: match.index,
       end: caret,
     };
   }, [cliAppMenuDismissed, cursorPosition, interactionDisabled, value]);
@@ -1466,9 +1482,13 @@ export function ThreadComposer({
     () => sessionMentionOptions(sessions),
     [sessions],
   );
+  const sessionMentionCatalog = useMemo(
+    () => [...availableSessionMentions, ...boundSessionMentions],
+    [availableSessionMentions, boundSessionMentions],
+  );
   const mentionSegments = useMemo(
-    () => splitCapabilityMentionSegments(value, cliApps, mcpPresets, selectedSessionMentions),
-    [cliApps, mcpPresets, selectedSessionMentions, value],
+    () => splitCapabilityMentionSegments(value, cliApps, mcpPresets, sessionMentionCatalog),
+    [cliApps, mcpPresets, sessionMentionCatalog, value],
   );
   const editMentionInput = useCallback((next: string, cursor: number) => {
     secondEnterPromptIdRef.current = null;
@@ -1485,19 +1505,6 @@ export function ThreadComposer({
   });
   const { rawSelection, replace: replaceMentionInput } = mentionInput;
   const draftText = composerMentionText(mentionInput.segments).raw;
-  useLayoutEffect(() => {
-    if (!draftKey || !draftStore || !draftAttachmentsReady) return;
-    if (!draftText && images.length === 0 && !quotedContext) {
-      draftStore.delete(draftKey);
-      return;
-    }
-    draftStore.set(draftKey, {
-      text: draftText,
-      files: images.map((image) => image.file),
-      sessionMentions: selectedSessionMentions,
-      quotedContext,
-    }, persistDraft);
-  }, [draftAttachmentsReady, draftKey, draftStore, images, persistDraft, quotedContext, selectedSessionMentions, draftText]);
   const sessionDragInsertion = sessionDragPreview
     ? mentionInsertion(
         value,
@@ -1511,7 +1518,7 @@ export function ThreadComposer({
         sessionDragInsertion.value,
         cliApps,
         mcpPresets,
-        [...selectedSessionMentions, sessionDragPreview.mention],
+        sessionMentionCatalog,
       )
     : mentionInput.segments;
   const activeSessionMentions = useMemo(() => {
@@ -1522,15 +1529,37 @@ export function ThreadComposer({
       return [segment.mention];
     });
   }, [mentionSegments]);
+  useLayoutEffect(() => {
+    // Pin resolved identities so a catalog refresh cannot retarget an existing reference.
+    if (activeSessionMentions.length !== boundSessionMentions.length
+      || activeSessionMentions.some((mention, index) => mention !== boundSessionMentions[index])) {
+      setBoundSessionMentions(activeSessionMentions);
+    }
+  }, [activeSessionMentions, boundSessionMentions]);
+  useLayoutEffect(() => {
+    if (!draftKey || !draftStore || !draftAttachmentsReady) return;
+    if (!draftText && images.length === 0 && !quotedContext) {
+      draftStore.delete(draftKey);
+      return;
+    }
+    draftStore.set(draftKey, {
+      text: draftText,
+      files: images.map((image) => image.file),
+      sessionMentions: activeSessionMentions,
+      quotedContext,
+    }, persistDraft);
+  }, [activeSessionMentions, draftAttachmentsReady, draftKey, draftStore, images, persistDraft, quotedContext, draftText]);
+  const insertableSessionMentions = useMemo(() => availableSessionMentions.filter((mention) => {
+    const bound = activeSessionMentions.find(
+      (active) => active.name.toLowerCase() === mention.name.toLowerCase(),
+    );
+    return (!bound || bound.session_key === mention.session_key)
+      && (activeSessionMentions.length < SESSION_MENTIONS_LIMIT
+        || activeSessionMentions.some((active) => active.session_key === mention.session_key));
+  }), [activeSessionMentions, availableSessionMentions]);
   const filteredMentionCandidates = useMemo<MentionCandidate[]>(() => {
     if (!cliAppMention) return [];
-    const sessionCandidates: MentionCandidate[] = availableSessionMentions
-      .filter((mention) => (
-        activeSessionMentions.length < SESSION_MENTIONS_LIMIT
-        || activeSessionMentions.some(
-          (selected) => selected.session_key === mention.session_key,
-        )
-      ))
+    const sessionCandidates: MentionCandidate[] = insertableSessionMentions
       .filter((mention) => [
         mention.name,
         mention.title,
@@ -1542,7 +1571,7 @@ export function ThreadComposer({
         mention,
       }));
     const sessionNames = new Set(
-      availableSessionMentions.map((mention) => mention.name.toLowerCase()),
+      sessionMentionCatalog.map((mention) => mention.name.toLowerCase()),
     );
     const cliCandidates: MentionCandidate[] = cliApps
       .filter((app) => app.installed)
@@ -1603,7 +1632,7 @@ export function ThreadComposer({
       remaining -= extra;
     }
     return groups.flatMap(({ candidates }, index) => candidates.slice(0, counts[index]));
-  }, [activeSessionMentions, availableSessionMentions, cliAppMention, cliApps, mcpPresets]);
+  }, [cliAppMention, cliApps, insertableSessionMentions, mcpPresets, sessionMentionCatalog]);
 
   const showCliAppMenu = filteredMentionCandidates.length > 0;
   const showAnyPalette = showSlashMenu || showCliAppMenu;
@@ -1717,23 +1746,22 @@ export function ThreadComposer({
     };
   }, [filteredMentionCandidates.length, filteredSlashCommands.length, showAnyPalette]);
 
-  const resizeTextarea = useCallback((restoreFocus = true) => {
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
-      if (restoreFocus) el.focus();
-    });
+  const focusTextarea = useCallback(() => {
+    requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
 
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el || mentionInput.isComposing) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
+    autosizeTextarea(el);
     if (mentionOverlayRef.current) mentionOverlayRef.current.scrollTop = el.scrollTop;
   }, [compactControls, mentionInput.isComposing, mentionInput.value]);
+
+  useEffect(() => {
+    // The parent projects typography tokens in its layout effect; measure after it.
+    const input = textareaRef.current;
+    if (input) autosizeTextarea(input);
+  }, [readingTextSize]);
 
   // Runs before paint so switching sessions never flashes stale draft text.
   useLayoutEffect(() => {
@@ -1741,18 +1769,11 @@ export function ThreadComposer({
     previousPendingQueueKeyRef.current = pendingQueueKey;
     secondEnterPromptIdRef.current = null;
     setValue("");
-    setSelectedSessionMentions([]);
     setInlineError(null);
     setSlashMenuDismissed(false);
     setCliAppMenuDismissed(false);
     setCursorPosition(0);
     clear();
-    requestAnimationFrame(() => {
-      const el = textareaRef.current;
-      if (!el) return;
-      el.style.height = "auto";
-      el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
-    });
   }, [clear, pendingQueueKey]);
 
   const appendTranscription = useCallback((text: string) => {
@@ -1767,8 +1788,8 @@ export function ThreadComposer({
     setSlashMenuDismissed(false);
     setCliAppMenuDismissed(false);
     setInlineError(null);
-    resizeTextarea();
-  }, [resizeTextarea]);
+    focusTextarea();
+  }, [focusTextarea]);
 
   const clearVoiceErrorTimers = useCallback(() => {
     if (voiceErrorFadeTimerRef.current !== null) clearTimeout(voiceErrorFadeTimerRef.current);
@@ -1851,7 +1872,7 @@ export function ThreadComposer({
         setSlashMenuDismissed(true);
         setCliAppMenuDismissed(false);
         setInlineError(null);
-        resizeTextarea();
+        focusTextarea();
         return;
       }
 
@@ -1874,43 +1895,29 @@ export function ThreadComposer({
       setSlashMenuDismissed(true);
       setCliAppMenuDismissed(false);
       setInlineError(null);
-      resizeTextarea();
+      focusTextarea();
     },
-    [handleStop, isStreaming, onStop, recentSlashCommands, replaceMentionInput, resizeTextarea, skillQuery, value],
+    [handleStop, isStreaming, onStop, recentSlashCommands, replaceMentionInput, focusTextarea, skillQuery, value],
   );
 
-  const insertMentionCandidate = useCallback(
-    (candidate: MentionCandidate, start: number, end: number) => {
-      if (candidate.kind === "session") {
-        const alreadySelected = activeSessionMentions.some(
-          (mention) => mention.session_key === candidate.mention.session_key,
-        );
-        if (!alreadySelected && activeSessionMentions.length >= SESSION_MENTIONS_LIMIT) return;
-        const name = candidate.name.toLowerCase();
-        setSelectedSessionMentions([
-          ...activeSessionMentions.filter((mention) => (
-            mention.name.toLowerCase() !== name
-            && mention.session_key !== candidate.mention.session_key
-          )),
-          candidate.mention,
-        ]);
-      }
-      const insertion = mentionInsertion(value, candidate.name, start, end);
+  const insertMention = useCallback(
+    (name: string, start: number, end: number) => {
+      const insertion = mentionInsertion(value, name, start, end);
       replaceMentionInput(insertion.value, insertion.cursor);
       setCliAppMenuDismissed(true);
       setSlashMenuDismissed(false);
       setInlineError(null);
-      resizeTextarea();
+      focusTextarea();
     },
-    [activeSessionMentions, replaceMentionInput, resizeTextarea, value],
+    [replaceMentionInput, focusTextarea, value],
   );
 
   const chooseMentionCandidate = useCallback(
     (candidate: MentionCandidate) => {
       if (!cliAppMention) return;
-      insertMentionCandidate(candidate, cliAppMention.start, cliAppMention.end);
+      insertMention(candidate.name, cliAppMention.start, cliAppMention.end);
     },
-    [cliAppMention, insertMentionCandidate],
+    [cliAppMention, insertMention],
   );
 
   const handleSessionDrop = useCallback((event: React.DragEvent) => {
@@ -1921,30 +1928,14 @@ export function ThreadComposer({
     setSessionDragPreview(null);
     if (interactionDisabled) return true;
     const sessionKey = readDraggedSession(event.dataTransfer);
-    const mention = availableSessionMentions.find(
+    const mention = insertableSessionMentions.find(
       (candidate) => candidate.session_key === (sessionKey ?? preview?.mention.session_key),
     );
     if (!mention) return true;
     const caret = preview?.start ?? rawSelection().start;
-    insertMentionCandidate(
-      {
-        kind: "session",
-        name: mention.name,
-        displayName: mention.title || mention.name,
-        mention,
-      },
-      caret,
-      preview?.end ?? rawSelection().end,
-    );
+    insertMention(mention.name, caret, preview?.end ?? rawSelection().end);
     return true;
-  }, [
-    availableSessionMentions,
-    insertMentionCandidate,
-    interactionDisabled,
-    rawSelection,
-    sessionDragPreview,
-    value.length,
-  ]);
+  }, [insertableSessionMentions, insertMention, interactionDisabled, rawSelection, sessionDragPreview]);
 
   const previewSessionDrop = useCallback((event: React.DragEvent) => {
     if (!hasDraggedSession(event.dataTransfer)) return false;
@@ -1954,13 +1945,10 @@ export function ThreadComposer({
       return true;
     }
     const sessionKey = readDraggedSession(event.dataTransfer);
-    const mention = availableSessionMentions.find(
+    const mention = insertableSessionMentions.find(
       (candidate) => candidate.session_key === sessionKey,
     );
-    const alreadySelected = mention && activeSessionMentions.some(
-      (candidate) => candidate.session_key === mention.session_key,
-    );
-    if (!mention || (!alreadySelected && activeSessionMentions.length >= SESSION_MENTIONS_LIMIT)) {
+    if (!mention) {
       event.dataTransfer.dropEffect = "none";
       setSessionDragPreview(null);
       return true;
@@ -1976,7 +1964,7 @@ export function ThreadComposer({
         : { mention, start, end }
     ));
     return true;
-  }, [activeSessionMentions, availableSessionMentions, interactionDisabled, rawSelection]);
+  }, [insertableSessionMentions, interactionDisabled, rawSelection]);
 
   useEffect(() => {
     if (!sessionDragPreview) return;
@@ -1990,13 +1978,12 @@ export function ThreadComposer({
 
   const clearComposerText = useCallback((restoreFocus = true) => {
     setValue("");
-    setSelectedSessionMentions([]);
     setInlineError(null);
     setSlashMenuDismissed(false);
     setCliAppMenuDismissed(false);
     setCursorPosition(0);
-    resizeTextarea(restoreFocus);
-  }, [resizeTextarea]);
+    if (restoreFocus) focusTextarea();
+  }, [focusTextarea]);
 
   const queuedPromptError = useCallback((prompt: QueuedPrompt): string | null => {
     if (utf8Bytes(formatQuotedUserMessage(prompt.text, prompt.quotedContext)) > maxTextBytes) {
@@ -2056,7 +2043,7 @@ export function ThreadComposer({
     secondEnterPromptIdRef.current = null;
     setQueuedPrompt(null);
     replaceMentionInput(prompt.text, prompt.text.length);
-    setSelectedSessionMentions(prompt.sessionMentions ?? []);
+    setBoundSessionMentions(prompt.sessionMentions ?? []);
     setInlineError(null);
     setSlashMenuDismissed(false);
     setCliAppMenuDismissed(false);
@@ -2066,8 +2053,8 @@ export function ThreadComposer({
     } else {
       clear();
     }
-    resizeTextarea();
-  }, [clear, collectGuidancePrompt, hasComposerContent, normalizedQuotedContext, onQuotedContextChange, replaceMentionInput, resizeTextarea, restoreReadyImages, setQueuedPrompt]);
+    focusTextarea();
+  }, [clear, collectGuidancePrompt, hasComposerContent, normalizedQuotedContext, onQuotedContextChange, replaceMentionInput, focusTextarea, restoreReadyImages, setQueuedPrompt]);
 
   const sendQueuedPrompt = useCallback(
     (prompt: QueuedPrompt, extraOptions?: SendOptions) => {
@@ -2350,13 +2337,6 @@ export function ThreadComposer({
     }
   };
 
-  const onInput: React.FormEventHandler<HTMLTextAreaElement> = (e) => {
-    if ((e.nativeEvent as InputEvent).isComposing) return;
-    const el = e.currentTarget;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
-  };
-
   const onFilePick: React.ChangeEventHandler<HTMLInputElement> = (e) => {
     const files = Array.from(e.target.files ?? []);
     e.target.value = "";
@@ -2489,15 +2469,15 @@ export function ThreadComposer({
   ) : null;
   const inputTextClasses = cn(
     // Keep the overlay's CJK/Latin spacing aligned with the native textarea caret.
-    "w-full resize-none bg-transparent [text-autospace:no-autospace]",
+    "w-full resize-none bg-transparent text-composer [text-autospace:no-autospace]",
     compactControls
-      ? "min-h-[52px] px-4 pb-2 pt-3 text-[16px] leading-6"
+      ? "min-h-[52px] px-4 pb-2 pt-3"
       : isHero
         ? cn(
-            "min-h-[78px] px-4 text-[16px] leading-6 sm:px-5",
+            "min-h-[78px] px-4 sm:px-5",
             relaxedHeroInput ? "pb-2 pt-[27px]" : "pb-1.5 pt-4",
           )
-        : "min-h-[50px] px-3.5 pb-1.5 pt-3 text-[16px] leading-5 sm:px-4",
+        : "min-h-[50px] px-3.5 pb-1.5 pt-3 sm:px-4",
   );
   const paletteBeside = showAnyPalette && slashPaletteLayout.placement === "beside";
 
@@ -2578,8 +2558,8 @@ export function ThreadComposer({
           "thread-composer-surface group/composer relative mx-auto flex w-full flex-col overflow-visible transition-all duration-200",
           paletteBeside && "col-start-1 row-start-1",
           isHero
-            ? "max-w-[58rem] rounded-prominent bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]"
-            : "max-w-[49.5rem] rounded-panel bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]",
+            ? "max-w-[var(--composer-content-width,58rem)] rounded-prominent bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]"
+            : "max-w-[var(--composer-content-width,49.5rem)] rounded-panel bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]",
           compactWhenIdle && "thread-composer-collapsible transition-colors motion-reduce:transition-none",
           interactionDisabled && "opacity-60",
           sessionDragPreview && "ring-1 ring-primary/25",
@@ -2636,7 +2616,7 @@ export function ThreadComposer({
             aria-label={t("thread.composer.quotedContext")}
           >
             <Quote className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            <p className="line-clamp-2 min-w-0 flex-1 text-[13px]/[1.45]">
+            <p className="line-clamp-2 min-w-0 flex-1 text-reading-small">
               {normalizedQuotedContext}
             </p>
             <button
@@ -2678,7 +2658,6 @@ export function ThreadComposer({
             onBlur={() => {
               secondEnterPromptIdRef.current = null;
             }}
-            onInput={onInput}
             onKeyDown={onKeyDown}
             onKeyUp={() => setCursorPosition(rawSelection().start)}
             onSelect={() => setCursorPosition(rawSelection().start)}

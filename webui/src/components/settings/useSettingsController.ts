@@ -37,6 +37,7 @@ import { usePageVisibility } from "@/hooks/usePageVisibility";
 import { useAutoSave } from "@/components/settings/shared/useAutoSave";
 import { cancelProviderOAuth, fetchSettings, fetchSettingsUsage } from "@/lib/api";
 import {
+  LOCAL_PREFS_CHANGED_EVENT,
   readLocalPreferences,
   writeLocalPreferences,
   type LocalPreferences,
@@ -155,6 +156,11 @@ export function useSettingsController({
 
   const runtimeConfigState = useRuntimeConfigSettings(settings, client, applyPayload);
 
+  const markUpdateInstalled = useCallback(() => {
+    setPendingRestartSections((current) => ({ ...current, runtime: true }));
+    setSettings((current) => current ? { ...current, requires_restart: true } : current);
+  }, []);
+
   const closeProviderOAuthFlow = useCallback((cancelPending = true) => {
     const flow = providerOAuthFlowRef.current;
     providerOAuthFlowRef.current = null;
@@ -257,6 +263,18 @@ export function useSettingsController({
     pageVisible,
   });
 
+  useEffect(() => {
+    const synchronize = (event: Event) => setLocalPrefs((event as CustomEvent<LocalPreferences>).detail);
+    const reload = () => setLocalPrefs(readLocalPreferences());
+    window.addEventListener(LOCAL_PREFS_CHANGED_EVENT, synchronize);
+    window.addEventListener("storage", reload);
+    window.addEventListener("focus", reload);
+    return () => {
+      window.removeEventListener(LOCAL_PREFS_CHANGED_EVENT, synchronize);
+      window.removeEventListener("storage", reload);
+      window.removeEventListener("focus", reload);
+    };
+  }, []);
   useEffect(() => {
     writeLocalPreferences(localPrefs);
   }, [localPrefs]);
@@ -443,6 +461,7 @@ export function useSettingsController({
     systemState,
     systemActions,
     activeSection,
+    markUpdateInstalled,
     runtimeConfigState,
     closeProviderOAuthFlow,
     error,

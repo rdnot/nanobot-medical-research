@@ -16,17 +16,17 @@ Use the launcher:
 nanobot webui
 ```
 
-`nanobot webui` asks for one confirmation on a new installation, creates the config/workspace, enables the local WebSocket channel, and generates a WebUI bootstrap secret when one is missing. It starts or joins the same on-demand gateway used by the native TUI and opens the browser. With a fresh config, it can open before a model is configured so you can finish setup in **Settings → Models**. The first-run path binds the WebUI to `127.0.0.1` by default, so it is not available from other devices on your LAN. The startup summary groups the login link, model setup guidance, config, and exit controls with blank lines. While attached, the launcher displays new gateway warnings and errors; use the printed logs command for full output.
+`nanobot webui` asks for one confirmation on a new installation, creates the config/workspace, enables the local WebSocket channel, and generates a WebUI bootstrap secret when one is missing. It starts or joins the same gateway used by the native TUI and opens the browser. Fresh official-installer environments start it persistently and return control to the terminal; other installations keep the attached on-demand launch. With a fresh config, it can open before a model is configured so you can finish setup in **Settings → Models**. The first-run path binds the WebUI to `127.0.0.1` by default, so it is not available from other devices on your LAN. The startup summary groups the login link, model setup guidance, config, and exit controls with blank lines. While attached, the launcher displays new gateway warnings and errors; use the printed logs command for full output.
 
-After model setup, explicitly promote the shared gateway when you do not want to keep a client open:
+Outside an installer-managed environment, use `nanobot webui --detach` to open the browser and keep the gateway running after the terminal closes. Alternatively, start or promote the same shared gateway explicitly:
 
 ```bash
 nanobot gateway --background
 ```
 
-`nanobot webui --background` is retained only to print migration guidance. This keeps one unambiguous owner for persistent process lifecycle.
+`nanobot webui --background` remains deprecated and prints migration guidance. All launch routes use the same gateway lifecycle owner and state.
 
-Each foreground WebUI or TUI launcher releases only its own client. The last interactive launcher stops an on-demand gateway. `nanobot gateway --background` makes the gateway persistent; manage it with `nanobot gateway status`, `nanobot gateway logs`, `nanobot gateway restart`, and `nanobot gateway stop`.
+Each foreground WebUI or TUI launcher releases only its own client. The last interactive launcher stops an on-demand gateway, but not a persistent one. Manage the persistent gateway with `nanobot gateway status`, `nanobot gateway logs`, `nanobot gateway restart`, and `nanobot gateway stop`. Use the printed instance-specific commands when you selected a custom config or workspace. `--detach --dev` is unsupported; development remains attached.
 
 The browser signs in automatically using the generated credential in the launch URL. The terminal also prints the complete login link: if automatic opening fails, copy that link into your browser, including the fragment after `#`. In WSL, the launcher opens your Windows default browser through Windows PowerShell; an explicit `BROWSER` setting takes precedence. If Windows integration is unavailable, open the printed link in your Windows browser. The plain page address does not sign in a new browser. Treat the login link as a credential and do not share it.
 
@@ -55,6 +55,16 @@ Manual config still works. Same-machine localhost WebUI access can run without a
 </details>
 
 The WebUI is served by the WebSocket channel on port `8765` by default. The gateway health endpoint, `18790` by default, is not the browser UI.
+
+### macOS Dock icon
+
+In a local macOS desktop session, `nanobot webui` shows the nanobot cat in the Dock. Click it to open the current local WebUI in your default browser. `--no-open` keeps the icon but does not open a page automatically. SSH, headless, Windows and Linux launches keep their existing behavior. A one-shot connection to an unmanaged gateway does not leave an icon behind.
+
+Ordinary foreground launchers for the same instance, browser address and installation share an icon. The last WebUI launcher removes it when it exits, including after a terminal crash. For `--detach` and official-installer automatic background launch, the gateway owns the icon instead: closing the terminal does not remove it. An ordinary restart, successful update or supported automatic restoration shows it again once that gateway is activated. The icon can disappear while the service is stopped for an update; it is not an update-progress indicator. `nanobot gateway stop` removes it without changing configuration or chats.
+
+Use `--no-dock` to disable the icon for a launcher. In detached mode this also remembers the choice for that instance's later restarts; running `nanobot webui` without it enables the background icon again. The request is stored beside the runtime state as a small `.dock` file, without a URL or credentials. Choosing **Hide Dock Icon** or quitting the icon hides only this shortcut, not the gateway or its tasks. It stays hidden until another explicit launch or service restart. The icon is not a standalone launcher to keep pinned when nanobot is stopped.
+
+The helper uses the installed Python and macOS frameworks, with no Xcode, extra Python dependency, executable download or separate updater. Its temporary application wrapper is private to the OS user. The login URL stays in memory and a private socket, never in process arguments or a file. The helper holds no installation or data lease, and protected restart does not start it until activation. A missing image or unavailable desktop does not prevent WebUI startup, updates or independent recovery. Non-loopback browser addresses continue to use the normal browser launcher.
 
 ## Navigate a long conversation
 
@@ -113,11 +123,13 @@ Open a topic's sidebar action menu and choose **Create group** to turn it into a
 
 Use **Pane layout** to choose columns, rows, a grid, BSP, or a main pane with a stack. Drag a divider to resize panes. Each pane has its own conversation; select one to direct the shared composer to that topic. Group membership and layout persist across refreshes. Grouping topics does not merge their histories.
 
-To bring another topic's work into a conversation, select it from the `@` menu or drag it from the sidebar into the composer. The agent can read the selected session and exchange messages with other saved sessions. See [Composer](#composer) for the distinction between an attached reference and plain text.
+To use work from another topic, mention it with `@` and tell nanobot what you need. See [Composer](#composer) for how to add a topic reference.
 
 ### Activity and context usage
 
 The message timeline shows replies and agent activity. Expand the **Worked for** section to inspect the reasoning and tool activity for a completed turn.
+
+To load earlier messages, scroll past the oldest loaded message, or pull down far enough and release on touch devices. The muted loading indicator settles into view while the request runs. When loading succeeds, the indicator and its temporary space disappear and normal message spacing returns. If loading fails, the blocks turn red; hover for error details, then pull again or select the red blocks to retry. If there are no earlier messages, pulling at the real history boundary briefly shows **No earlier messages**.
 
 If the connection drops, the host control shows **Reconnecting**. Tasks in persistent topics can continue during the interruption. After reconnecting, task indicators and completed replies update automatically, including topics you have switched away from. Some text generated while disconnected may appear only after the task finishes. [Temporary chats](#temporary-chats) end when their connection is lost.
 
@@ -152,6 +164,10 @@ On touch devices, preview tab controls and the full-screen image viewer's close 
 Open the context indicator beside the composer model badge to see how much of the model's context window is in use. The **Recent rounds** chart shows input tokens for each logical model round, including tool-call rounds. Hover or focus a bar for input tokens, output tokens, generation time, and the KV cache hit rate when reported. Provider usage may be estimated or unavailable; these figures are not a billing statement.
 
 When nanobot compacts context, the timeline shows its progress and outcome. The model continues with a summary and any messages after it; messages covered by the summary remain in your chat history but are no longer sent to the model verbatim. Use `/compact` to compact the current topic's context manually. See [Memory](./memory.md) for compaction and Dream consolidation.
+
+### Model failures
+
+After a model request fails and automatic retries stop, the WebUI shows the failure category. Use **Continue** to resume from the saved conversation, or open model settings to change the model or correct its authorization. Review completed work before continuing: saved tool results are retained, but the model can choose to call tools again. Continuing does not resend the original message. Sending a new message or dismissing the notice clears the pending decision. Saved recovery decisions remain available after a refresh or gateway restart; temporary chats still follow their normal lifetime.
 
 ### Delegated work
 
@@ -205,13 +221,17 @@ In Restricted mode, ordinary file and shell work stays inside the selected proje
 
 With voice transcription configured, the idle composer uses one button for voice input when empty and Send when text or attachments are present; speech is transcribed into the draft before sending.
 
-The composer supports plain messages, image attachments, voice input when transcription is configured, slash commands, and `@` mentions for installed Apps, MCP presets, or persisted topics. Topics have short, pronounceable handles such as `@luma`; titles are display text rather than addresses. Select a topic from the menu, or drag it from the sidebar, to attach its structured reference. Typing the same text without selecting it remains plain text.
+The composer supports plain messages, image attachments, voice input when transcription is configured, slash commands, and `@` mentions for installed Apps, MCP presets, or saved topics.
+
+To reference another topic, type or paste its complete handle (such as `@luma`), choose it from the `@` menu, or drag it from the sidebar into the composer. Recognized handles are highlighted; unknown handles remain plain text. You can reference up to eight different topics in one message.
+
+Ask nanobot to find, read, or send messages to other saved topics, including those in other projects. For example, “Summarize @luma” or “Send this update to @luma.” Mentioning a topic alone does not send a message to it.
 
 On touch-primary phones and tablets, **Enter** inserts a newline; tap the send arrow to submit. This also applies when a coarse-pointer tablet has a hardware keyboard attached. On desktop, **Enter** sends and **Shift+Enter** adds a newline. An open slash-command or mention menu takes precedence: Enter selects its item.
 
 While a response is running, desktop Enter adds your input to one waiting message. Further inputs append in order, separated by newlines, with their attachments and references retained. The complete message is sent once the current response finishes. Press Enter again with an empty input or choose **Send now** to insert it immediately as guidance for the active turn. The send arrow also includes any waiting content when submitting a new draft. Use **Edit message** to revise the complete message or **Delete message** to discard it. If an addition would exceed the message limits, it stays in the input so you can revise it. The primary button shows **Stop** when there is no sendable draft; stopping or a failed send keeps the waiting message for manual sending.
 
-The agent can inspect an attached topic with `read_session`. It can discover other persisted topics with `list_sessions` and send asynchronous messages with `send_session_message`; topic messaging is not limited by workspace scope. The model badge shows the current model or preset and links to model settings when setup is incomplete.
+The model badge shows the current model or preset and links to model settings when setup is incomplete.
 
 For image generation, configure an image provider first and then use the WebUI image mode from the composer. See [`image-generation.md`](./image-generation.md) for provider setup and output behavior.
 
@@ -290,7 +310,7 @@ Settings is the control surface for browser-local and gateway-backed runtime con
 
 Some settings take effect immediately. Runtime settings that affect the gateway or agent process may require a restart; the WebUI shows that requirement next to the relevant control.
 
-Browser-only display preferences, such as file edit display mode, take effect immediately for the current browser and do not change gateway configuration.
+Browser-only display preferences take effect immediately and persist in the current browser. In **Appearance → Local preferences**, **Reading text size** offers three A buttons: small, standard (default), and large. They adjust conversation text, Markdown and code, with a coordinated message input size; navigation and toolbars keep their interface size. Browser zoom remains available. These preferences, including file edit display mode, do not change gateway configuration.
 
 To add a model, follow [Configure Your Model](./quick-start.md#2-configure-your-model).
 

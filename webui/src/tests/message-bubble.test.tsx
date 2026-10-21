@@ -209,12 +209,12 @@ describe("MessageBubble", () => {
     const pill = screen.getByText("hello");
 
     expect(row).toHaveClass("ml-auto", "flex");
-    expect(row).toHaveAttribute("data-user-text-bubble", "true");
+    expect(pill.parentElement).toHaveAttribute("data-user-text-bubble", "true");
     expect(pill).toHaveClass("ml-auto", "w-fit", "rounded-floating");
     expect(pill).toHaveTextContent("hello");
   });
 
-  it("aligns the context trigger to the first text line only when text leads the user block", () => {
+  it("anchors the context trigger to the text even below an image or quote", () => {
     const message: UIMessage = {
       id: "u-alignment", role: "user", content: "first line\nsecond line", createdAt: 0,
     };
@@ -222,18 +222,20 @@ describe("MessageBubble", () => {
     const { container, rerender } = render(
       <MessageBubble message={message} contextMenu={contextMenu} />,
     );
-    const row = container.firstElementChild!;
-    expect(row).toHaveAttribute("data-user-text-bubble", "true");
-    expect(screen.getByRole("button", { name: "Message actions" }).parentElement).toBe(row);
+    const anchor = container.querySelector("[data-user-text-bubble]")!;
+    expect(anchor).toHaveClass("relative");
+    expect(screen.getByRole("button", { name: "Message actions" }).parentElement).toBe(anchor);
 
     rerender(<MessageBubble message={{ ...message, images: [{ name: "image.png" }] }} contextMenu={contextMenu} />);
-    expect(row).not.toHaveAttribute("data-user-text-bubble");
+    expect(screen.getByRole("button", { name: "Message actions" }).parentElement)
+      .toBe(container.querySelector("[data-user-text-bubble]"));
 
     rerender(<MessageBubble message={{ ...message, content: "> [!QUOTE]\n> excerpt\n\nreply" }} contextMenu={contextMenu} />);
-    expect(row).not.toHaveAttribute("data-user-text-bubble");
+    expect(screen.getByRole("button", { name: "Message actions" }).parentElement)
+      .toBe(screen.getByText("reply").parentElement);
   });
 
-  it("renders cross-session input with its public handle", () => {
+  it("renders cross-session input with its public handle above a left-aligned bubble", () => {
     const message: UIMessage = {
       id: "session-message:message-1",
       role: "user",
@@ -248,11 +250,17 @@ describe("MessageBubble", () => {
       },
     };
 
-    const { container } = render(<MessageBubble message={message} />);
+    const contextMenu = <button data-message-block-menu-trigger>Message actions</button>;
+    const { container } = render(<MessageBubble message={message} contextMenu={contextMenu} />);
 
-    expect(container.querySelector("[data-session-message]")).toBeInTheDocument();
-    expect(screen.getByText("@mira-0123456789")).toBeInTheDocument();
-    expect(screen.getByText("Please review this.")).toBeInTheDocument();
+    const row = container.querySelector("[data-session-message]")!;
+    const handle = screen.getByText("@mira-0123456789");
+    const bubble = row.querySelector("[data-assistant-selectable]")!.parentElement!;
+    expect(row).toHaveClass("mr-auto", "w-fit", "max-w-[min(85%,36rem)]");
+    expect(handle.parentElement!.parentElement).toBe(row);
+    expect(bubble).toHaveClass("relative", "rounded-floating", "bg-secondary/70", "px-4", "py-2");
+    expect(bubble).toContainElement(screen.getByText("Please review this."));
+    expect(screen.getByRole("button", { name: "Message actions" }).parentElement).toBe(bubble);
   });
 
   it("outlines temporary-chat user messages with a short dashed border", () => {
@@ -653,6 +661,31 @@ describe("MessageBubble", () => {
     );
   });
 
+  it("preserves punctuation-separated session links and capability mentions in sent messages", () => {
+    const message: UIMessage = {
+      id: "u-punctuation-mentions",
+      role: "user",
+      content: "@bime、@luma，@luma；@zoom：@browserbase。",
+      sessionMentions: [
+        { id: "handle_00000000000000000000000000000001", name: "bime", session_key: "websocket:pricing", title: "Pricing" },
+        { id: "handle_00000000000000000000000000000002", name: "luma", session_key: "websocket:notes", title: "Notes" },
+      ],
+      createdAt: Date.now(),
+    };
+
+    render(<MessageBubble message={message} cliApps={CLI_APPS} mcpPresets={MCP_PRESETS} />);
+
+    expect(screen.getByTestId("message-session-mention-bime").closest("a"))
+      .toHaveAttribute("href", "#/chat/websocket%3Apricing");
+    const repeated = screen.getAllByTestId("message-session-mention-luma");
+    expect(repeated).toHaveLength(2);
+    for (const token of repeated) {
+      expect(token.closest("a")).toHaveAttribute("href", "#/chat/websocket%3Anotes");
+    }
+    expect(screen.getByTestId("message-cli-mention-zoom")).toHaveTextContent("@Zoom");
+    expect(screen.getByTestId("message-mcp-mention-browserbase")).toHaveTextContent("@Browserbase");
+  });
+
   it("renders installed CLI app mentions inside sent user messages", () => {
     const message: UIMessage = {
       id: "u-cli",
@@ -762,6 +795,7 @@ describe("MessageBubble", () => {
         id: "saved-app-name",
         role: "user",
         content: `Use @${name} please`,
+        createdAt: 1,
         ...(kind === "cli" ? {
           cliApps: [{ name, display_name: displayName, category: "test", entry_point: name }],
         } : {
@@ -783,12 +817,12 @@ describe("MessageBubble", () => {
     const copy = vi.spyOn(clipboard, "copyTextToClipboard").mockResolvedValue(true);
     try {
       render(<ThreadMessages messages={[{
-        id: "copy-display-name", role: "user", content: "Please use @drawio",
+        id: "copy-display-name", role: "user", content: "Please use @drawio", createdAt: 1,
         cliApps: [{ name: "drawio", display_name: "Draw.io", category: "diagram", entry_point: "drawio" }],
       }]} />);
       expect(screen.getByTestId("message-cli-mention-drawio")).toHaveTextContent("@Draw.io");
       fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
-      fireEvent.click(screen.getByRole("button", { name: "Copy", exact: true }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
       await waitFor(() => expect(copy).toHaveBeenCalledWith("Please use @drawio"));
     } finally {
       copy.mockRestore();

@@ -8,6 +8,7 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -120,6 +121,20 @@ async def _pid_stopped(pid: int, *, timeout: float = 6) -> None:
     while _pid_running(pid) and time.monotonic() < deadline:
         await asyncio.sleep(0.03)
     assert not _pid_running(pid), f"subprocess {pid} is still running after {timeout}s"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux /proc process probe")
+@pytest.mark.parametrize("disappeared", [FileNotFoundError, ProcessLookupError])
+async def test_pid_stopped_tolerates_exit_during_proc_read(monkeypatch, disappeared):
+    stat = Mock()
+    stat.exists.return_value = True
+    stat.read_text.side_effect = disappeared("process exited during stat read")
+    monkeypatch.setattr(sys.modules[__name__], "Path", Mock(return_value=stat))
+    monkeypatch.setattr(os, "kill", Mock(side_effect=[None, ProcessLookupError, ProcessLookupError]))
+
+    await _pid_stopped(123, timeout=1)
+
+    stat.read_text.assert_called_once()
 
 
 async def _cleanup_pidfiles(*paths: Path) -> None:
