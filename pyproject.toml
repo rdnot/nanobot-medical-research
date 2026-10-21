@@ -42,10 +42,10 @@ dependencies = [
     # plain `pip install -e .` / `uv sync` / Docker build works out of the box and
     # `uv sync` never prunes them. PyMuPDF is AGPL-3.0: review its terms before
     # shipping a product built on this fork (pypdf is used when it is absent).
-    "curl_cffi>=0.7.0,<1.0.0",
-    "trafilatura>=1.12.0,<3.0.0",
-    "markdownify>=0.13.0,<2.0.0",
-    "pymupdf>=1.25.0,<2.0.0",
+    "curl_cffi>=0.16.3,<1.0.0",
+    "trafilatura>=2.3.1,<3.0.0",
+    "markdownify>=1.2.3,<2.0.0",
+    "pymupdf>=2.0,<3.0.0",
     "lxml-html-clean>=0.4.0,<1.0.0",
     "rich>=14.0.0,<15.0.0",
     "qrcode[pil]>=8.0",
