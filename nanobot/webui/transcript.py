@@ -21,7 +21,7 @@ from urllib.parse import unquote, urlparse
 
 from loguru import logger
 
-from nanobot.bus.events import INBOUND_META_TURN_ID
+from nanobot.bus.events import INBOUND_META_LOCAL_MEDIA, INBOUND_META_TURN_ID
 from nanobot.runtime_context import public_history_message
 from nanobot.session.automation_turns import is_automation_kind
 from nanobot.session.display_history import (
@@ -53,6 +53,7 @@ _MAX_TRANSCRIPT_PAGE_BYTES = 20 * 1024 * 1024
 _MAX_INLINE_TRACE_DETAIL_BYTES = 32 * 1024
 _WEBUI_TURN_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _WEBUI_REPLAY_IDENTITY_KEY = "_webui_replay_identity"
+_WEBUI_PROJECTION_RECEIPTS_KEY = "_webui_projection_receipts"
 _WEBUI_TRACE_DETAIL_UNSAFE_KEY = "_webui_trace_detail_unsafe"
 _WEBUI_TRACE_DETAIL_REF_RE = re.compile(
     r"^(?P<turn>\d{1,12})\.(?P<message>history-[0-9a-f]{20})$"
@@ -199,6 +200,11 @@ class _SessionBackfillTurn(NamedTuple):
     assistant_records: tuple[dict[str, Any], ...]
 
 
+class _ProjectionReceipt(TypedDict):
+    turn_id: str
+    ranges: list[list[int]]
+
+
 class _DeferredTraceGroup(NamedTuple):
     start: int
     stop: int
@@ -243,8 +249,32 @@ def _stream_key(record: dict[str, Any], stream: str) -> tuple[str, str, str]:
     return turn_id, phase, stream_id
 
 
+def _projection_receipts(records: Sequence[Mapping[str, Any]]) -> list[_ProjectionReceipt]:
+    """Compress actual represented facts by turn, without covering missing sequences."""
+    members: dict[str, set[int]] = {}
+    for record in records:
+        turn_id, sequence = record.get("turn_id"), record.get("turn_seq")
+        if (
+            isinstance(turn_id, str) and turn_id
+            and isinstance(sequence, int) and not isinstance(sequence, bool) and sequence >= 0
+        ):
+            members.setdefault(turn_id, set()).add(sequence)
+    receipts: list[_ProjectionReceipt] = []
+    for turn_id, sequences in members.items():
+        ranges: list[list[int]] = []
+        for sequence in sorted(sequences):
+            if ranges and ranges[-1][1] + 1 == sequence:
+                ranges[-1][1] = sequence
+            else:
+                ranges.append([sequence, sequence])
+        receipts.append({"turn_id": turn_id, "ranges": ranges})
+    return receipts
+
+
 def _compact_completed_stream_deltas(
     turn: list[dict[str, Any]],
+    *,
+    include_projection_receipts: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
     """Fold transport deltas into canonical end records for a completed turn."""
     if not turn or turn[-1].get("event") != "turn_end":
@@ -271,6 +301,10 @@ def _compact_completed_stream_deltas(
             completed["text"] = "".join(
                 str(chunk.get("text") or "") for _, chunk in chunks
             )
+        if include_projection_receipts:
+            receipts = _projection_receipts([*(chunk for _, chunk in chunks), record])
+            if receipts:
+                completed[_WEBUI_PROJECTION_RECEIPTS_KEY] = receipts
         replacements[index] = completed
         dropped_indexes.update(chunk_index for chunk_index, _ in chunks)
 
@@ -388,7 +422,7 @@ def _select_transcript_page(
         )
         stats.parsed_records += len(turn)
         stats.source_bytes += ref.byte_count if safe else _records_bytes(turn)
-        turn, dropped = _compact_completed_stream_deltas(turn)
+        turn, dropped = _compact_completed_stream_deltas(turn, include_projection_receipts=True)
         stats.compacted_delta_records += dropped
         if not safe:
             stats.truncated_oversized_turn = True
@@ -452,7 +486,7 @@ def append_transcript_object(
 
 async def append_session_message_input(
     session_key: str, *, sessions: SessionManager, content: str, created_at_ms: int,
-    session_message: Mapping[str, Any], expected_generation: str,
+    session_message: Mapping[str, Any],
 ) -> None:
     chat_id = _chat_id_from_session_key(session_key)
     if chat_id is None:
@@ -462,7 +496,7 @@ async def append_session_message_input(
         return
     event.update(created_at_ms=created_at_ms, session_message=dict(session_message))
     await sessions.state.append_history(session_key, [fact_from_record(event)],
-                                         expected_generation=expected_generation)
+                                         expected_generation=None)
 
 
 def normalize_webui_turn_id(value: Any) -> str:
@@ -543,8 +577,15 @@ class WebUITranscriptRecorder:
     ) -> bool:
         if text.strip() == "/stop" and not media_paths:
             return False
-        event = build_user_transcript_event(chat_id, text, media_paths=media_paths,
-            cli_apps=cli_apps, mcp_presets=mcp_presets, session_mentions=session_mentions)
+        event = build_user_transcript_event(
+            chat_id,
+            text,
+            media_paths=media_paths,
+            local_media_paths=_local_media_paths(metadata),
+            cli_apps=cli_apps,
+            mcp_presets=mcp_presets,
+            session_mentions=session_mentions,
+        )
         if event is None:
             return False
         return await self.prepare_and_append(chat_id, event, metadata=metadata, phase="user")
@@ -655,11 +696,17 @@ def normalize_session_message_ui_metadata(raw: object) -> dict[str, Any] | None:
     }
 
 
+def _local_media_paths(record: Mapping[str, Any]) -> list[str]:
+    raw = record.get(INBOUND_META_LOCAL_MEDIA)
+    return [path for path in cast(list[object], raw) if isinstance(path, str)] if isinstance(raw, list) else []
+
+
 def build_user_transcript_event(
     chat_id: str,
     text: str,
     *,
     media_paths: list[Any] | None = None,
+    local_media_paths: list[str] | None = None,
     cli_apps: list[Any] | None = None,
     mcp_presets: list[Any] | None = None,
     session_mentions: Sequence[Any] | None = None,
@@ -674,6 +721,9 @@ def build_user_transcript_event(
     }
     if paths:
         event["media_paths"] = paths
+        local = [path for path in (local_media_paths or []) if path in paths]
+        if local:
+            event[INBOUND_META_LOCAL_MEDIA] = local
     apps = [
         dict(cast(Mapping[str, Any], app))
         for app in (cli_apps or [])
@@ -731,6 +781,7 @@ def _session_user_event(
         chat_id,
         text,
         media_paths=cast(list[Any], media) if isinstance(media, list) else None,
+        local_media_paths=_local_media_paths(message),
         cli_apps=cast(list[Any], cli_apps) if isinstance(cli_apps, list) else None,
         mcp_presets=cast(list[Any], mcp_presets) if isinstance(mcp_presets, list) else None,
         session_mentions=(
@@ -950,7 +1001,7 @@ def _transcript_turn_signature(records: list[dict[str, Any]]) -> tuple[str, ...]
 def _user_recovery_signature(event: dict[str, Any]) -> str:
     fields = {
         key: event[key]
-        for key in ("text", "media_paths", "cli_apps", "mcp_presets", "session_mentions", "session_message")
+        for key in ("text", "media_paths", INBOUND_META_LOCAL_MEDIA, "cli_apps", "mcp_presets", "session_mentions", "session_message")
         if key in event
     }
     return json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -1256,7 +1307,7 @@ def build_webui_trace_detail_response(
     turn = _transcript_turn_at_ordinal(session_key, ordinal, history=history)
     if turn is None:
         return None
-    turn, _ = _compact_completed_stream_deltas(turn)
+    turn, _ = _compact_completed_stream_deltas(turn, include_projection_receipts=True)
     lines = _records_with_replay_identity(turn, turn_ordinal=ordinal)
     for group in _client_projection_deferred_trace_groups(lines).values():
         first = lines[group.start]
@@ -1311,6 +1362,9 @@ def _client_projection_common_fields(record: dict[str, Any]) -> dict[str, Any]:
     created_at_ms = _valid_created_at_ms(record.get("created_at_ms"))
     if created_at_ms is not None:
         fields["created_at_ms"] = created_at_ms
+    receipts = record.get(_WEBUI_PROJECTION_RECEIPTS_KEY)
+    if receipts:
+        fields["projection_receipts"] = receipts
     return fields
 
 
@@ -1332,7 +1386,7 @@ def _client_projection_source(record: dict[str, Any]) -> dict[str, Any] | None:
 def _client_projection_event(
     record: dict[str, Any],
     *,
-    augment_user_media: Callable[[list[str]], list[dict[str, Any]]] | None,
+    augment_user_media: Callable[[list[str], list[str]], list[dict[str, Any]]] | None,
     augment_assistant_media: Callable[[list[str]], list[dict[str, Any]]] | None,
     augment_assistant_text: Callable[[str], str] | None,
 ) -> dict[str, Any] | None:
@@ -1354,7 +1408,7 @@ def _client_projection_event(
             if path
         ] if isinstance(raw_paths, list) else []
         if paths and augment_user_media is not None:
-            media = augment_user_media(paths)
+            media = augment_user_media(paths, _local_media_paths(record))
             if media:
                 projected["media_urls"] = media
         for source_key, target_key in (
@@ -1455,12 +1509,16 @@ def _client_projection_event(
             or phase not in {"started", "succeeded", "failed", "cancelled"}
         ):
             return None
-        return {
+        projected = {
             "event": "context_compaction",
             **common,
             "compaction_id": compaction_id,
             "phase": phase,
         }
+        reason = record.get("reason")
+        if isinstance(reason, str) and reason in {"idle", "context_pressure", "manual", "provider_native"}:
+            projected["reason"] = reason
+        return projected
 
     if event == "turn_end":
         projected = {"event": "turn_end", **common}
@@ -1567,7 +1625,7 @@ def _client_projection_page_event_count(turn: list[dict[str, Any]]) -> int:
 def _client_projection_events(
     lines: list[dict[str, Any]],
     *,
-    augment_user_media: Callable[[list[str]], list[dict[str, Any]]] | None,
+    augment_user_media: Callable[[list[str], list[str]], list[dict[str, Any]]] | None,
     augment_assistant_media: Callable[[list[str]], list[dict[str, Any]]] | None,
     augment_assistant_text: Callable[[str], str] | None,
 ) -> tuple[list[dict[str, Any]], int | None]:
@@ -1603,6 +1661,9 @@ def _client_projection_events(
             )
             event["text"] = _trace_summary(last_text)
             event.pop("tool_events", None)
+            receipts = _projection_receipts(lines[group.start:group.stop])
+            if receipts:
+                event["projection_receipts"] = receipts
             if detail_ref is not None:
                 event["trace_detail"] = {
                     "ref": detail_ref,
@@ -1619,7 +1680,7 @@ def build_session_thread_response(
     *,
     active: bool = False,
     latency_ms: int | None = None,
-    augment_user_media: Callable[[list[str]], list[dict[str, Any]]] | None = None,
+    augment_user_media: Callable[[list[str], list[str]], list[dict[str, Any]]] | None = None,
     augment_assistant_media: Callable[[list[str]], list[dict[str, Any]]] | None = None,
     augment_assistant_text: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
@@ -1688,7 +1749,7 @@ def build_webui_thread_response(
     session_key: str,
     *,
     history: HistoryReader,
-    augment_user_media: Callable[[list[str]], list[dict[str, Any]]] | None = None,
+    augment_user_media: Callable[[list[str], list[str]], list[dict[str, Any]]] | None = None,
     augment_assistant_media: Callable[[list[str]], list[dict[str, Any]]] | None = None,
     augment_assistant_text: Callable[[str], str] | None = None,
     session_messages: list[dict[str, Any]] | None = None,

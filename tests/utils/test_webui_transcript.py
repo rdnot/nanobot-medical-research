@@ -36,6 +36,38 @@ def test_history_preserves_phase_qualified_stream_identity(history, event) -> No
     assert segment["turn_seq"] == 2
 
 
+@pytest.mark.parametrize("reason", [None, "idle", "context_pressure", "manual", "provider_native"])
+def test_compaction_reason_survives_sqlite_reload_and_older_page(history, tmp_path, reason) -> None:
+    from nanobot.session.manager import SessionManager
+
+    key = "websocket:compaction-reason"
+    history.append(key, {"event": "user", "chat_id": "compaction-reason", "text": "first"})
+    compaction = {
+        "event": "context_compaction", "chat_id": "compaction-reason",
+        "compaction_id": "compact-one", "phase": "succeeded",
+        "turn_id": "turn-one", "turn_seq": 1,
+        **({"reason": reason} if reason is not None else {}),
+    }
+    history.append(key, compaction)
+    history.append(key, {"event": "turn_end", "chat_id": "compaction-reason"})
+    _append_numbered_turn(history, key, "compaction-reason", 2)
+    reopened = SessionManager(tmp_path)
+
+    def build(**kwargs):
+        return reopened.project_history(key, lambda snapshot: transcript_module.build_webui_thread_response(
+            key, history=snapshot, **kwargs,
+        ))
+
+    latest = build(limit=2, direction="latest")
+    assert latest is not None
+    older = build(limit=2, before=latest["page"]["before_cursor"])
+    assert older is not None
+    [replayed] = [event for event in older["events"] if event["event"] == "context_compaction"]
+    assert {field: replayed[field] for field in compaction} == compaction
+    if reason is None:
+        assert "reason" not in replayed
+
+
 def test_append_stamps_created_at_ms(history, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.webui.transcript.time.time", lambda: 1_700_000_000.0)
@@ -214,6 +246,86 @@ def test_event_projection_augments_complete_stream_text(history, tmp_path, monke
     ]
 
 
+@pytest.mark.parametrize(
+    ("delta_event", "end_event", "phase"),
+    [("delta", "stream_end", "answer"), ("reasoning_delta", "reasoning_end", "reasoning")],
+)
+def test_thread_response_preserves_optional_stream_ids(history, delta_event, end_event, phase) -> None:
+    key = "websocket:stream-identity"
+    history.append(key, {"event": "user", "text": "question", "turn_id": "turn-stream"})
+    for stream_id in ("wire-first", "wire-second", None):
+        for event in (delta_event, end_event):
+            history.append(key, {
+                "event": event,
+                "turn_id": "turn-stream",
+                "turn_phase": phase,
+                "text": "part",
+                **({"stream_id": stream_id} if stream_id is not None else {}),
+            })
+    original_rows = history.read(key)
+
+    payload = history.build(key)
+
+    assert payload is not None
+    stream_events = payload["events"][1:]
+    assert [event["event"] for event in stream_events] == [delta_event, end_event] * 3
+    assert [event.get("stream_id") for event in stream_events] == [
+        "wire-first", "wire-first", "wire-second", "wire-second", None, None,
+    ]
+    assert all("stream_id" not in event for event in stream_events[-2:])
+    assert all("projection_receipts" not in event for event in stream_events)
+    assert history.read(key) == original_rows
+
+
+@pytest.mark.parametrize(
+    ("delta_event", "end_event", "phase"),
+    [("delta", "stream_end", "answer"), ("reasoning_delta", "reasoning_end", "reasoning")],
+)
+@pytest.mark.parametrize("completed_text", [None, "canonical text"])
+def test_thread_response_receipts_for_folded_legacy_deltas(
+    history, delta_event, end_event, phase, completed_text,
+) -> None:
+    key = "websocket:folded-receipts"
+    primary_text = completed_text or "first second last"
+    rows = [
+        {"event": "user", "text": "question", "turn_phase": "user", "turn_seq": 1},
+        {"event": delta_event, "text": "first ", "stream_id": "primary", "turn_seq": 3},
+        {"event": delta_event, "text": "second", "stream_id": "primary", "turn_seq": 4},
+        {"event": "message", "kind": "progress", "text": "tool()", "turn_phase": "activity", "turn_seq": 5},
+        {"event": delta_event, "text": "other", "stream_id": "secondary", "turn_seq": 6},
+        {"event": delta_event, "text": " last", "stream_id": "primary", "turn_seq": 8},
+        {"event": end_event, "stream_id": "primary", "turn_seq": 9,
+         **({"text": completed_text} if completed_text is not None else {})},
+        {"event": end_event, "stream_id": "secondary", "turn_seq": 10},
+        {"event": "turn_end", "turn_phase": "complete", "turn_seq": 11},
+    ]
+    for row in rows:
+        history.append(key, {"turn_id": "turn-folded", "turn_phase": phase, **row})
+    original_rows = history.read(key)
+    stats = TranscriptReplayStats()
+
+    payload = history.build(key, stats=stats)
+
+    assert payload is not None
+    assert stats.compacted_delta_records == 4
+    ends = [event for event in payload["events"] if event["event"] == end_event]
+    assert [(event["stream_id"], event["turn_seq"], event["text"]) for event in ends] == [
+        ("primary", 9, primary_text), ("secondary", 10, "other"),
+    ]
+    assert [event["projection_receipts"] for event in ends] == [
+        [{"turn_id": "turn-folded", "ranges": [[3, 4], [8, 9]]}],
+        [{"turn_id": "turn-folded", "ranges": [[6, 6], [10, 10]]}],
+    ]
+    assert history.read(key) == original_rows
+    # Migration compaction retains its existing record format, without HTTP metadata.
+    assert transcript_module.compact_legacy_records(original_rows) == [
+        original_rows[0], original_rows[3],
+        {**original_rows[6], "text": primary_text},
+        {**original_rows[7], "text": "other"},
+        original_rows[8],
+    ]
+
+
 def test_event_projection_defers_trace_details_without_legacy_fallback(history,
     tmp_path, monkeypatch,
 ) -> None:
@@ -370,6 +482,35 @@ def test_many_short_trace_rows_are_bounded_and_resolved(history, tmp_path, monke
     assert len(detail["events"]) == trace_count
     assert detail["events"][0]["text"] == "tool_0(value)"
     assert detail["events"][-1]["text"] == f"tool_{trace_count - 1}(value)"
+
+
+def test_thread_response_summary_receipts_preserve_holes_and_turn_membership(history) -> None:
+    key = "websocket:summary-receipts"
+    history.append(key, {"event": "user", "text": "run tools", "turn_id": "turn-T", "turn_seq": 1})
+    members = [("turn-T", 3), ("turn-T", 4), ("turn-U", 2), ("turn-T", 8)]
+    for turn_id, sequence in members:
+        history.append(key, {
+            "event": "message", "kind": "progress", "text": f'exec({"x" * 10_000})',
+            "turn_id": turn_id, "turn_seq": sequence, "turn_phase": "activity",
+        })
+    history.append(key, {"event": "turn_end", "turn_id": "turn-T", "turn_seq": 9})
+    original_rows = history.read(key)
+
+    payload = history.build(key)
+
+    assert payload is not None
+    assert len(payload["events"]) == 3
+    summary = payload["events"][1]
+    assert summary["trace_detail"]["traceCount"] == len(members)
+    assert summary["projection_receipts"] == [
+        {"turn_id": "turn-T", "ranges": [[3, 4], [8, 8]]},
+        {"turn_id": "turn-U", "ranges": [[2, 2]]},
+    ]
+    assert (summary["turn_id"], summary["turn_seq"]) == members[0]
+    detail = history.trace(key, summary["trace_detail"]["ref"])
+    assert detail is not None
+    assert [(event["turn_id"], event["turn_seq"]) for event in detail["events"]] == members
+    assert history.read(key) == original_rows
 
 
 def test_transcript_revision_tracks_artifacts_and_variants(history, tmp_path, monkeypatch) -> None:

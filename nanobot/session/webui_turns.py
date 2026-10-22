@@ -678,20 +678,19 @@ class WebuiTurnCoordinator:
             return
         public_metadata = _session_message_public_metadata(envelope)
         try:
-            assert event.context.session_generation is not None
             await append_session_message_input(
                 session_key,
                 sessions=self.sessions,
-                expected_generation=event.context.session_generation,
                 content=event.content,
                 created_at_ms=envelope["created_at_ms"],
                 session_message=public_metadata,
             )
-        except (OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError, SessionConflictError):
             logger.opt(exception=True).warning(
                 "Failed to persist session input {}",
                 envelope["message_id"],
             )
+            return
         await self.bus.publish_outbound(outbound_message_for_event(
             channel="websocket",
             chat_id=session_key.split(":", 1)[1],

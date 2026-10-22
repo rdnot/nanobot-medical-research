@@ -1049,6 +1049,23 @@ describe("MessageBubble", () => {
     expect(content.querySelectorAll("li")).toHaveLength(1000);
   });
 
+  it("retries a failed video locally without replacing a healthy player on history updates", () => {
+    const message: UIMessage = { id: "retry-video", role: "user", content: "watch", createdAt: 0,
+      media: [{ kind: "video", name: "clip.webm", url: "/api/media/sig/clip" }] };
+    const { container, rerender } = render(<MessageBubble message={message} />);
+    const original = container.querySelector("video")!;
+    fireEvent.error(original);
+    expect(container.querySelector("video")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const retried = container.querySelector("video")!;
+    expect(retried).toHaveAttribute("src", "/api/media/sig/clip");
+    expect(retried).not.toBe(original);
+    rerender(<MessageBubble message={{ ...message, media: [...message.media!] }} />);
+    expect(container.querySelector("video")).toBe(retried);
+    fireEvent.error(retried);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
+  });
+
   it("renders video media as an inline player", () => {
     const message: UIMessage = {
       id: "a1",
@@ -1074,6 +1091,29 @@ describe("MessageBubble", () => {
     expect(container.querySelector("video[controls]")).toBeInTheDocument();
     expect(screen.queryByText("Preview")).not.toBeInTheDocument();
     expect(screen.queryByText("Code")).not.toBeInTheDocument();
+  });
+
+  it("starts an uploaded player from its accepted URL and preserves it through hydration", () => {
+    const message: UIMessage = {
+      id: "optimistic-user", role: "user", content: "Watch this", createdAt: 1,
+      turnId: "video-turn", turnPhase: "user", deliveryStatus: "sending",
+      media: [{ kind: "video", name: "clip.webm" }],
+    };
+    const accepted: UIMessage = {
+      ...message, deliveryStatus: "accepted",
+      media: [{ kind: "video", name: "clip.webm", url: "/api/media/sig/clip" }],
+    };
+    const { rerender, unmount } = render(<ThreadMessages messages={[message]} />);
+    expect(screen.queryByLabelText(/video attachment/i)?.tagName).not.toBe("VIDEO");
+    expect(screen.queryByText(/attachment unavailable/i)).not.toBeInTheDocument();
+    rerender(<ThreadMessages messages={[accepted]} />);
+    const video = screen.getByLabelText(/video attachment/i);
+    rerender(<ThreadMessages messages={[{ ...accepted, id: "history-user" }]} />);
+    expect(screen.getByLabelText(/video attachment/i)).toBe(video);
+    expect(video).toHaveAttribute("src", "/api/media/sig/clip");
+    unmount();
+    render(<ThreadMessages messages={[accepted]} />);
+    expect(screen.getByLabelText(/video attachment/i)).toHaveAttribute("src", "/api/media/sig/clip");
   });
 
   it("renders streaming reasoning as one compact activity line", () => {

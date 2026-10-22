@@ -481,8 +481,16 @@ async def test_temporary_chat_is_transient_and_discarded(history, bus, tmp_path)
     chat_id = await _new_temporary_chat(channel, connection)
     upload = tmp_path / "temporary-upload.txt"
     upload.write_text("private attachment", encoding="utf-8")
-    channel.gateway.uploads.store.resolve = MagicMock(return_value=[str(upload)])
-    channel.gateway.uploads.store.commit = MagicMock(return_value=[str(upload)])
+    async def upload_chunks():
+        yield upload.read_bytes()
+
+    owner = channel.gateway.uploads.issue(connection)["token"]
+    reference = await channel.gateway.uploads.store.upload(
+        upload_chunks(), owner=owner, mime="text/plain", size=upload.stat().st_size,
+        filename=upload.name,
+    )
+    upload.unlink()
+    upload = channel.gateway.uploads.store.inspect([reference], owner=owner)[0].path
 
     await channel._dispatch_envelope(
         connection,
@@ -491,7 +499,7 @@ async def test_temporary_chat_is_transient_and_discarded(history, bus, tmp_path)
             "type": "message",
             "chat_id": chat_id,
             "content": "read this",
-            "media": [{"reference": "temporary-upload"}],
+            "media": [{"reference": reference}],
             "cli_apps": [{"name": "drawio"}],
             "workspace_scope": {
                 "project_path": str(selected_project),
@@ -3333,6 +3341,7 @@ async def test_context_compaction_is_structured_persisted_and_summary_free(histo
             compaction_id="compact-1",
             phase=phase,
             notify=notify,
+            reason="manual",
         ),
     ))
 
@@ -3341,6 +3350,7 @@ async def test_context_compaction_is_structured_persisted_and_summary_free(histo
         "chat_id": "chat-compaction",
         "compaction_id": "compact-1",
         "phase": phase,
+        "reason": "manual",
     }
     assert _sent_ws_payloads(mock_ws) == [expected]
     [persisted] = history.read("websocket:chat-compaction")

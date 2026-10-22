@@ -1,3 +1,4 @@
+import { pastedFilePath, PastedPathRange, isLocalAttachment, type LocalAttachment } from "../../../../packages/client-events/attachments";
 import {
   NewChatIcon,
   CompactIcon,
@@ -57,6 +58,7 @@ import {
   ChevronUp,
   CornerDownRight,
   FileText,
+  Video,
   ImageIcon,
   Loader2,
   Quote,
@@ -94,13 +96,15 @@ import {
 } from "@/components/thread/ComposerUsagePopover";
 import {
   ACCEPT_ATTR,
+  acceptedAttachmentKind,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_ATTACHMENT_BYTES,
   MAX_TOTAL_ATTACHMENT_BYTES,
+  MAX_VIDEO_BYTES,
+  MAX_VIDEOS_PER_MESSAGE,
   useAttachedImages,
   type AttachedImage,
   type AttachmentError,
-  type AttachmentKind,
   type RestoredReadyImage,
 } from "@/hooks/useAttachedImages";
 import { useClipboardAndDrop } from "@/hooks/useClipboardAndDrop";
@@ -142,7 +146,7 @@ import {
 } from "@/lib/session-drag";
 import { formatQuotedUserMessage } from "@/lib/user-message-quote";
 import { cn } from "@/lib/utils";
-import type { ComposerDraftStore } from "@/lib/composer-draft";
+import type { ComposerDraft, ComposerDraftStore } from "@/lib/composer-draft";
 import { useLocalPreferences } from "@/hooks/useLocalPreferences";
 
 const VOICE_SHORTCUT_CODE = "KeyD";
@@ -153,8 +157,8 @@ type VoiceShortcutPlatform = "apple" | "chromeos" | "linux" | "other" | "windows
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function utf8Bytes(value: string): number {
@@ -244,6 +248,7 @@ interface ThreadComposerProps {
   onStop?: () => void;
   surfaceRef?: Ref<HTMLDivElement>;
   onTranscribeAudio?: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
+  onInspectAttachment?: (path: string) => Promise<LocalAttachment>;
   /** Sustained objective for this chat (WebSocket ``goal_state``). */
   goalState?: GoalStateWsPayload;
   workspaceScope?: WorkspaceScopePayload | null;
@@ -361,10 +366,21 @@ interface QueuedPrompt {
   sessionMentions?: SessionMention[];
   autoAfterTurnId?: string;
   autoPaused?: boolean;
+  autoSendPageId?: string;
+}
+
+let queuedPromptPageId: string | undefined;
+
+function getQueuedPromptPageId(): string {
+  return queuedPromptPageId ??= crypto.randomUUID();
+}
+
+function canAutoSendQueuedPrompt(prompt: QueuedPrompt): boolean {
+  return !prompt.autoPaused && prompt.autoSendPageId === getQueuedPromptPageId();
 }
 
 function pauseQueuedPrompt(prompt: QueuedPrompt): QueuedPrompt {
-  return { ...prompt, autoAfterTurnId: undefined, autoPaused: true };
+  return { ...prompt, autoAfterTurnId: undefined, autoSendPageId: undefined, autoPaused: true };
 }
 
 function mergeQueuedPrompt(first: QueuedPrompt, next: QueuedPrompt): QueuedPrompt {
@@ -383,20 +399,19 @@ function mergeQueuedPrompt(first: QueuedPrompt, next: QueuedPrompt): QueuedPromp
     sessionMentions: [...mentions.values()],
     autoAfterTurnId: first.autoAfterTurnId,
     autoPaused: prompts.some((prompt) => prompt.autoPaused),
+    autoSendPageId: first.autoSendPageId,
   };
 }
 
-function queuedAttachmentBytes(image: QueuedPromptImage): number {
-  const base64 = image.dataUrl.slice(image.dataUrl.indexOf(",") + 1);
+function queuedUploadBytes(image: QueuedPromptImage): number {
+  if (image.local) return 0;
+  const dataUrl = image.dataUrl ?? "";
+  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
   const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
   return Math.floor(base64.length * 3 / 4) - padding;
 }
 
-interface QueuedPromptImage {
-  dataUrl: string;
-  name?: string;
-  kind?: AttachmentKind;
-}
+type QueuedPromptImage = RestoredReadyImage;
 
 interface CliAppMentionQuery {
   query: string;
@@ -543,13 +558,16 @@ function normalizeQueuedPrompt(item: unknown, index: number): QueuedPrompt | nul
   if (typeof record.text !== "string") return null;
   const text = record.text.trim();
   const images = Array.isArray(record.images)
-    ? record.images.flatMap((image) => {
+    ? record.images.flatMap((image): QueuedPromptImage[] => {
         if (!image || typeof image !== "object") return [];
         const candidate = image as Partial<QueuedPromptImage>;
+        if (isLocalAttachment(candidate.local)) {
+          return [{ local: candidate.local, kind: candidate.local.kind, name: candidate.local.name }];
+        }
         if (typeof candidate.dataUrl !== "string" || !candidate.dataUrl.startsWith("data:")) {
           return [];
         }
-        const kind = candidate.kind === "file" || candidate.kind === "image"
+        const kind = candidate.kind === "file" || candidate.kind === "image" || candidate.kind === "video"
           ? candidate.kind
           : candidate.dataUrl.startsWith("data:image/")
             ? "image"
@@ -571,7 +589,7 @@ function normalizeQueuedPrompt(item: unknown, index: number): QueuedPrompt | nul
   const id = typeof record.id === "string" && record.id.trim()
     ? record.id
     : `queued-prompt-restored-${index}`;
-  return {
+  const prompt: QueuedPrompt = {
     id,
     text,
     ...(images.length > 0 ? { images } : {}),
@@ -581,7 +599,9 @@ function normalizeQueuedPrompt(item: unknown, index: number): QueuedPrompt | nul
       ? { autoAfterTurnId: record.autoAfterTurnId.trim() }
       : {}),
     ...(record.autoPaused === true ? { autoPaused: true } : {}),
+    ...(typeof record.autoSendPageId === "string" ? { autoSendPageId: record.autoSendPageId } : {}),
   };
+  return canAutoSendQueuedPrompt(prompt) ? prompt : pauseQueuedPrompt(prompt);
 }
 
 function readQueuedPrompt(storageKey: string): QueuedPrompt | null {
@@ -693,11 +713,25 @@ function queuedPromptStoreFor(storageKey: string | null): QueuedPromptStore {
   return store;
 }
 
+function expireQueuedPromptAuthorization(): void {
+  queuedPromptPageId = undefined;
+  for (const store of queuedPromptStores.values()) {
+    store.set((prompt) => prompt && !prompt.autoPaused ? pauseQueuedPrompt(prompt) : prompt);
+  }
+}
+
+// Saved content survives a page's lifetime; permission to execute it does not.
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", expireQueuedPromptAuthorization);
+  document.addEventListener("freeze", expireQueuedPromptAuthorization);
+}
+
 function readyImagesToQueuedImages(
-  images: Array<AttachedImage & { dataUrl: string }>,
+  images: AttachedImage[],
 ): QueuedPromptImage[] {
   return images.map((img) => ({
     dataUrl: img.dataUrl,
+    local: img.local,
     kind: img.kind,
     name: img.file.name,
   }));
@@ -705,17 +739,20 @@ function readyImagesToQueuedImages(
 
 function queuedImagesToSendImages(images?: QueuedPromptImage[]): SendAttachment[] | undefined {
   if (!images?.length) return undefined;
-  return images.map((img) => ({
-    media: {
-      data_url: img.dataUrl,
-      ...(img.name ? { name: img.name } : {}),
-    },
-    preview: {
-      kind: img.kind ?? (img.dataUrl.startsWith("data:image/") ? "image" : "file"),
-      url: img.dataUrl,
-      ...(img.name ? { name: img.name } : {}),
-    },
-  }));
+  return images.flatMap((img): SendAttachment[] => {
+    if (img.local) return [{
+      media: { path: img.local.path, name: img.local.name },
+      preview: { kind: img.local.kind, url: img.local.url, name: img.local.name },
+    }];
+    if (!img.dataUrl) return [];
+    return [{
+      media: { data_url: img.dataUrl, ...(img.name ? { name: img.name } : {}) },
+      preview: {
+        kind: img.kind ?? (img.dataUrl.startsWith("data:image/") ? "image" : img.dataUrl.startsWith("data:video/") ? "video" : "file"),
+        url: img.dataUrl, ...(img.name ? { name: img.name } : {}),
+      },
+    }];
+  });
 }
 
 function queuedPromptLabel(prompt: QueuedPrompt): string {
@@ -1069,6 +1106,7 @@ export function ThreadComposer({
   onStop,
   surfaceRef,
   onTranscribeAudio,
+  onInspectAttachment,
   goalState,
   workspaceScope = null,
   workspaceControlsHidden = false,
@@ -1107,6 +1145,14 @@ export function ThreadComposer({
   } | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [sendPending, setSendPending] = useState(false);
+  const [pathInspection, setPathInspection] = useState<{
+    generation: number; scope: string; range: PastedPathRange; attachment?: LocalAttachment;
+  } | null>(null);
+  const pathCheckGeneration = useRef(0);
+  const pathCheckScope = useRef("");
+  const scopeIdentity = `${workspaceScope?.project_path ?? ""}:${workspaceScope?.access_mode ?? ""}`;
+  pathCheckScope.current = scopeIdentity;
+  useEffect(() => () => { pathCheckGeneration.current += 1; }, []);
   const [modelSetupAttentionRequest, setModelSetupAttentionRequest] = useState(0);
   const queuedPromptStorageKey = queuedPromptsStorageKey(pendingQueueKey);
   const queuedPromptStore = useMemo(() => queuedPromptStoreFor(queuedPromptStorageKey), [queuedPromptStorageKey]);
@@ -1196,33 +1242,45 @@ export function ThreadComposer({
 
   const maxAttachments = ingressLimits?.attachments.max_count
     ?? MAX_ATTACHMENTS_PER_MESSAGE;
+  const maxFileBytes = ingressLimits?.attachments.max_file_bytes ?? MAX_ATTACHMENT_BYTES;
   const maxTextBytes = ingressLimits?.message.max_text_bytes ?? 64 * 1024;
-  const { images, enqueue, remove, clear, restoreReadyImages, encoding, full } =
+  const { images, enqueue, addLocal, remove, clear, restoreReadyImages, encoding: encodingFiles, full } =
     useAttachedImages({ ingressLimits });
+  const encoding = encodingFiles || pathInspection !== null;
   const restoredDraftAttachments = useRef(false);
-  const [draftAttachmentsReady, setDraftAttachmentsReady] = useState(!initialDraft?.files.length);
+  const [draftAttachmentsReady, setDraftAttachmentsReady] = useState(!initialDraft?.attachments.length);
   useLayoutEffect(() => {
     if (restoredDraftAttachments.current) return;
     restoredDraftAttachments.current = true;
-    if (initialDraft?.files.length) enqueue(initialDraft.files, { restoringDraft: true });
+    for (const attachment of initialDraft?.attachments ?? []) {
+      if (attachment instanceof File) enqueue([attachment], { restoringDraft: true });
+      else addLocal(attachment, { restoringDraft: true });
+    }
     setDraftAttachmentsReady(true);
-  }, [enqueue, initialDraft]);
+  }, [enqueue, addLocal, initialDraft]);
 
   const formatRejection = useCallback(
-    (reason: AttachmentError): string => {
+    (reason: Exclude<AttachmentError, "too_large">): string => {
       const key = `thread.composer.imageRejected.${reason}`;
-      const fallback = reason === "too_many_attachments"
+      const fallback = reason === "too_many_videos"
+        ? "Max 1 video per message"
+        : reason === "too_many_attachments"
         ? `Max ${maxAttachments} attachments per message`
         : reason === "empty_file"
           ? "Empty files cannot be attached"
           : reason === "total_too_large"
             ? "Attachments are too large together — remove some or use smaller files"
-            : reason === "too_large"
-              ? "File is too large"
-              : "Unsupported file type";
+            : "Unsupported file type";
       return t(key, { max: maxAttachments, defaultValue: fallback });
     },
     [maxAttachments, t],
+  );
+
+  const formatUploadTooLarge = useCallback(
+    (size: number, maximum: number) => t("thread.composer.imageRejected.too_large", {
+      size: formatBytes(size), max: formatBytes(maximum),
+    }),
+    [t],
   );
 
   const textTooLargeMessage = useCallback(
@@ -1239,17 +1297,20 @@ export function ThreadComposer({
       secondEnterPromptIdRef.current = null;
       const { rejected } = enqueue(files);
       if (rejected.length > 0) {
-        setInlineError(formatRejection(rejected[0].reason));
+        const { reason, file } = rejected[0];
+        setInlineError(reason === "too_large"
+          ? formatUploadTooLarge(file.size, acceptedAttachmentKind(file) === "video" ? MAX_VIDEO_BYTES : maxFileBytes)
+          : formatRejection(reason));
       } else {
         setInlineError(null);
       }
     },
-    [enqueue, formatRejection, interactionDisabled],
+    [enqueue, formatRejection, formatUploadTooLarge, interactionDisabled, maxFileBytes],
   );
 
   const {
     isDragging,
-    onPaste,
+    onPaste: onAttachmentPaste,
     onDragEnter,
     onDragOver,
     onDragLeave,
@@ -1279,8 +1340,8 @@ export function ThreadComposer({
   const normalizedQuotedContext = quotedContext?.trim() || null;
 
   const readyImages = useMemo(
-    () => images.filter((img): img is AttachedImage & { dataUrl: string } =>
-      img.status === "ready" && typeof img.dataUrl === "string",
+    () => images.filter((img) =>
+      img.status === "ready" && (typeof img.dataUrl === "string" || !!img.local),
     ),
     [images],
   );
@@ -1504,6 +1565,49 @@ export function ThreadComposer({
     resetKey: pendingQueueKey,
   });
   const { rawSelection, replace: replaceMentionInput } = mentionInput;
+  const onPaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    onAttachmentPaste(event);
+    if (event.defaultPrevented || interactionDisabled || !onInspectAttachment) return;
+    const raw = event.clipboardData.getData("text/plain");
+    const path = pastedFilePath(raw);
+    if (!path) return;
+    event.preventDefault();
+    const { start, end } = rawSelection();
+    const pasted = value.slice(0, start) + raw + value.slice(end);
+    const generation = ++pathCheckGeneration.current;
+    replaceMentionInput(pasted, start + raw.length);
+    setPathInspection({ generation, scope: scopeIdentity, range: new PastedPathRange(pasted, start, start + raw.length) });
+    void onInspectAttachment(path).then((attachment) => {
+      if (generation !== pathCheckGeneration.current) return;
+      setPathInspection((current) => current?.generation === generation ? { ...current, attachment } : current);
+    }).catch((error: unknown) => {
+      if (generation !== pathCheckGeneration.current || pathCheckScope.current !== scopeIdentity) return;
+      setInlineError(error instanceof Error ? error.message : t("message.attachmentUnavailable"));
+      setPathInspection(null);
+    });
+  }, [interactionDisabled, onAttachmentPaste, onInspectAttachment, rawSelection, replaceMentionInput, scopeIdentity, t, value]);
+
+  useLayoutEffect(() => {
+    if (!pathInspection) return;
+    if (pathInspection.scope !== scopeIdentity || !pathInspection.range.update(value)) {
+      pathCheckGeneration.current += 1;
+      setPathInspection(null);
+      return;
+    }
+    // Let the native IME commit before removing the confirmed path from its text.
+    if (!pathInspection.attachment || mentionInput.isComposing) return;
+    const edited = pathInspection.range.replace("", rawSelection().start);
+    if (edited) {
+      const rejection = addLocal(pathInspection.attachment);
+      if (rejection) setInlineError(formatRejection(rejection));
+      else {
+        replaceMentionInput(edited.value, edited.cursor, { preserveFocus: true });
+        setInlineError(null);
+      }
+    }
+    setPathInspection(null);
+  }, [addLocal, formatRejection, mentionInput.isComposing, pathInspection, rawSelection, replaceMentionInput, scopeIdentity, value]);
+
   const draftText = composerMentionText(mentionInput.segments).raw;
   const sessionDragInsertion = sessionDragPreview
     ? mentionInsertion(
@@ -1544,7 +1648,9 @@ export function ThreadComposer({
     }
     draftStore.set(draftKey, {
       text: draftText,
-      files: images.map((image) => image.file),
+      attachments: images.flatMap((image): ComposerDraft["attachments"] => (
+        image.local ? [image.local] : image.file instanceof File ? [image.file] : []
+      )),
       sessionMentions: activeSessionMentions,
       quotedContext,
     }, persistDraft);
@@ -1990,25 +2096,29 @@ export function ThreadComposer({
       return textTooLargeMessage();
     }
     const attachments = prompt.images ?? [];
-    if (attachments.length > maxAttachments) return formatRejection("too_many_attachments");
-    const sizes = attachments.map(queuedAttachmentBytes);
-    if (sizes.some((size) => size > (ingressLimits?.attachments.max_file_bytes ?? MAX_ATTACHMENT_BYTES))) {
-      return formatRejection("too_large");
+    const videos = attachments.filter((item) => item.kind === "video").length;
+    if (videos > MAX_VIDEOS_PER_MESSAGE) return formatRejection("too_many_videos");
+    if (attachments.length - videos > maxAttachments) return formatRejection("too_many_attachments");
+    const oversized = attachments.find((item) => queuedUploadBytes(item) > (item.kind === "video" ? MAX_VIDEO_BYTES : maxFileBytes));
+    if (oversized) {
+      return formatUploadTooLarge(queuedUploadBytes(oversized), oversized.kind === "video" ? MAX_VIDEO_BYTES : maxFileBytes);
     }
-    if (sizes.reduce((sum, size) => sum + size, 0) > (ingressLimits?.attachments.max_total_bytes ?? MAX_TOTAL_ATTACHMENT_BYTES)) {
+    const total = attachments.reduce((sum, item) => sum + (item.kind === "video" ? 0 : queuedUploadBytes(item)), 0);
+    if (total > (ingressLimits?.attachments.max_total_bytes ?? MAX_TOTAL_ATTACHMENT_BYTES)) {
       return formatRejection("total_too_large");
     }
     if ((prompt.sessionMentions?.length ?? 0) > SESSION_MENTIONS_LIMIT) {
       return t("thread.composer.queued.tooManyMentions", { max: SESSION_MENTIONS_LIMIT });
     }
     return null;
-  }, [formatRejection, ingressLimits, maxAttachments, maxTextBytes, t, textTooLargeMessage]);
+  }, [formatRejection, formatUploadTooLarge, ingressLimits, maxAttachments, maxFileBytes, maxTextBytes, t, textTooLargeMessage]);
 
   const collectGuidancePrompt = useCallback((): QueuedPrompt => {
     queuedPromptCounterRef.current += 1;
     const prompt: QueuedPrompt = {
       id: `queued-prompt-${Date.now()}-${queuedPromptCounterRef.current}`,
       text: value.trim(),
+      autoSendPageId: getQueuedPromptPageId(),
       images: readyImagesToQueuedImages(readyImages),
       ...(activeTurnId ? { autoAfterTurnId: activeTurnId } : {}),
       ...(normalizedQuotedContext ? { quotedContext: normalizedQuotedContext } : {}),
@@ -2094,7 +2204,7 @@ export function ThreadComposer({
     if (!isStreaming) secondEnterPromptIdRef.current = null;
     // Switching to an idle session is not completion of the previous session's run.
     if (previous.key !== pendingQueueKey) return;
-    if (isStreaming || interactionDisabled || !queuedPrompt || queuedPrompt.autoPaused) return;
+    if (isStreaming || interactionDisabled || !queuedPrompt || !canAutoSendQueuedPrompt(queuedPrompt)) return;
     const waitingTurnCompleted = queuedPromptStorageKey !== null && queuedPrompt.autoAfterTurnId !== undefined
       ? completedTurnIds.includes(queuedPrompt.autoAfterTurnId)
       : previous.isStreaming;
@@ -2118,16 +2228,7 @@ export function ThreadComposer({
     }
     // Keep self-contained local previews across drafts and optimistic bubbles.
     // The client decodes these to HTTP binary; WS messages contain only refs.
-    const payload: SendAttachment[] | undefined =
-      readyImages.length > 0
-        ? readyImages.map((img) => ({
-            media: {
-              data_url: img.dataUrl,
-              name: img.file.name,
-            },
-            preview: { kind: img.kind, url: img.dataUrl, name: img.file.name },
-          }))
-        : undefined;
+    const payload = queuedImagesToSendImages(readyImagesToQueuedImages(readyImages));
     const attachedCliApps = activeCliMentionApps.map(cliAppMentionPayload);
     const attachedMcpPresets = activeMcpPresetMentions.map(mcpPresetMentionPayload);
     const options: SendOptions | undefined =
@@ -2599,7 +2700,9 @@ export function ThreadComposer({
                     current: formatBytes(current),
                   })
                 }
-                formatError={formatRejection}
+                formatError={(reason) => reason === "too_large"
+                  ? formatUploadTooLarge(img.file.size, img.kind === "video" ? MAX_VIDEO_BYTES : maxFileBytes)
+                  : formatRejection(reason)}
                 onRemove={() => removeChip(img.id)}
                 onKeyDown={onChipKey(img.id)}
                 registerRef={(el) => {
@@ -3365,6 +3468,8 @@ function AttachmentChip({
           <div className="flex h-full w-full items-center justify-center">
             {image.kind === "image" ? (
               <ImageIcon className="h-4 w-4 text-muted-foreground" aria-hidden />
+            ) : image.kind === "video" ? (
+              <Video className="h-4 w-4 text-muted-foreground" aria-hidden />
             ) : (
               <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />
             )}
