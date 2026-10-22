@@ -52,6 +52,19 @@ function openMessageBlockMenu(root: ParentNode): {
 }
 
 describe("ThreadMessages", () => {
+  it("preserves native context menus and navigation on rendered reply links", async () => {
+    await preloadMarkdownText();
+    render(<ThreadMessages messages={[
+      { id: "reply", role: "assistant", content: "[**Website**](https://example.com/?q=one#two)", createdAt: 1 },
+    ]} />);
+    const link = await screen.findByRole("link", { name: "Website" });
+    expect(fireEvent.contextMenu(within(link).getByText("Website"))).toBe(true);
+    link.focus();
+    expect(fireEvent.keyDown(link, { key: "F10", shiftKey: true })).toBe(true);
+    expect(link).toHaveFocus();
+    expect(fireEvent.click(link, { ctrlKey: true })).toBe(true);
+  });
+
   it.each(["diff", "collapsed_diff"] as const)(
     "keeps completed %s edits visible when answer activity is toggled",
     (fileEditDisplayMode) => {
@@ -226,7 +239,7 @@ describe("ThreadMessages", () => {
     expect(screen.getByText("latest answer").closest(".thread-render-unit")).toBeNull();
   });
 
-  it("recycles offscreen historical content while preserving its measured space", () => {
+  it("recycles historical content using the latest intersection in each batch", () => {
     let notify: (entries: Array<{ isIntersecting: boolean }>) => void = () => {};
     vi.stubGlobal("IntersectionObserver", class {
       constructor(callback: typeof notify) { notify = callback; }
@@ -243,8 +256,15 @@ describe("ThreadMessages", () => {
     act(() => notify([{ isIntersecting: false }]));
     expect(unit.style.height).toBe("240px");
     expect(unit.childElementCount).toBe(0);
+    act(() => notify([{ isIntersecting: false }, { isIntersecting: true }]));
+    expect(screen.getByText("historical answer")).toBeVisible();
+    expect(unit.style.height).toBe("");
+    act(() => notify([{ isIntersecting: true }, { isIntersecting: false }]));
+    expect(unit.style.height).toBe("240px");
+    expect(unit.childElementCount).toBe(0);
     act(() => notify([{ isIntersecting: true }]));
     expect(screen.getByText("historical answer")).toBeVisible();
+    expect(unit.style.height).toBe("");
     expect(view.container).toHaveTextContent("old question");
   });
 

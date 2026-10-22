@@ -9,7 +9,7 @@ import platform
 import re
 import subprocess
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -86,7 +86,7 @@ class SystemSettingsOperations:
     mcp_presets_action: SettingsOperation
     reload_mcp: SettingsOperation
     mcp_runtime_status: Callable[[], Mapping[str, str]] | None
-    check_for_update: SettingsOperation
+    check_for_update: Callable[[], Awaitable[dict[str, Any]]]
     channel_feature_action: SettingsOperation | None = None
     channel_runtime_status: Callable[[], dict[str, Any]] | None = None
 
@@ -454,6 +454,7 @@ class SystemSettingsHandler:
         self.logger = logger
         self._admission = admission
         self._channel_connectors: dict[str, ChannelConnector] = {}
+        self._pending_channel_restarts: set[str] = set()
         self._remove_pending_work: Callable[[], None] | None = None
         self._closing_connectors = False
         self._update_jobs = UpdateJobService()
@@ -793,6 +794,8 @@ class SystemSettingsHandler:
                     action,
                 )
             return SettingsRouteResult.failure(status, message)
+        if install_only and payload.get("requires_restart"):
+            self._pending_channel_restarts.add((query_first(request.query, "name") or "").strip())
         if not install_only:
             payload = await self._apply_feature_runtime_change(
                 action,
@@ -812,16 +815,22 @@ class SystemSettingsHandler:
         payload: dict[str, Any],
         operations: SystemSettingsOperations,
     ) -> dict[str, Any]:
-        if operations.channel_runtime_status is None:
-            return payload
-        try:
-            return with_channel_runtime_status(
-                payload,
-                operations.channel_runtime_status(),
-            )
-        except Exception:
-            self.logger.exception("failed to load channel runtime status")
-            return payload
+        if operations.channel_runtime_status is not None:
+            try:
+                payload = with_channel_runtime_status(
+                    payload,
+                    operations.channel_runtime_status(),
+                )
+            except Exception:
+                self.logger.exception("failed to load channel runtime status")
+        return {
+            **payload,
+            "features": [
+                {**feature, "restart_pending": feature["name"] in self._pending_channel_restarts}
+                if feature["type"] == "channel" else feature
+                for feature in payload["features"]
+            ],
+        }
 
     async def _apply_feature_runtime_change(
         self,
@@ -1225,7 +1234,7 @@ class SystemSettingsHandler:
         operations: SystemSettingsOperations,
     ) -> SettingsRouteResult:
         try:
-            update_info = await asyncio.to_thread(operations.check_for_update)
+            update_info = await operations.check_for_update()
         except Exception as exc:
             self.logger.warning("version check failed ({})", type(exc).__name__)
             return SettingsRouteResult.failure(500, "version check failed")

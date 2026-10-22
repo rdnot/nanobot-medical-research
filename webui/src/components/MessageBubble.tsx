@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Activity, Check, ChevronRight, CircleAlert, Clock3, Copy, Link2, Quote, Wrench } from "lucide-react";
+import { Activity, Check, ChevronRight, CircleAlert, Clock3, Copy, Quote, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { DisclosureContent } from "@/components/ui/disclosure";
 
@@ -145,7 +145,6 @@ interface MessageBlockMenuActionsProps {
   isTurnStreaming?: boolean;
   onForkFromHere?: () => void;
   activity?: MessageBlockMenuActivity;
-  onViewLinks?: () => void;
   sheet?: boolean;
 }
 
@@ -155,7 +154,6 @@ export function MessageBlockMenuActions({
   isTurnStreaming = false,
   onForkFromHere,
   activity,
-  onViewLinks,
   sheet = false,
 }: MessageBlockMenuActionsProps) {
   const { t } = useTranslation();
@@ -248,10 +246,6 @@ export function MessageBlockMenuActions({
             ) : null}
           </div>
         ) : null}
-        {onViewLinks ? <button type="button" data-message-links-trigger onClick={onViewLinks}
-          className="flex min-h-[var(--message-block-control-size)] w-full items-center gap-2 rounded-control px-2 py-1.5 text-[13px] text-muted-foreground hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-          <Link2 className="h-3.5 w-3.5" aria-hidden />{t("webPreview.viewLinks")}
-        </button> : null}
         <FallbackResponseSources
           sources={message.role === "assistant" ? message.responseSources : undefined}
           className="min-h-[var(--message-block-control-size)] gap-1"
@@ -483,7 +477,7 @@ export function MessageBubble({
         {!hasText ? contextMenu : null}
         {hasImages ? <ImageGallery images={images} align="right" size="compact" /> : null}
         {!hasImages && hasMedia ? (
-          <MessageMedia media={media} align="right" />
+          <MessageMedia media={media} align="right" pending={message.deliveryStatus === "sending"} />
         ) : null}
         {quotedContext ? (
           <UserQuotedContext
@@ -647,9 +641,11 @@ function mergeCliMentionApps(
 function MessageMedia({
   media,
   align,
+  pending = false,
 }: {
   media: UIMediaAttachment[];
   align: "left" | "right";
+  pending?: boolean;
 }) {
   const inlineImages = useInlineImages();
   if (media.length === 0) return null;
@@ -679,7 +675,7 @@ function MessageMedia({
         <ImageGallery images={images} align={align} size={align === "left" ? "large" : "compact"} />
       ) : null}
       {nonImages.map((item, i) => (
-        <AttachmentTile key={`${item.url ?? item.name ?? item.kind}-${i}`} attachment={item} />
+        <AttachmentTile key={`${item.kind}-${i}`} attachment={item} pending={pending} />
       ))}
     </div>
   );

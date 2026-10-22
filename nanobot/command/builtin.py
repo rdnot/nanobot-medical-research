@@ -397,6 +397,7 @@ async def cmd_compact(ctx: CommandContext) -> None:
             runtime=runtime,
             events=delivery.events,
             notify=True,
+            reason="manual",
         )
     except Exception:
         logger.exception("Manual context compaction failed for {}", ctx.key)

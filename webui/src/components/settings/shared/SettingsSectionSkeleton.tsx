@@ -8,7 +8,7 @@ import { SkeletonStatus } from "@/components/settings/shared/SkeletonStatus";
 import { RUNTIME_CONFIG_FIELDS, RUNTIME_CONFIG_GROUPS, type RuntimeConfigPage } from "@/components/settings/system/runtime-config-fields";
 import { cn } from "@/lib/utils";
 
-type Control = "switch" | "input" | "duration" | "segments" | "reading" | "theme" | "edit" | "text" | "feature";
+type Control = "switch" | "input" | "duration" | "idle-timeout" | "segments" | "reading" | "theme" | "edit" | "text" | "feature";
 const block = "rounded bg-muted-foreground/20";
 
 function Title({ heading = false }: { heading?: boolean }) {
@@ -23,7 +23,9 @@ function Row({ control }: { control: Control }) {
     <div className="flex h-5 items-center"><div className={cn(block, "h-3.5 w-32 max-w-full")} /></div>
     <div className="settings-control">
       {control === "feature" ? <div className={cn(block, "mr-3 h-3 w-14")} /> : null}
-      {control === "duration" ? <div className="w-full"><div className={cn(block, "h-9 w-full rounded-full")} /><div className="mt-1.5 flex h-4 items-center"><div className={cn(block, "h-2.5 w-4/5 opacity-60")} /></div></div> : <div data-skeleton-switch={toggle ? "" : undefined} data-skeleton-reading-size={control === "reading" ? "" : undefined} className={cn(block,
+      {control === "idle-timeout" ? <div className="flex items-center gap-2">
+        <div className={cn(block, "h-9 w-28 rounded-full")} /><div className={cn(block, "h-3 w-10")} />
+      </div> : control === "duration" ? <div className="w-full"><div className={cn(block, "h-9 w-full rounded-full")} /><div className="mt-1.5 flex h-4 items-center"><div className={cn(block, "h-2.5 w-4/5 opacity-60")} /></div></div> : <div data-skeleton-switch={toggle ? "" : undefined} data-skeleton-reading-size={control === "reading" ? "" : undefined} className={cn(block,
         toggle ? "h-5 w-9 shrink-0 rounded-full" : control === "input" ? "h-9 w-full rounded-full"
           : control === "segments" || control === "reading" || control === "theme" ? "segmented-control w-44 rounded-full" : control === "edit" ? "ml-auto h-9 w-9 rounded-full" : "h-[1lh] w-24 text-ui",
         (control === "segments" || control === "reading") && "h-[34px]", control === "theme" && "h-8",
@@ -37,11 +39,27 @@ function Group({ controls }: { controls: Control[] }) {
   return <section><Title /><SettingsGroup>{controls.map((control, index) => <Row key={index} control={control} />)}</SettingsGroup></section>;
 }
 
+function ProxyGroup() {
+  return <section><Title /><SettingsGroup>
+    <div className="px-4 py-4 sm:px-5">
+      <div data-shared-proxy-skeleton className="w-full space-y-3">
+        <div data-proxy-address-skeleton className={cn(block, "h-10 w-full rounded-control")} />
+        <div className="flex h-7 items-center justify-between gap-3 py-1">
+          <div className={cn(block, "h-3 w-40")} /><div className={cn(block, "h-3.5 w-3.5 shrink-0")} />
+        </div>
+      </div>
+    </div>
+  </SettingsGroup></section>;
+}
+
 function RuntimeGroups({ page }: { page: RuntimeConfigPage }) {
   return <>{RUNTIME_CONFIG_GROUPS.filter((group) => group.page === page).map((group) => group.id === "chat"
     ? <Group key={group.id} controls={["switch", "segments"]} />
-    : <Group key={group.id} controls={RUNTIME_CONFIG_FIELDS.filter((field) => field.group === group.id && (!field.when || field.when.value === true)).map((field) =>
-      field.kind === "boolean" || field.kind === "toggle" ? "switch" : field.kind === "list" ? "edit" : field.kind === "duration" ? "duration" : "input",
+    : group.id === "proxy" ? <ProxyGroup key={group.id} />
+    : <Group key={group.id} controls={RUNTIME_CONFIG_FIELDS.filter((field) => field.group === group.id && (!field.when || field.when.value === true)).flatMap<Control>((field) =>
+      field.kind === "idle-compaction" ? ["switch", "idle-timeout"] : [
+        field.kind === "boolean" || field.kind === "toggle" ? "switch" : field.kind === "list" ? "edit" : field.kind === "duration" ? "duration" : "input",
+      ],
     )} />)}</>;
 }
 

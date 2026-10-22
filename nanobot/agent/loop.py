@@ -39,6 +39,7 @@ from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, res
 from nanobot.agent.tools.message import capture_message_deliveries
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.runtime_control import AgentRuntimeControl
+from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.turn_delivery import (
     TurnDelivery,
     TurnDeliveryFactory,
@@ -46,6 +47,7 @@ from nanobot.agent.turn_delivery import (
 from nanobot.agent.turn_delivery import TurnRoute as TurnRoute
 from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
 from nanobot.bus.events import (
+    INBOUND_META_LOCAL_MEDIA,
     INBOUND_META_RUNTIME_CONTROL,
     INBOUND_META_TURN_ID,
     INBOUND_META_USER_SHELL,
@@ -61,6 +63,7 @@ from nanobot.bus.outbound_events import (
 from nanobot.bus.queue import MessageBus
 from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
 from nanobot.command.router import command_text
+from nanobot.config.network import NetworkConfig
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.events import NO_EVENTS, AgentEvent, EventSink
 from nanobot.llm_usage.context import source_from_request
@@ -375,6 +378,7 @@ class AgentLoop:
         unified_session: bool = False,
         disabled_skills: list[str] | None = None,
         tools_config: ToolsConfig | None = None,
+        network_config: NetworkConfig | None = None,
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None = None,
         provider_signature: tuple[object, ...] | None = None,
         model_presets: dict[str, ModelPresetConfig] | None = None,
@@ -442,6 +446,7 @@ class AgentLoop:
             else defaults.tool_hint_max_length
         )
         self.tools_config = _tc
+        self.network_config = network_config or NetworkConfig()
         self.web_config = _tc.web
         self.exec_config = _tc.exec
         self.cron_service = cron_service
@@ -481,6 +486,7 @@ class AgentLoop:
             workspace=workspace,
             bus=bus,
             tools_config=_tc,
+            network_config=self.network_config,
             max_tool_result_chars=self.max_tool_result_chars,
             restrict_to_workspace=restrict_to_workspace,
             disabled_skills=disabled_skills,
@@ -595,6 +601,7 @@ class AgentLoop:
             session_ttl_minutes=defaults.session_ttl_minutes,
             idle_compact_check_interval_seconds=defaults.idle_compact_check_interval_seconds,
             tools_config=config.tools,
+            network_config=config.network,
             model_presets=preset_helpers.configured_model_presets(config),
             model_preset=defaults.model_preset,
             dream_model_preset=defaults.dream.model_override,
@@ -732,6 +739,7 @@ class AgentLoop:
         self.register_runtime_context_provider(runtime_control.workspace_context)
         ctx = ToolContext(
             config=self.tools_config,
+            network=self.network_config,
             workspace=str(self.workspace),
             bus=self.bus,
             subagent_manager=self.subagents,
@@ -868,6 +876,9 @@ class AgentLoop:
         turn_id = msg.metadata.get(INBOUND_META_TURN_ID)
         if isinstance(turn_id, str) and turn_id:
             extra[INBOUND_META_TURN_ID] = turn_id
+        local_media = msg.metadata.get(INBOUND_META_LOCAL_MEDIA)
+        if isinstance(local_media, list) and local_media:
+            extra[INBOUND_META_LOCAL_MEDIA] = [path for path in cast(list[object], local_media) if isinstance(path, str)]
         return extra
 
     async def _persist_user_message_early(
@@ -1034,7 +1045,7 @@ class AgentLoop:
         """Execute one trusted user command with the active workspace policy."""
         metadata = dict(ctx.msg.metadata or {})
         tool = self.tools.get("exec")
-        if tool is None:
+        if not isinstance(tool, ExecTool):
             content = "Shell execution is disabled in this nanobot configuration."
         else:
             session = ctx.session or await self.sessions.state.get(ctx.key)
@@ -1062,7 +1073,7 @@ class AgentLoop:
             try:
                 for turn_scope in ctx.turn_scopes:
                     turn_scope_stack.enter_context(turn_scope)
-                result = await tool.execute(
+                result = await tool.execute_to_completion(
                     command=ctx.args.strip(),
                     working_dir=str(scope.project_path),
                 )
@@ -1903,16 +1914,12 @@ class AgentLoop:
                     try:
                         key = self._effective_session_key(msg)
                         session = await self.sessions.state.get(key)
-                        if restore_runtime_checkpoint(session):
-                            self._clear_pending_user_turn(session)
-                            await self.sessions.state.restore_interruption(session)
-                            logger.info(
-                                "Restored partial context for cancelled session {}",
-                                key,
-                            )
+                        restore_runtime_checkpoint(session)
+                        await self.sessions.state.finish_turn(session)
+                        logger.info("Saved cancelled turn for session {}", key)
                     except Exception:
                         logger.opt(exception=log_content).debug(
-                            "Could not restore checkpoint for cancelled session {}",
+                            "Could not finalize cancelled turn for session {}",
                             session_key,
                         )
                     raise
@@ -2638,9 +2645,9 @@ class AgentLoop:
             ).startswith("data:image/"):
                 internal_meta = cast(dict[str, Any], block_data.get("_meta") or {})
                 path = cast(str, internal_meta.get("path", ""))
-                filtered.append(
-                    {"type": "text", "text": image_placeholder_text(path)}
-                )
+                reference = {"type": "text", "text": image_placeholder_text(path)}
+                if not filtered or filtered[-1] != reference:
+                    filtered.append(reference)
                 continue
 
             filtered.append(block_data)

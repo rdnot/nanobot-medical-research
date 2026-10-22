@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Window as HappyWindow } from "happy-dom";
 
 import i18n from "@/i18n";
+import { DEFAULT_TRANSCRIPTION_SETTINGS } from "@/components/settings/capabilities/TranscriptionSettings";
 import { useSessions } from "@/hooks/useSessions";
 import { activateReloadCache, clearReloadCache, writeReloadCache } from "@/lib/reload-cache";
 import type {
@@ -121,7 +122,7 @@ function baseSettingsPayload() {
     },
     web: {
       enable: true,
-      proxy: null,
+      use_proxy: false,
       user_agent: null,
       search: { max_results: 5, timeout: 30 },
       fetch: { use_jina_reader: true },
@@ -1441,9 +1442,6 @@ describe("App layout", () => {
     expect(screen.getByText("cron")).toBeInTheDocument();
     expect(screen.getByText("github")).toBeInTheDocument();
     expect(screen.getByText("Needs setup")).toBeInTheDocument();
-    expect(
-      screen.queryByText("Review the instruction skills this agent can load during a conversation."),
-    ).not.toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Sidebar navigation" })).toBeInTheDocument();
     expect(screen.queryByRole("navigation", { name: "Settings sections" })).not.toBeInTheDocument();
     expect(within(sidebar).getByRole("button", { name: "Skills" })).toHaveAttribute(
@@ -1469,14 +1467,7 @@ describe("App layout", () => {
       "true",
     );
     expect(screen.getByText("Setup required")).toBeInTheDocument();
-    expect(
-      screen.queryByText(
-        "Allow the agent to load this skill when its requirements are ready.",
-      ),
-    ).not.toBeInTheDocument();
     expect(screen.getByText("brew install gh")).toBeInTheDocument();
-    expect(screen.queryByText("Unavailable reason")).not.toBeInTheDocument();
-    expect(screen.queryByText("Missing CLI")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument();
     fireEvent.click(screen.getByText("Skill instructions"));
     expect(screen.getByText(/Use GitHub CLI/)).toBeInTheDocument();
@@ -1674,9 +1665,6 @@ describe("App layout", () => {
     expect(
       await screen.findByRole("heading", { name: "Popular skills" }),
     ).toBeInTheDocument();
-    expect(
-      screen.queryByText("Each marketplace keeps its own ranking and install metrics."),
-    ).not.toBeInTheDocument();
     expect(screen.getByText("find-skills")).toBeInTheDocument();
     expect(screen.getByText("ima-skills")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open ima-skills on SkillHub" })).toHaveAttribute(
@@ -3149,6 +3137,106 @@ describe("App layout", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toBeInTheDocument();
   });
 
+  it.each([true, false])("completes focused settings edits before history changes section (saved=%s)", async (saved) => {
+    const payload = { ...baseSettingsPayload(), transcription: { ...DEFAULT_TRANSCRIPTION_SETTINGS, language: "en" } };
+    mockFetchRoutes({ "/api/settings": payload });
+    let resolveSave!: (value: unknown) => void;
+    let rejectSave!: (error: Error) => void;
+    requestMutationSpy.mockImplementationOnce(() => new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }));
+    window.history.replaceState(null, "", "/#/settings?section=voice");
+    render(<App />);
+    await act(async () => { await import("@/components/settings/SettingsView"); });
+    const language = await screen.findByPlaceholderText("Auto");
+    fireEvent.focus(language);
+    fireEvent.change(language, { target: { value: "ja" } });
+    expect(requestMutationSpy).not.toHaveBeenCalled();
+    act(() => {
+      window.history.replaceState(null, "", "/#/settings?section=models");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => expect(requestMutationSpy).toHaveBeenCalledWith(
+      "settings.transcription.update", expect.objectContaining({ language: "ja" }), 20_000,
+    ));
+    expect(window.location.hash).toBe("#/settings?section=voice");
+    expect(language).toHaveValue("ja");
+    await act(async () => {
+      if (saved) resolveSave({ ...payload, transcription: { ...payload.transcription, language: "ja" } });
+      else rejectSave(new Error("Save failed"));
+    });
+    if (saved) {
+      await waitFor(() => expect(window.location.hash).toBe("#/settings?section=models"));
+      expect(await screen.findByText("Model presets")).toBeInTheDocument();
+    } else {
+      expect(window.location.hash).toBe("#/settings?section=voice");
+      expect(language).toHaveValue("ja");
+      expect(await screen.findByText("Save failed")).toBeVisible();
+    }
+  });
+
+  it("retains a capability draft while opening provider configuration", async () => {
+    const payload = { ...baseSettingsPayload(), transcription: { ...DEFAULT_TRANSCRIPTION_SETTINGS, language: "en" } };
+    mockFetchRoutes({ "/api/settings": payload });
+    window.history.replaceState(null, "", "/#/settings?section=voice");
+    render(<App />);
+    await act(async () => { await import("@/components/settings/SettingsView"); });
+    const language = await screen.findByPlaceholderText("Auto");
+    fireEvent.focus(language);
+    fireEvent.change(language, { target: { value: "ja" } });
+    fireEvent.click(screen.getByRole("button", { name: "Configure provider" }));
+    expect(await screen.findByText("Model presets")).toBeInTheDocument();
+    expect(window.location.hash).toBe("#/settings?section=models");
+    expect(requestMutationSpy).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: "Capabilities" }));
+    fireEvent.click(within(screen.getByRole("region", { name: "Transcription" })).getByRole("button", { name: "Configure" }));
+    expect(screen.getByPlaceholderText("Auto")).toHaveValue("ja");
+  });
+
+  it.each([true, false])("completes standalone channel drafts before leaving by history (saved=%s)", async (saved) => {
+    const feature = {
+      name: "email", display_name: "Email", type: "channel", webui: "webui/index.ts", enabled: false,
+      configured: true, installed: true, requires_dependencies: false, ready: false, status: "not_enabled",
+      install_supported: true, requires_restart: false, configured_fields: ["channels.email.imapHost"],
+      config_values: { "channels.email.imapHost": "imap.example.test" },
+      setup: { fields: [{ key: "channels.email.imapHost", field: "imapHost", kind: "string", required: true, choices: [] }], requirements: [] },
+    };
+    mockFetchRoutes({ "/api/settings": baseSettingsPayload(),
+      "/api/settings/nanobot-features": { features: [feature], enabled_count: 0 } });
+    let resolveSave!: (value: unknown) => void;
+    let rejectSave!: (error: Error) => void;
+    requestMutationSpy.mockImplementationOnce(() => new Promise((resolve, reject) => { resolveSave = resolve; rejectSave = reject; }));
+    window.history.replaceState(null, "", "/#/channels");
+    render(<App />);
+    await act(async () => {
+      await import("@/components/settings/SettingsView");
+      await import("@/components/settings/channels/ChannelSetupPanel");
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "View Email settings" }));
+    const host = await screen.findByLabelText("IMAP host");
+    fireEvent.focus(host);
+    fireEvent.change(host, { target: { value: "imap.changed.test" } });
+    act(() => {
+      window.history.replaceState(null, "", "/#/new");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => expect(requestMutationSpy).toHaveBeenCalledWith(
+      "settings.channel.configure", expect.objectContaining({ name: "email", values: { "channels.email.imapHost": "imap.changed.test" } }), 150_000,
+    ));
+    expect(window.location.hash).toBe("#/channels");
+    expect(host).toHaveValue("imap.changed.test");
+    await act(async () => {
+      if (saved) resolveSave({ name: "email", saved: true, saved_keys: ["channels.email.imapHost"] });
+      else rejectSave(new Error("Save failed"));
+    });
+    if (saved) {
+      await waitFor(() => expect(window.location.hash).toBe("#/new"));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    } else {
+      expect(window.location.hash).toBe("#/channels");
+      expect(host).toHaveValue("imap.changed.test");
+      expect(await screen.findByText("Save failed")).toBeVisible();
+    }
+  });
+
   it("restores the settings section from the URL hash after a page reload", async () => {
     mockFetchRoutes({ "/api/settings": baseSettingsPayload() });
     window.history.replaceState(null, "", "/#/settings?section=voice");
@@ -3381,7 +3469,7 @@ describe("App layout", () => {
               },
               web: {
                 enable: true,
-                proxy: null,
+                use_proxy: false,
                 user_agent: null,
                 search: { max_results: 5, timeout: 30 },
                 fetch: { use_jina_reader: true },

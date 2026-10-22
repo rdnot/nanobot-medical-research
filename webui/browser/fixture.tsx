@@ -23,11 +23,16 @@ import { NewChatSkeletonFixture } from "./new-chat-skeleton-fixture";
 import "../src/globals.css";
 import { DiagramFixture } from "./diagram-fixture";
 import { TypographyFixture } from "./typography-fixture";
+import { MarkdownEmphasisFixture } from "./markdown-emphasis-fixture";
 import { HistoryBoundaryFixture } from "./history-boundary-fixture";
 import { ChatFailureFixture } from "./chat-failure-fixture";
 import { ThreadLoadingFixture } from "./thread-loading-fixture";
 import { AnswerOrderFixture } from "./answer-order-fixture";
 import { SidebarActivityFixture } from "./sidebar-activity-fixture";
+import { HistoryHydrationFixture } from "./history-hydration-fixture";
+import { IdleCompactionFixture, installIdleCompactionApi } from "./idle-compaction-fixture";
+import { FileEditPathFixture } from "./file-edit-path-fixture";
+import { QueuedGuidanceFixture } from "./queued-guidance-fixture";
 
 const history: UIMessage[] = [
   { id: "question", role: "user", content: "Earlier question", createdAt: 1_700_000_000_000 },
@@ -166,16 +171,27 @@ function AppsFixture() {
   /></main>;
 }
 if (parameters.get("case") === "skeleton-additions") installSkeletonPreviewApi();
+if (parameters.get("case") === "idle-compaction") installIdleCompactionApi();
 await initializeI18n();
 createRoot(document.getElementById("root")!).render(<TooltipProvider>
-  {parameters.get("case") === "answer-order"
+  {parameters.get("case") === "queued-guidance"
+    ? <QueuedGuidanceFixture />
+    : parameters.get("case") === "file-edit-path"
+    ? <FileEditPathFixture />
+    : parameters.get("case") === "answer-order"
     ? <AnswerOrderFixture />
     : parameters.get("case") === "sidebar-activity"
     ? <SidebarActivityFixture />
     : parameters.get("case") === "chat-failure"
     ? <ChatFailureFixture parameters={parameters} />
+    : parameters.get("case") === "markdown-emphasis"
+    ? <MarkdownEmphasisFixture />
     : parameters.get("case") === "typography"
     ? <ClientProvider client={railClient} token="fixture"><TypographyFixture /></ClientProvider>
+    : parameters.get("case") === "idle-compaction"
+    ? <IdleCompactionFixture />
+    : parameters.get("case") === "history-hydration"
+    ? <HistoryHydrationFixture />
     : parameters.get("case") === "history-boundary"
     ? <ClientProvider client={railClient} token="fixture" webuiCapabilities={["webui.prompt-navigation.v1"]}><HistoryBoundaryFixture local={parameters.has("local")} navigate={parameters.has("navigate")} tasks={parameters.has("tasks")} /></ClientProvider>
     : parameters.get("case") === "diagrams"
