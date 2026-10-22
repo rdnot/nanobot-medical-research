@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified October 19, 2026 — upstream `1f8e49c70`, merge main `5cc375466`)
+## Customizations (verified October 22, 2026 — upstream `254f94b06`, merge main `19199440f`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
@@ -137,6 +137,10 @@ is marked `# UPSTREAM` where that helps during merges.
   outbound collectors that skip `_tools_summary` (`tests/cron/test_cron_reply_contract.py`,
   `tests/webui/test_automation_chat_binding.py`), and the image media-type case test in
   `test_web_fetch_security.py` (one request, no httpx image preflight; params dropped).
+- `tests/test_update_jobs.py::test_worker_survives_coordinator_loss_without_unlocking_live_pip`
+  waits for the held pip on a 60 s wall-clock deadline instead of 200 × 25 ms (~5 s): the
+  worker needs ~3 s to spawn the venv interpreter + pip, which exceeded 5 s on loaded Windows
+  CI runners (flaky `assert ready.exists()`).
 
 ## Dependencies
 Everything is declared in `pyproject.toml`; `pip install -e .` or `uv sync` installs it.
