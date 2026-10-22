@@ -1237,9 +1237,11 @@ async def test_worker_survives_coordinator_loss_without_unlocking_live_pip(insta
         pip_entry.write_text(wrapper)
         process = await start_job(directory, feed)
         try:
-            for _ in range(200):
-                if ready.exists():
-                    break
+            # The worker must spawn the venv interpreter and pip before the
+            # wrapper writes ``ready`` (~3 s idle, >5 s on loaded Windows CI
+            # runners), so wait on a wall-clock deadline, not a fixed poll count.
+            ready_deadline = time.monotonic() + 60
+            while not ready.exists() and time.monotonic() < ready_deadline:
                 assert process.poll() is None, JobStatus.read(directory)
                 await asyncio.sleep(0.025)
             assert ready.exists()
