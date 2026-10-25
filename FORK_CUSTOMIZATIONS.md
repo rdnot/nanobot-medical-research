@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified October 22, 2026 — upstream `254f94b06`, merge main `19199440f`)
+## Customizations (verified October 26, 2026 — upstream `83b611284`, merge main `49adfd78c`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
@@ -137,6 +137,10 @@ is marked `# UPSTREAM` where that helps during merges.
   outbound collectors that skip `_tools_summary` (`tests/cron/test_cron_reply_contract.py`,
   `tests/webui/test_automation_chat_binding.py`), and the image media-type case test in
   `test_web_fetch_security.py` (one request, no httpx image preflight; params dropped).
+- Force-final notice adaptations: `tests/agent/test_loop_iteration_limit.py` (the scripted model
+  skips the hidden `_FORCE_FINAL_PROMPT` so it still reaches the iteration limit) and
+  `tests/test_openai_api_sessions.py::test_old_history_survives_route_fix_restart_and_rollback`
+  (compares the live tool prefix without the internal `_hidden_history` marker).
 - `tests/test_update_jobs.py::test_worker_survives_coordinator_loss_without_unlocking_live_pip`
   waits for the held pip on a 60 s wall-clock deadline instead of 200 × 25 ms (~5 s): the
   worker needs ~3 s to spawn the venv interpreter + pip, which exceeded 5 s on loaded Windows
