@@ -174,7 +174,13 @@ async def test_old_history_survives_route_fix_restart_and_rollback(tmp_path, ses
         assert "LEGACY_HISTORY" in json.dumps(upgraded.calls[0]["messages"])
         # The ordinary prefix is byte-stable; replay also keeps structured tool history.
         assert_prefix(old_provider.calls[0], upgraded.calls[0])
-        old_tool_prefix = old_provider.calls[1]["messages"]
+        # FORK: the live request carries the fork force-final notice's internal
+        # `_hidden_history` marker; replay drops it like every hidden row and providers
+        # whitelist wire keys, so compare without the marker.
+        old_tool_prefix = [
+            {k: v for k, v in m.items() if k != "_hidden_history"}
+            for m in old_provider.calls[1]["messages"]
+        ]
         assert old_tool_prefix == upgraded.calls[0]["messages"][:len(old_tool_prefix)]
         # A live tool continuation appends to, rather than rebuilds, the request prefix.
         assert_prefix(upgraded.calls[0], upgraded.calls[1])
