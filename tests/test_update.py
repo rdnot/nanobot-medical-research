@@ -327,14 +327,12 @@ def test_real_python_restart_resolution_detects_cwd_shadowing(tmp_path, monkeypa
 
 
 @pytest.fixture
-def installed_release(tmp_path, monkeypatch):
+def installed_release(tmp_path, monkeypatch, create_integration_env):
     """Install a tiny local wheel with real pip, without touching the user's env."""
-    import venv
     import zipfile
 
     env = tmp_path / "env"
-    venv.EnvBuilder(with_pip=True).create(env)
-    executable = env / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    executable = create_integration_env(env)
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     files = {

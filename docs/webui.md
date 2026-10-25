@@ -81,6 +81,10 @@ Share WebUI access only with people you trust to administer the same agent. To g
 | Automations | Review, search, run, pause, edit, and delete scheduled and local-trigger agent turns |
 | Settings | Adjust models, providers, image generation, voice, web tools, runtime, and safety options |
 
+## Check for updates
+
+Open **Settings → About** to check for updates automatically. Startup, reconnecting, and normal chatting do not trigger background version checks. Use **Check again** or **Retry** to check manually; changing the update channel also refreshes its status. Checking does not install updates or restart nanobot.
+
 ## Topic Workspace
 
 The sidebar is the topic switcher. Each topic keeps its own history, title, workspace selection, and linked automations. Use a new topic when you want a separate context; use fork when you want to continue from an existing point without changing the original thread.
@@ -117,7 +121,7 @@ Selecting a Markdown file opens **Preview**; **Source** shows the original text.
 
 Text previews are limited to 384 KiB and indicate truncation. Very large or minified source may remain plain text. Image previews support PNG, JPEG, GIF and WebP up to 8 MiB. HTML and SVG files display as read-only source.
 
-Explicit Markdown images appear inline; image attachments use a gallery. Ordinary image file links open the preview instead.
+Explicit Markdown images appear inline; image attachments use a gallery. Other files appear as compact download cards below the image and video previews, with a file-type icon, filename and download action. File-type icons do not indicate preview support. Ordinary image file links open the preview instead.
 
 Mermaid diagrams render after the reply finishes. The source remains available if rendering fails. Links, external images and executable HTML inside diagrams are disabled.
 
@@ -176,6 +180,8 @@ In Restricted mode, ordinary file and shell work stays inside the selected proje
 ## Composer
 
 The composer supports text, attachments (images, documents, and videos), slash commands and `@` mentions. With voice transcription configured, the empty composer offers voice input; transcription is added to the draft before sending.
+
+Images appear as thumbnails above the draft. Hover over a thumbnail for its filename and size; use its top-right × to remove it before sending. Documents and videos keep their file cards, and attachment errors remain visible.
 
 Choose or drop MP4, WebM, or MOV videos into the composer (one per message, up to 20 MiB per upload). You can play them in WebUI; the Agent cannot directly analyze their contents yet.
 
@@ -252,7 +258,9 @@ Local triggers do not have a WebUI "Run now" action because each run needs a mes
 
 Runtime settings may require a gateway restart; the WebUI marks those controls.
 
-**Appearance → Local preferences** applies immediately to the current browser without changing gateway configuration. **Reading text size** adjusts conversation text, Markdown, code and the input, but not navigation or toolbars; standard is the default.
+**Appearance** preferences apply immediately in the current browser without changing gateway configuration. These controls remain available while gateway settings are loading or unavailable. Choose **System**, **Light**, or **Dark** for the theme; **System** follows operating-system changes while the app is open. Existing explicit light/dark preferences are preserved.
+
+Under **Reading**, choose a small, standard or large preset, or enter a custom size in the inline **Custom** field beside them. Select the field to edit the saved custom value, using whole pixels from 14 to 28. Hovering or focusing the field shows the supported range and how reading sizes apply. An out-of-range or fractional entry is marked invalid when you finish editing, with a hint showing the size still in use; it does not silently clamp or replace your last valid size. The size applies to both desktop and narrow screens. The input retains a 16px minimum on every screen. The live preview uses the same reading typography as conversations: messages, Markdown and code scale together, while navigation and toolbars stay unchanged. Standard remains the default; switching to a preset preserves your custom value for later use. **Activity display** controls how much process and file-edit detail appears, not what the agent executes.
 
 ## LAN Access
 

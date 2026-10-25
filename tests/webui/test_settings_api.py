@@ -23,7 +23,6 @@ from nanobot.webui.settings_api import (
     _docs_version,
     _model_catalog_kind,
     _oauth_provider_status,
-    _reasoning_effort_values_for,
     complete_oauth_provider,
     create_model_configuration,
     create_provider_settings,
@@ -80,8 +79,23 @@ def test_docs_version_uses_released_versions_and_falls_back_for_dev() -> None:
     assert _docs_version("0.2.3+editable") == "latest"
 
 
-def test_kimi_k3_only_offers_supported_reasoning_effort_values() -> None:
-    assert _reasoning_effort_values_for("moonshot", "kimi-k3") == ["", "low", "high", "max"]
+@pytest.mark.parametrize("model", ["kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"])
+def test_kimi_k3_only_offers_supported_reasoning_effort_values(
+    model: str, tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config = Config()
+    config.agents.defaults.model = model
+    config.agents.defaults.provider = "moonshot"
+    config.providers.moonshot.api_key = "moonshot-test-key"
+    save_config(config, config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+
+    payload = settings_payload()
+
+    preset = next(row for row in payload["model_presets"] if row["name"] == "default")
+    assert preset["model"] == model
+    assert preset["reasoning_effort_values"] == ["", "low", "high", "max"]
 
 
 def test_settings_payload_includes_versioned_docs(

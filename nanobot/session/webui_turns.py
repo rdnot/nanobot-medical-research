@@ -822,7 +822,7 @@ class WebuiTurnCoordinator:
         if msg.channel != "websocket":
             return
 
-        session = await self.sessions.state.get(session_key)
+        session = await self.sessions.state.get_header(session_key)
         await self.bus.publish_outbound(
             outbound_message_for_event(
                 channel=msg.channel,

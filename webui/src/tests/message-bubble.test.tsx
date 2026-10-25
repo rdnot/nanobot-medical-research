@@ -507,17 +507,18 @@ describe("MessageBubble", () => {
     );
 
     const skill = screen.getByTestId("message-skill-reference-github");
-    expect(skill).toHaveTextContent(/^github$/);
+    expect(skill).toHaveTextContent(/^\$github$/);
     expect(skill).toHaveClass(
-      "font-[550]",
+      "font-normal",
       "transition-colors",
       "duration-150",
     );
     expect(skill.getAttribute("style")).not.toContain("text-shadow");
-    expect(skill.getAttribute("style")).toContain("var(--inline-token-highlight)");
+    expect(skill.getAttribute("style")).toContain("var(--inline-reference-highlight)");
     expect(skill.className).not.toMatch(/(?:^|\s)(?:bg-|border|ring|rounded)/);
+    expect(skill).not.toHaveAttribute("title");
     expect(screen.getByTestId("message-cli-mention-zoom")).toHaveTextContent("@Zoom");
-    expect(skill.parentElement).toHaveTextContent("Ask github to review this with @Zoom");
+    expect(skill.parentElement).toHaveTextContent("Ask $github to review this with @Zoom");
   });
 
   it("highlights well-formed skill references and leaves a bare marker plain", () => {
@@ -530,13 +531,13 @@ describe("MessageBubble", () => {
 
     render(<MessageBubble message={message} />);
 
-    expect(screen.getByTestId("message-skill-reference-unknown")).toHaveTextContent(/^unknown$/);
+    expect(screen.getByTestId("message-skill-reference-unknown")).toHaveTextContent(/^\$unknown$/);
     expect(screen.getByTestId("message-skill-reference-blocked-skill"))
-      .toHaveTextContent(/^blocked-skill$/);
+      .toHaveTextContent(/^\$blocked-skill$/);
     const references = screen.getAllByTestId(/^message-skill-reference-/);
     expect(references).toHaveLength(2);
     expect(references[0].parentElement)
-      .toHaveTextContent("Try unknown or blocked-skill and $");
+      .toHaveTextContent("Try $unknown or $blocked-skill and $");
   });
 
   it("renders fork as a contextual assistant action", () => {
@@ -1237,18 +1238,15 @@ describe("MessageBubble", () => {
 
     const { container } = render(<MessageBubble message={message} />);
 
+    const image = container.querySelector("img")!;
+    Object.defineProperties(image, { naturalWidth: { value: 1600 }, naturalHeight: { value: 900 } });
+    fireEvent.load(image);
     const imageButton = screen.getByRole("button", { name: /view image/i });
-    expect(imageButton).toHaveClass("w-[min(100%,28rem)]", "rounded-control");
-    expect(imageButton).toHaveClass(
-      "border",
-      "border-border/60",
-      "focus-visible:ring-2",
-    );
-    expect(imageButton).not.toHaveClass("hover:scale-[1.01]");
-    expect(imageButton).not.toHaveClass("hover:ring-2");
-    expect(imageButton).not.toHaveClass("hover:ring-primary/25");
+    expect(imageButton).toHaveClass("rounded-control", "focus-visible:ring-2");
+    expect(imageButton.style.width).toBe("448px");
+    expect(imageButton.style.height).toBe("252px");
     expect(imageButton).not.toHaveAttribute("title");
-    expect(container.querySelector("img")).toHaveClass("h-auto", "w-full", "object-contain");
+    expect(image).toHaveClass("object-contain");
   });
 
   it("renders mislabeled html assistant media as a file attachment", () => {
@@ -1268,7 +1266,8 @@ describe("MessageBubble", () => {
 
     const { container } = render(<MessageBubble message={message} />);
 
-    expect(screen.getByLabelText("File attachment")).toHaveTextContent("index.html");
+    expect(screen.getByRole("link", { name: "Download index.html" })).toHaveAttribute("download", "index.html");
+    expect(screen.getByRole("button", { name: "index.html" })).toBeVisible();
     expect(container.querySelector("img")).not.toBeInTheDocument();
   });
 
@@ -1291,7 +1290,7 @@ describe("MessageBubble", () => {
 
     expect(screen.getByRole("button", { name: /view image: growth.svg/i })).toBeInTheDocument();
     expect(container.querySelector('img[src="/api/media/sig/svg"]')).toBeInTheDocument();
-    expect(screen.queryByLabelText("File attachment")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Download growth.svg" })).not.toBeInTheDocument();
   });
 
 });

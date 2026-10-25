@@ -261,6 +261,28 @@ describe("MCP connection draft lifecycle", () => {
     }],
   };
 
+  it("opens management from an uninstalled MCP body without connecting or materializing it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings/mcp-presets") {
+        return jsonResponse({ presets: [{ ...metabasePreset, installed: false, configured: false, available: false, status: "not_installed" }], installed_count: 0 });
+      }
+      if (url === "/api/settings") return jsonResponse(settingsPayload());
+      return { ok: false, status: 404, text: async () => "Not found" } as Response;
+    }));
+    renderSettingsView({ initialSection: "apps" });
+    fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Metabase" }));
+    const dialog = await screen.findByRole("dialog", { name: "Metabase" });
+    expect(within(dialog).getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+    expect(requestMutationMock).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Connect Metabase" }));
+    const connection = await screen.findByRole("dialog", { name: "Metabase" });
+    expect(within(connection).getByRole("tab", { name: "Connection" })).toHaveAttribute("aria-selected", "true");
+    expect(requestMutationMock).not.toHaveBeenCalled();
+  });
+
   it("reopens and reconnects without proxy after OAuth with proxy and a same-endpoint import", async () => {
     const endpoint = "https://app.xmind.com/api/mcp";
     let preset: McpPresetInfo = {

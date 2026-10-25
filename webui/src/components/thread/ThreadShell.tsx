@@ -212,9 +212,12 @@ function maxFilePreviewWidth(containerWidth: number): number {
   );
 }
 
+const EMPTY_TITLE_OVERRIDES: Record<string, string> = {};
+
 interface ThreadShellProps {
   session: ChatSummary | null;
   sessions?: ChatSummary[];
+  titleOverrides?: Record<string, string>;
   title: string;
   temporary?: boolean;
   temporaryChatIds?: readonly string[];
@@ -332,6 +335,7 @@ function HeroGreeting({ text }: { text: string }) {
       <h1
         ref={headingRef}
         data-testid="hero-greeting"
+        data-theme-ink
         className="select-none whitespace-nowrap text-[34px] font-normal leading-[1.08] tracking-normal text-foreground sm:text-[48px] sm:leading-tight"
       >
         {text}
@@ -440,6 +444,7 @@ function useInstalledSettingItems<Payload, Item>({
 export function ThreadShell({
   session,
   sessions = [],
+  titleOverrides = EMPTY_TITLE_OVERRIDES,
   title,
   temporary = false,
   temporaryChatIds = [],
@@ -486,8 +491,11 @@ export function ThreadShell({
   const historyKey = temporary ? null : session?.key ?? null;
   const previewSessionKey = session?.key ?? null;
   const mentionSessions = useMemo(
-    () => sessions.filter((candidate) => candidate.key !== historyKey),
-    [historyKey, sessions],
+    () => sessions.filter((candidate) => candidate.key !== historyKey).map((candidate) => {
+      const renamedTitle = titleOverrides[candidate.key]?.trim();
+      return renamedTitle ? { ...candidate, title: renamedTitle } : candidate;
+    }),
+    [historyKey, sessions, titleOverrides],
   );
   const { client, getToken, ingressLimits, modelName, token, webuiCapabilities } = useClient();
   const favoriteWorkspaceProject = useCallback(
@@ -620,6 +628,15 @@ export function ThreadShell({
     !hideHeader && !session && !loading && !!onTemporaryChatEnabledChange;
   const promptNavigation = usePromptHistory(historyKey, historyVersion, displayMessages);
   const updateNavigationMessages = promptNavigation.updateMessages;
+  useEffect(() => {
+    if (!chatId || !messagesReady) return;
+    messageCacheRef.current.setLoadedMessages(chatId, promptNavigation.window
+      ? [displayMessages, promptNavigation.window.messages] : [displayMessages]);
+  }, [chatId, messagesReady, displayMessages, promptNavigation.window]);
+  useEffect(() => {
+    const cache = messageCacheRef.current;
+    return () => { if (chatId) cache.deleteLoadedMessages(chatId); };
+  }, [chatId]);
 
   const loadTraceDetails = useCallback(async (refs: string[]) => {
     const details = await loadBodyTraceDetails(refs);
@@ -691,15 +708,11 @@ export function ThreadShell({
     [displayMessages],
   );
   const currentGoalState = messagesReady ? goalState : undefined;
-  // Decision states freeze the interrupted turn and hand the next action to
-  // the recovery notice. ``resuming`` remains active; ``recovered`` is only
-  // historical metadata and must not suppress a later normal turn.
+  // Recovery decisions gate queued input, not the ledger-owned run state.
   const recoveryNeedsDecision = recoveryState?.status === "awaiting_user"
     || recoveryState?.status === "failed";
-  const currentRunStartedAt = messagesReady && !recoveryNeedsDecision ? runStartedAt : null;
-  const turnActive = messagesReady
-    && !recoveryNeedsDecision
-    && (isStreaming || currentRunStartedAt !== null);
+  const currentRunStartedAt = messagesReady ? runStartedAt : null;
+  const turnActive = messagesReady && isStreaming;
   const restoredViewportTurnId = useMemo(
     () => turnActive ? latestActiveTurnId(displayMessages, currentRunStartedAt) : null,
     [currentRunStartedAt, displayMessages, turnActive],
@@ -778,6 +791,10 @@ export function ThreadShell({
 
   const showHeroComposer = displayMessages.length === 0 && !initialHistoryLoading;
   const composerVariant = showHeroComposer ? emptyComposerVariant : "thread";
+  // The server owns the project lock. Old servers have no marker, so an existing
+  // user turn is read-only here too; the gateway remains the editing authority.
+  const projectLocked = session?.projectLocked === true
+    || (session?.projectLocked === undefined && displayMessages.some((message) => message.role === "user" && message.deliveryStatus !== "failed"));
   const wasShowingHeroComposerRef = useRef(showHeroComposer);
   const sessionModelPreset = session?.modelPreset?.trim() || null;
   const [localModelPreset, setLocalModelPreset] = useState<string | null>(null);
@@ -1338,6 +1355,7 @@ export function ThreadShell({
           workspaceDefaultScope={workspaceDefaultScope}
           workspaceControls={workspaceControls}
           workspaceScopeDisabled={workspaceScopeDisabled}
+          workspaceProjectLocked={projectLocked}
           workspaceError={workspaceError}
           onWorkspaceScopeChange={onWorkspaceScopeChange}
           pendingQueueKey={temporary ? null : chatId}
@@ -1395,6 +1413,7 @@ export function ThreadShell({
           workspaceDefaultScope={workspaceDefaultScope}
           workspaceControls={workspaceControls}
           workspaceScopeDisabled={workspaceScopeDisabled}
+          workspaceProjectLocked={projectLocked}
           workspaceError={workspaceError}
           onWorkspaceScopeChange={onWorkspaceScopeChange}
           transcriptionProvider={settingsSnapshot?.transcription?.provider}

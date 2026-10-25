@@ -41,6 +41,7 @@ from nanobot.providers.oauth_model_catalog import (
     invalidate_oauth_model_catalog,
 )
 from nanobot.providers.registry import (
+    KIMI_K3_MODELS,
     PROVIDERS,
     ProviderModelSpec,
     ProviderSpec,
@@ -1022,7 +1023,7 @@ def reasoning_effort_values_for(provider_name: str, model: str) -> list[str]:
         return list(_DEFAULT_REASONING_EFFORT_VALUES)
 
     model_lower = (model or "").lower()
-    if model_lower.rsplit("/", 1)[-1] == "kimi-k3":
+    if model_lower.rsplit("/", 1)[-1] in KIMI_K3_MODELS:
         return ["", "low", "high", "max"]
 
     implicit = getattr(spec, "implicit_reasoning_models", ())

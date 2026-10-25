@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import ssl
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from threading import Thread
 from uuid import uuid4
@@ -113,6 +113,58 @@ def _use_windows_system_ca_for_default_http_clients() -> Iterator[None]:
         yield
     finally:
         ssl.create_default_context = original
+
+
+@pytest.fixture(scope="session")
+def create_integration_env(tmp_path_factory: pytest.TempPathFactory) -> Callable[[Path], Path]:
+    """Seed each stdlib-created prefix from private, offline pip images."""
+    import ensurepip
+    import venv
+    from importlib.resources import files
+
+    from virtualenv import session_via_cli
+
+    seed = tmp_path_factory.mktemp("integration-env-seed")
+    wheels = seed / "wheels"
+    wheels.mkdir()
+    versions = {}
+    # Keep the stdlib seed versions, including setuptools on Python 3.11,
+    # rather than silently selecting virtualenv's newer bundled pip.
+    for wheel in files("ensurepip").joinpath("_bundled").iterdir():
+        if wheel.name.endswith(".whl"):
+            name, version, _ = wheel.name.split("-", 2)
+            versions[name] = version
+            (wheels / wheel.name).write_bytes(wheel.read_bytes())
+    assert versions["pip"] == ensurepip.version()
+
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("VIRTUALENV_", "PIP_"))}
+    env.update({
+        "VIRTUALENV_CONFIG_FILE": os.devnull,
+        "VIRTUALENV_OVERRIDE_APP_DATA": str(seed / "app-data"),
+        "PIP_CONFIG_FILE": os.devnull,
+        "PIP_NO_INDEX": "1",
+    })
+    options = [
+        "--python", sys.executable,
+        "--creator", "venv",
+        "--seeder", "app-data",
+        "--copies",
+        "--no-download",
+        "--no-periodic-update",
+        "--pip", versions["pip"],
+        "--setuptools", versions.get("setuptools", "none"),
+        "--extra-search-dir", str(wheels),
+    ]
+
+    def create(environment: Path) -> Path:
+        # Keep stdlib creation semantics; use virtualenv only for copied seed
+        # packages and prefix-specific launchers, not its runtime import hooks.
+        venv.EnvBuilder(with_pip=False).create(environment)
+        with session_via_cli([str(environment), *options], setup_logging=False, env=env) as session:
+            session.seeder.run(session.creator)
+        return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+    return create
 
 
 @pytest.fixture

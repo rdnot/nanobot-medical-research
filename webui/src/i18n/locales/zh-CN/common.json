@@ -372,7 +372,8 @@
     "brand": "nanobot",
     "loading": {
       "connecting": "正在连接 nanobot…",
-      "boot": "正在加载 nanobot…"
+      "boot": "正在加载 nanobot…",
+      "failed": "无法加载此页面。请返回，或刷新页面重试。"
     },
     "error": {
       "title": "无法连接到 nanobot",
@@ -443,7 +444,7 @@
     "collapse": "收起侧边栏",
     "newChat": "新建话题",
     "searchAria": "搜索",
-    "searchPlaceholder": "搜索",
+    "searchPlaceholder": "搜索已加载内容",
     "searchResults": "搜索结果",
     "noSearchResults": "没有匹配的话题。",
     "recent": "最近话题",
@@ -903,6 +904,28 @@
       "completed": "任务已完成，点击查看结果。",
       "failed": "任务失败，点击查看详情。",
       "interrupted": "任务需要处理，点击继续。"
+    },
+    "appearance": {
+      "system": "跟随系统",
+      "reading": "阅读",
+      "readingHelp": "调整消息、代码和输入框，不改变导航大小。",
+      "custom": "自定义",
+      "customSize": "自定义字号",
+      "customRange": "支持 {{min}}–{{max}} px 整数。\n代码随正文缩放，输入框最小 16px。",
+      "customInvalid": "请输入 {{min}}–{{max}} px 的整数。\n当前仍使用 {{size}} px。",
+      "small": "小",
+      "standard": "标准",
+      "large": "大",
+      "preview": "实时预览",
+      "previewText": "**给思考留一点空间。**\n\n清晰的文字，舒服的节奏。让每一个想法，都有自在展开的空间。",
+      "previewPlaceholder": "接下来，想聊点什么？",
+      "process": "过程展示",
+      "processHelp": "选择 nanobot 工作时展示多少细节。",
+      "autoHelp": "工作时显示进度，结束后保持简洁。",
+      "expandedHelp": "默认展开工具活动与子任务详情。",
+      "summaryHelp": "显示修改文件和增删行数。",
+      "diffHelp": "在对话中直接展示代码差异。",
+      "collapsedHelp": "默认收起代码差异，需要时点开。"
     },
     "readingTextSize": {
       "small": "阅读字号：小",
@@ -1783,14 +1806,14 @@
       "notSignedIn": "未登录",
       "localCodeHelp": "请在浏览器中完成登录。若 nanobot 未自动完成连接，请将授权码粘贴到下方。",
       "remoteCodeHelp": "点击“登录”在你的电脑上打开 xAI。完成登录后，请将 xAI 显示的授权码粘贴到下方。",
-      "localCallbackHelp": "请在浏览器中完成登录。若 nanobot 未自动完成连接，请复制地址栏中完整的 localhost 回调地址，粘贴到下方。",
-      "remoteCallbackHelp": "在此浏览器中打开 ChatGPT 并完成登录。当 localhost 页面无法打开时，请复制地址栏中的完整 URL 并粘贴到下方。",
+      "localCallbackHelp": "在浏览器中完成登录。若 nanobot 未自动连接，请复制 localhost 页面地址栏中的完整链接（即使页面无法打开），粘贴到下方，再点击“完成登录”。",
+      "remoteCallbackHelp": "在此浏览器中打开 ChatGPT 并完成登录。跳转到 localhost 页面后，即使页面无法打开，也请复制地址栏中的完整链接，粘贴到下方，再点击“完成登录”。",
       "authorizationCode": "授权码",
       "callbackUrl": "回调 URL",
-      "callbackUrlPlaceholder": "http://localhost:1455/auth/callback?code=…&state=…",
+      "callbackUrlPlaceholder": "在此粘贴完整的回调链接",
       "openChatGPT": "打开 ChatGPT",
       "pasteCallbackToContinue": "粘贴回调 URL 以继续。",
-      "waitingForCallback": "正在等待浏览器回调…",
+      "waitingForCallback": "等待完成登录…",
       "finishSignIn": "完成登录"
     },
     "skills": {
@@ -2126,7 +2149,6 @@
       "placeholderThread": "输入消息…",
       "placeholderHero": "描述你想做的事",
       "placeholderOpening": "正在打开新话题…",
-      "placeholderStreaming": "模型正在回复…",
       "inputAria": "消息输入框",
       "goalStateStrip": "目标：{{label}}",
       "goalStateFallback": "目标",
@@ -2539,6 +2561,7 @@
     "imageAttachment": "图片附件",
     "videoAttachment": "视频附件",
     "fileAttachment": "文件附件",
+    "downloadAttachment": "下载 {{name}}",
     "attachmentUnavailable": "附件不可用",
     "dataTable": "数据表",
     "fileEditPreparing": "准备编辑文件…",

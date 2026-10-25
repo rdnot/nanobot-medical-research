@@ -87,9 +87,9 @@ Only features with a **Use proxy** switch use this address. Turning a switch off
   "tools": {
     "web": { "useProxy": true },
     "mcpServers": {
-      "figma-remote": {
+      "notion": {
         "type": "streamableHttp",
-        "url": "https://mcp.figma.com/mcp",
+        "url": "https://mcp.notion.com/mcp",
         "auth": "oauth",
         "useProxy": true
       }

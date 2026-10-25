@@ -49,6 +49,7 @@ import {
 import { MAX_WORKBENCH_PANES } from "@/components/workbench/workbench-model";
 import { SidebarTopicRename } from "@/components/SidebarTopicRename";
 import { SkeletonStatus } from "@/components/settings/shared/SkeletonStatus";
+import { LoadingRing } from "@/components/ui/loading-ring";
 import {
   SIDEBAR_SELECTION_ITEM_CLASS,
   SidebarSelectionHighlight,
@@ -831,7 +832,6 @@ export const ChatList = memo(function ChatList({
                     const tabPartiallySelected = !tabSelected && tabDeleteKeys.some((key) => (
                       selectedDeleteKeys.has(key)
                     ));
-                    const projectMode = group.kind === "project";
 
                     if (isWorkbenchTab) {
                       return (
@@ -1042,10 +1042,7 @@ export const ChatList = memo(function ChatList({
                                   partial={tabPartiallySelected}
                                 />
                               ) : null}
-                              <span className={cn(
-                                "relative flex min-w-0 flex-1 items-center overflow-hidden",
-                                projectMode ? "gap-2" : "gap-1.5",
-                              )}>
+                              <span className="relative flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
                                 <SidebarSessionHandle handle={s.handle} />
                                 <span className="min-w-0 flex-1 truncate font-normal leading-5">
                                   {title}
@@ -1832,7 +1829,7 @@ function ProjectGroupHeader({
 
 function ChatsGroupHeader({ label }: { label: string }) {
   return (
-    <div className="px-2 pb-2 pt-2 text-[11px] font-medium leading-4 text-sidebar-muted-foreground">
+    <div data-theme-ink className="px-2 pb-2 pt-2 text-[11px] font-medium leading-4 text-sidebar-muted-foreground">
       {label}
     </div>
   );
@@ -1884,12 +1881,6 @@ function ChatsFoldFooter({
   );
 }
 
-function synchronizeRunningRing(element: SVGCircleElement | null) {
-  if (!element) return;
-  // Align pending animations before their first frame, not only after animationstart.
-  for (const animation of element.getAnimations()) animation.startTime = 0;
-}
-
 function SessionActivityIndicator({
   state,
 }: {
@@ -1923,18 +1914,7 @@ function SessionActivityIndicator({
           aria-label={label}
           className="grid h-4 w-4 shrink-0 place-items-center"
         >
-          <svg
-            className="h-3 w-3 text-sidebar-muted-foreground"
-            viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true"
-          >
-            <circle cx="12" cy="12" r="10" opacity="0.2" />
-            <circle
-              cx="12" cy="12" r="10" strokeDasharray="16 46.8" strokeLinecap="round"
-              className="sidebar-running-ring"
-              ref={synchronizeRunningRing}
-              onAnimationStart={(event) => synchronizeRunningRing(event.currentTarget)}
-            />
-          </svg>
+          <LoadingRing className="h-3 w-3 text-sidebar-muted-foreground" />
         </span>
       </HoverHint>
     );

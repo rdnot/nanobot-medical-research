@@ -16,7 +16,6 @@ import {
   HelpIcon,
   HistoryIcon,
   ConversationIcon,
-  VoiceIcon,
   AttachIcon,
   RestartIcon,
   RestrictedAccessIcon,
@@ -47,19 +46,19 @@ import {
   splitCapabilityMentionSegments,
 } from "@/components/CliAppMentionText";
 import {
+  SkillReferenceToken,
+  withSkillReferences,
+  type InlineReferenceSegment,
+} from "@/components/SkillReferenceText";
+import {
   composerMentionText,
   isCapabilityMentionStart,
-  type CapabilityMentionSegment,
 } from "@/lib/composer-mention-text";
 import { INLINE_TOKEN_HIGHLIGHT_COLOR } from "@/components/InlineTokenHighlight";
 import {
-  ArrowUp,
   ChevronDown,
   ChevronUp,
   CornerDownRight,
-  FileText,
-  Video,
-  ImageIcon,
   Loader2,
   Quote,
   Trash2,
@@ -69,6 +68,8 @@ import {
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { AttachmentCard, AttachmentTypeFace, attachmentCardActionClassName } from "@/components/AttachmentCard";
+import { ComposerActionIcon, type ComposerActionState } from "@/components/thread/ComposerActionIcon";
 import {
   floatingItemClassName,
   floatingItemFocusClassName,
@@ -82,7 +83,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  WorkspaceAccessToggle,
+  WorkspaceAccessMenu,
   WorkspaceProjectPicker,
 } from "@/components/thread/WorkspaceControls";
 import {
@@ -257,6 +258,7 @@ interface ThreadComposerProps {
   workspaceDefaultScope?: WorkspaceScopePayload | null;
   workspaceControls?: WorkspacesPayload["controls"] | null;
   workspaceScopeDisabled?: boolean;
+  workspaceProjectLocked?: boolean;
   workspaceError?: string | null;
   onFavoriteWorkspaceProject?: (path: string, pinned: boolean) => Promise<ProjectDirectory[]>;
   onResolveWorkspaceProject?: (path: string) => Promise<ProjectDirectory>;
@@ -978,7 +980,7 @@ function GoalStateStrip({
           id="nanobot-goal-panel-root"
           role="dialog"
           aria-modal="false"
-          aria-labelledby="nanobot-goal-panel-title"
+          aria-label={t("thread.composer.goalStateSheetTitle")}
           tabIndex={-1}
           className={cn(
             "absolute bottom-[calc(100%+8px)] left-3 right-3 z-[50] flex max-w-none flex-col overflow-hidden",
@@ -987,29 +989,9 @@ function GoalStateStrip({
           )}
           style={{ maxHeight: `${Math.round(panelMaxPx)}px` }}
         >
-          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-black/[0.06] px-3 py-2 dark:border-white/[0.08]">
-            <h2
-              id="nanobot-goal-panel-title"
-              className="min-w-0 truncate text-[13px] font-semibold tracking-tight text-foreground"
-            >
-              {t("thread.composer.goalStateSheetTitle")}
-            </h2>
-            <button
-              type="button"
-              className={cn(
-                "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-                "text-muted-foreground transition-colors hover:text-foreground",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              )}
-              aria-label={t("thread.composer.goalStateCloseAria")}
-              onClick={() => setGoalPanelOpen(false)}
-            >
-              <X className="h-4 w-4" aria-hidden />
-            </button>
-          </div>
           <div
             id="nanobot-goal-panel-scroll"
-            className="min-h-0 flex-1 overflow-y-auto scrollbar-thin px-3 pb-3 pt-2"
+            className="min-h-0 flex-1 overflow-y-auto scrollbar-thin p-3"
           >
             <MarkdownText className="max-w-none text-foreground/90">
               {markdownBody}
@@ -1114,6 +1096,7 @@ export function ThreadComposer({
   workspaceDefaultScope = null,
   workspaceControls = null,
   workspaceScopeDisabled = false,
+  workspaceProjectLocked = false,
   workspaceError = null,
   onLoadWorkspaceProjects,
   onResolveWorkspaceProject,
@@ -1174,7 +1157,8 @@ export function ThreadComposer({
   // Coarser than hasTouchPrimaryPointer on purpose: tablets with a physical
   // keyboard still get the newline-on-Enter behavior.
   const hasCoarsePointer = useMediaQuery("(pointer: coarse)");
-  const { readingTextSize } = useLocalPreferences();
+  const mobileWorkspaceControls = useMediaQuery("(max-width: 639px)");
+  const { readingTextSize, customReadingTextSize } = useLocalPreferences();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mentionOverlayRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -1204,8 +1188,6 @@ export function ThreadComposer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chipRefs = useRef(new Map<string, HTMLButtonElement>());
   const queuedPromptCounterRef = useRef(0);
-  // A fresh queue submission arms Enter for the complete pending message.
-  const secondEnterPromptIdRef = useRef<string | null>(null);
   const previousPendingQueueKeyRef = useRef(pendingQueueKey);
   const previousQueueRunRef = useRef({ key: pendingQueueKey, isStreaming });
   const voiceShortcutDownRef = useRef(false);
@@ -1213,7 +1195,7 @@ export function ThreadComposer({
   const isHero = variant === "hero";
   const voiceShortcutLabel = useMemo(getVoiceShortcutLabel, []);
   const projectPickerAvailable =
-    isHero
+    !workspaceProjectLocked
     && !!workspaceDefaultScope
     && !!onWorkspaceScopeChange
     && !!onLoadWorkspaceProjects
@@ -1224,10 +1206,6 @@ export function ThreadComposer({
   const showProjectPicker = projectPickerAvailable && !workspaceControlsHidden;
 
   useEffect(() => {
-    secondEnterPromptIdRef.current = null;
-  }, [pendingQueueKey, queuedPromptStorageKey]);
-
-  useEffect(() => {
     if (!isStreaming || !activeTurnId) return;
     setQueuedPrompt((prompt) => (
       !prompt || prompt.autoPaused || prompt.autoAfterTurnId === activeTurnId
@@ -1236,9 +1214,7 @@ export function ThreadComposer({
     ));
   }, [activeTurnId, isStreaming, pendingQueueKey, setQueuedPrompt]);
 
-  const resolvedPlaceholder = isStreaming
-    ? t("thread.composer.placeholderStreaming")
-    : placeholder ?? t("thread.composer.placeholderThread");
+  const resolvedPlaceholder = placeholder ?? t("thread.composer.placeholderThread");
 
   const maxAttachments = ingressLimits?.attachments.max_count
     ?? MAX_ATTACHMENTS_PER_MESSAGE;
@@ -1294,7 +1270,6 @@ export function ThreadComposer({
   const addFiles = useCallback(
     (files: File[]) => {
       if (interactionDisabled || files.length === 0) return;
-      secondEnterPromptIdRef.current = null;
       const { rejected } = enqueue(files);
       if (rejected.length > 0) {
         const { reason, file } = rejected[0];
@@ -1552,7 +1527,6 @@ export function ThreadComposer({
     [cliApps, mcpPresets, sessionMentionCatalog, value],
   );
   const editMentionInput = useCallback((next: string, cursor: number) => {
-    secondEnterPromptIdRef.current = null;
     setValue(next);
     setSlashMenuDismissed(false);
     setCliAppMenuDismissed(false);
@@ -1582,8 +1556,9 @@ export function ThreadComposer({
       setPathInspection((current) => current?.generation === generation ? { ...current, attachment } : current);
     }).catch((error: unknown) => {
       if (generation !== pathCheckGeneration.current || pathCheckScope.current !== scopeIdentity) return;
-      setInlineError(error instanceof Error ? error.message : t("message.attachmentUnavailable"));
       setPathInspection(null);
+      if (error instanceof Error && "status" in error && error.status === 404) return;
+      setInlineError(error instanceof Error ? error.message : t("message.attachmentUnavailable"));
     });
   }, [interactionDisabled, onAttachmentPaste, onInspectAttachment, rawSelection, replaceMentionInput, scopeIdentity, t, value]);
 
@@ -1742,9 +1717,11 @@ export function ThreadComposer({
 
   const showCliAppMenu = filteredMentionCandidates.length > 0;
   const showAnyPalette = showSlashMenu || showCliAppMenu;
-  const hasMentionDecorations = displayMentionSegments.some(
-    (segment) => segment.kind !== "text",
+  const inlineSegments = useMemo(
+    () => withSkillReferences(displayMentionSegments),
+    [displayMentionSegments],
   );
+  const hasInlineDecorations = inlineSegments.some((segment) => segment.kind !== "text");
   const activeCliMentionApps = useMemo(() => {
     const seen = new Set<string>();
     return mentionSegments.flatMap((segment) => {
@@ -1867,13 +1844,12 @@ export function ThreadComposer({
     // The parent projects typography tokens in its layout effect; measure after it.
     const input = textareaRef.current;
     if (input) autosizeTextarea(input);
-  }, [readingTextSize]);
+  }, [readingTextSize, customReadingTextSize]);
 
   // Runs before paint so switching sessions never flashes stale draft text.
   useLayoutEffect(() => {
     if (previousPendingQueueKeyRef.current === pendingQueueKey) return;
     previousPendingQueueKeyRef.current = pendingQueueKey;
-    secondEnterPromptIdRef.current = null;
     setValue("");
     setInlineError(null);
     setSlashMenuDismissed(false);
@@ -1885,7 +1861,6 @@ export function ThreadComposer({
   const appendTranscription = useCallback((text: string) => {
     const transcript = text.trim();
     if (!transcript) return;
-    secondEnterPromptIdRef.current = null;
     setValue((current) => {
       if (!current.trim()) return transcript;
       const separator = /[\s\n]$/.test(current) ? "" : " ";
@@ -1936,7 +1911,6 @@ export function ThreadComposer({
     function onKeyDown(event: KeyboardEvent): void {
       if (!isVoiceShortcutDown(event) || event.repeat || voiceShortcutDownRef.current) return;
       event.preventDefault();
-      secondEnterPromptIdRef.current = null;
       voiceShortcutDownRef.current = true;
       voiceRecorder.beginShortcutHold();
     }
@@ -1965,7 +1939,6 @@ export function ThreadComposer({
   }, [onTranscribeAudio, voiceRecorder.beginShortcutHold, voiceRecorder.endShortcutHold]);
 
   const handleStop = useCallback(() => {
-    secondEnterPromptIdRef.current = null;
     setQueuedPrompt((prompt) => prompt ? pauseQueuedPrompt(prompt) : null);
     onStop?.();
   }, [onStop, setQueuedPrompt]);
@@ -2135,7 +2108,6 @@ export function ThreadComposer({
       setInlineError(error);
       return;
     }
-    secondEnterPromptIdRef.current = prompt.id;
     setQueuedPrompt(prompt);
     clear();
     clearComposerText();
@@ -2143,14 +2115,12 @@ export function ThreadComposer({
   }, [canQueueGuidance, clear, clearComposerText, collectGuidancePrompt, onQuotedContextChange, queuedPromptError, setQueuedPrompt]);
 
   const removeQueuedPrompt = useCallback(() => {
-    secondEnterPromptIdRef.current = null;
     setQueuedPrompt(null);
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, [setQueuedPrompt]);
 
   const editQueuedPrompt = useCallback((pending: QueuedPrompt) => {
     const prompt = hasComposerContent || normalizedQuotedContext ? collectGuidancePrompt() : pending;
-    secondEnterPromptIdRef.current = null;
     setQueuedPrompt(null);
     replaceMentionInput(prompt.text, prompt.text.length);
     setBoundSessionMentions(prompt.sessionMentions ?? []);
@@ -2169,7 +2139,6 @@ export function ThreadComposer({
   const sendQueuedPrompt = useCallback(
     (prompt: QueuedPrompt, extraOptions?: SendOptions) => {
       if (interactionDisabled) return;
-      secondEnterPromptIdRef.current = null;
       const error = queuedPromptError(prompt);
       if (error) {
         setQueuedPrompt(pauseQueuedPrompt(prompt));
@@ -2201,7 +2170,6 @@ export function ThreadComposer({
   useEffect(() => {
     const previous = previousQueueRunRef.current;
     previousQueueRunRef.current = { key: pendingQueueKey, isStreaming };
-    if (!isStreaming) secondEnterPromptIdRef.current = null;
     // Switching to an idle session is not completion of the previous session's run.
     if (previous.key !== pendingQueueKey) return;
     if (isStreaming || interactionDisabled || !queuedPrompt || !canAutoSendQueuedPrompt(queuedPrompt)) return;
@@ -2420,20 +2388,20 @@ export function ThreadComposer({
         if (!e.repeat) queueGuidancePrompt();
         return;
       }
-      const secondEnterPrompt = queuedPrompt?.id === secondEnterPromptIdRef.current ? queuedPrompt : null;
+      // Empty Enter explicitly sends the visible pending message, including restored drafts.
       if (
-        isStreaming
+        queuedPrompt
         && value.length === 0
         && images.length === 0
         && !e.altKey
         && !e.ctrlKey
         && !e.metaKey
-        && secondEnterPrompt
       ) {
-        if (!e.repeat) sendQueuedPrompt(secondEnterPrompt);
+        if (!e.repeat && voiceRecorder.state === "idle" && !voiceShortcutDownRef.current) {
+          sendQueuedPrompt(queuedPrompt);
+        }
         return;
       }
-      secondEnterPromptIdRef.current = null;
       submit();
     }
   };
@@ -2498,6 +2466,9 @@ export function ThreadComposer({
         : t("thread.composer.voice.hint");
   // Touch users need an explicit send action; keep Stop while sending is unavailable.
   const showStopButton = isStreaming && !!onStop && !canSend;
+  const actionState: ComposerActionState = showVoiceButton
+    ? voiceRecorder.state === "transcribing" ? "busy" : voiceRecorder.isRecording ? "recording" : "voice"
+    : showStopButton ? "stop" : modelNeedsSetup ? "setup" : canSend || !isStreaming ? "send" : "busy";
   const relaxedHeroInput = isHero && images.length === 0 && !isStreaming;
   const compactIdle = compactWhenIdle && !compactControls && !isHero && !composerFocused
     && value.length === 0 && images.length === 0 && !inlineError
@@ -2525,17 +2496,15 @@ export function ThreadComposer({
     return () => observer?.disconnect();
   }, [compactControls, compactWhenIdle, modelLabel, voiceRecorder.isRecording, workspaceScope]);
   const accessControl = workspaceScope && !workspaceControlsHidden ? (
-    <WorkspaceAccessToggle
+    <WorkspaceAccessMenu
       scope={workspaceScope}
       disabled={interactionDisabled || workspaceScopeDisabled}
-      isHero={isHero}
       onChange={onWorkspaceScopeChange}
     />
   ) : null;
   const workspaceControl = showProjectPicker ? (
     <WorkspaceProjectPicker
       layoutAnchor={workspacePickerLayoutAnchor}
-      isHero={isHero}
       disabled={interactionDisabled || workspaceScopeDisabled}
       scope={workspaceScope}
       defaultScope={workspaceDefaultScope}
@@ -2565,8 +2534,9 @@ export function ThreadComposer({
       onClick={modelNeedsSetup ? onModelBadgeClick : undefined}
     />
   ) : null;
-  const usageControl = !voiceRecorder.isRecording ? (
-    <ComposerUsagePopover context={contextUsage} rounds={recentRoundUsage} showLabel={compactControls} bottomSheet={compactControls} />
+  const usageInMeta = mobileWorkspaceControls || compactControls;
+  const usageControl = !voiceRecorder.isRecording && (contextUsage || recentRoundUsage.length) ? (
+    <ComposerUsagePopover context={contextUsage} rounds={recentRoundUsage} showLabel={usageInMeta} compactLabel={mobileWorkspaceControls} bottomSheet={usageInMeta} />
   ) : null;
   const inputTextClasses = cn(
     // Keep the overlay's CJK/Latin spacing aligned with the native textarea caret.
@@ -2625,8 +2595,10 @@ export function ThreadComposer({
         if (!handleSessionDrop(event)) onDrop(event);
       }}
       className={cn(
-        "relative w-full",
-        isHero ? "px-0" : "px-1 pb-1.5 pt-1 sm:px-0",
+        "thread-composer-form relative w-full [--composer-action-margin:0px]",
+        isHero
+          ? "px-0 [--composer-action-size:2rem] [--composer-footer-inset:0.75rem] sm:[--composer-footer-inset:1rem]"
+          : "px-1 pb-0 pt-1 [--composer-action-size:2.25rem] [--composer-footer-inset:0.625rem] sm:px-0 sm:pb-1.5 sm:[--composer-footer-inset:0.75rem]",
         compactWhenIdle && "thread-composer-collapsible-layout",
         paletteBeside && "grid grid-cols-2 items-start gap-2 p-0",
       )}
@@ -2656,17 +2628,17 @@ export function ThreadComposer({
         data-compact={compactIdle || undefined}
         style={paletteBeside ? { maxHeight: slashPaletteLayout.maxHeight, overflowY: "auto" } : undefined}
         className={cn(
-          "thread-composer-surface group/composer relative mx-auto flex w-full flex-col overflow-visible transition-all duration-200",
+          "thread-composer-surface group/composer relative mx-auto flex w-full flex-col overflow-visible bg-card",
           paletteBeside && "col-start-1 row-start-1",
           isHero
-            ? "max-w-[var(--composer-content-width,58rem)] rounded-prominent bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]"
-            : "max-w-[var(--composer-content-width,49.5rem)] rounded-panel bg-muted/80 focus-within:bg-muted dark:bg-card dark:focus-within:bg-white/[0.06]",
+            ? "max-w-[var(--composer-content-width,58rem)] rounded-prominent"
+            : "max-w-[var(--composer-content-width,49.5rem)] rounded-panel",
           compactWhenIdle && "thread-composer-collapsible transition-colors motion-reduce:transition-none",
           interactionDisabled && "opacity-60",
           sessionDragPreview && "ring-1 ring-primary/25",
           isDragging && "ring-2 ring-primary/40 motion-reduce:ring-0 motion-reduce:border-primary",
           goalState?.active &&
-            "goal-shell-glow ring-1 ring-sky-400/35 motion-reduce:ring-sky-400/25 dark:ring-sky-400/45",
+            "ring-1 ring-sky-400/35 motion-reduce:ring-sky-400/25 dark:ring-sky-400/45",
         )}
       >
         {queuedPrompt ? (
@@ -2685,7 +2657,7 @@ export function ThreadComposer({
         ) : null}
         {images.length > 0 ? (
           <div
-            className="flex flex-wrap gap-2 px-3 pt-3"
+            className="flex flex-wrap items-start gap-2 px-3 pt-3"
             aria-label={t("thread.composer.attachImage")}
           >
             {images.map((img) => (
@@ -2737,10 +2709,10 @@ export function ThreadComposer({
         ) : null}
         <GoalStateStrip goalState={goalState} />
         <div className="thread-composer-input relative min-w-0">
-          {hasMentionDecorations ? (
-            <ComposerCliMentionOverlay
+          {hasInlineDecorations ? (
+            <ComposerInlineReferenceOverlay
               overlayRef={mentionOverlayRef}
-              segments={displayMentionSegments}
+              segments={inlineSegments}
               isHero={isHero}
               isComposing={mentionInput.isComposing}
               className={inputTextClasses}
@@ -2758,9 +2730,6 @@ export function ThreadComposer({
             onChange={mentionInput.onChange}
             onCompositionStart={mentionInput.onCompositionStart}
             onCompositionEnd={mentionInput.onCompositionEnd}
-            onBlur={() => {
-              secondEnterPromptIdRef.current = null;
-            }}
             onKeyDown={onKeyDown}
             onKeyUp={() => setCursorPosition(rawSelection().start)}
             onSelect={() => setCursorPosition(rawSelection().start)}
@@ -2781,7 +2750,7 @@ export function ThreadComposer({
               "relative z-10 block caret-foreground placeholder:text-muted-foreground",
               "focus:outline-none focus-visible:outline-none",
               "disabled:cursor-not-allowed",
-              hasMentionDecorations && "text-transparent selection:bg-primary/20",
+              hasInlineDecorations && "text-transparent selection:bg-primary/20",
             )}
           />
         </div>
@@ -2799,13 +2768,13 @@ export function ThreadComposer({
         ) : null}
         <div
           className={cn(
-            "thread-composer-footer flex flex-nowrap items-center motion-safe:transition-[padding-bottom] motion-safe:[transition-duration:220ms] motion-safe:ease-in-out",
+            "thread-composer-footer flex flex-nowrap items-center px-[var(--composer-footer-inset)] motion-safe:transition-[padding-bottom] motion-safe:[transition-duration:220ms] motion-safe:ease-in-out",
             isHero
               ? cn(
-                  "gap-x-1.5 px-3 sm:px-4",
+                  "gap-x-1.5",
                   showProjectPicker && compactControls ? "pb-1.5" : "pb-3.5",
                 )
-              : "gap-x-2 px-2.5 pb-2 sm:px-3",
+              : "gap-x-2 pb-2",
           )}
         >
           <div
@@ -2831,13 +2800,12 @@ export function ThreadComposer({
               onClick={() => fileInputRef.current?.click()}
               className={cn(
                 "thread-composer-action thread-composer-round-action touch-target shrink-0 rounded-xl text-muted-foreground hover:text-foreground",
-                isHero
-                  ? "h-8 w-8"
-                  : "h-9 w-9",
+                "h-[var(--composer-action-size)] w-[var(--composer-action-size)]",
               )}
             >
               <AttachIcon className="h-3.5 w-3.5" />
             </Button>
+            {!mobileWorkspaceControls ? accessControl : null}
             {voiceRecorder.isRecording ? (
               <VoiceRecordingMeter
                 ariaLabel={voiceRecordingStatusLabel}
@@ -2846,12 +2814,7 @@ export function ThreadComposer({
                 isHero={isHero}
                 levels={voiceRecorder.levels}
               />
-            ) : compactControls ? modelControl : (
-              <div className="thread-composer-workspace-group flex min-w-0 items-center gap-0.5">
-                {workspaceControl}
-                {accessControl}
-              </div>
-            )}
+            ) : null}
           </div>
           <div
             className={cn(
@@ -2859,8 +2822,8 @@ export function ThreadComposer({
               isHero ? "gap-1.5" : "gap-2",
             )}
           >
-            {!compactControls ? modelControl : null}
-            {!compactControls ? usageControl : null}
+            {modelControl}
+            {!usageInMeta ? usageControl : null}
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -2888,31 +2851,18 @@ export function ThreadComposer({
                     }}
                     onClick={showVoiceButton ? voiceRecorder.handleClick : showStopButton ? handleStop : modelNeedsSetup ? onModelBadgeClick : undefined}
                     className={cn(
-                      "thread-composer-action thread-composer-round-action touch-target rounded-full",
-                      showStopButton && !showVoiceButton
-                        ? "border border-border/70 bg-card text-foreground/85 hover:text-foreground disabled:text-muted-foreground/50"
-                        : "border border-foreground bg-foreground text-background disabled:border-foreground disabled:bg-foreground disabled:text-background",
-                      showVoiceButton && voiceRecorder.isRecording && "border-red-500 bg-red-500 text-white hover:bg-red-500 hover:text-white",
+                      "composer-primary-action thread-composer-action thread-composer-round-action touch-target rounded-full bg-clip-padding",
+                      actionState === "stop"
+                        ? "border border-transparent bg-foreground/[0.045] text-foreground/85 hover:bg-foreground/[0.08] hover:text-foreground disabled:text-muted-foreground/50"
+                        : actionState === "voice"
+                          ? "border border-transparent bg-foreground/75 text-background hover:bg-foreground/[0.85] hover:text-background disabled:bg-foreground/[0.12] disabled:text-muted-foreground"
+                          : "border border-transparent bg-foreground text-background hover:bg-foreground/90 hover:text-background disabled:border-foreground disabled:bg-foreground disabled:text-background",
+                      actionState === "send" && "disabled:border-transparent disabled:bg-foreground/[0.12] disabled:text-muted-foreground",
+                      showVoiceButton && voiceRecorder.isRecording && "border-transparent bg-red-500 text-white hover:bg-red-500 hover:text-white",
                       isHero ? "h-8 w-8" : "h-9 w-9",
                     )}
                   >
-                    {showVoiceButton ? (
-                      voiceRecorder.state === "transcribing" ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : voiceRecorder.isRecording ? (
-                        <StopIcon className="h-3.5 w-3.5" fill="currentColor" />
-                      ) : (
-                        <VoiceIcon className="h-4 w-4" />
-                      )
-                    ) : showStopButton ? (
-                      <StopIcon className={cn("fill-current stroke-current", isHero ? "h-3 w-3" : "h-3.5 w-3.5")} />
-                    ) : modelNeedsSetup ? (
-                      <ModelsIcon className="h-4 w-4" />
-                    ) : canSend || !isStreaming ? (
-                      <ArrowUp className="h-4 w-4" />
-                    ) : (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    )}
+                    <ComposerActionIcon state={actionState} />
                   </Button>
                 </TooltipTrigger>
                 {showVoiceButton ? (
@@ -2933,26 +2883,23 @@ export function ThreadComposer({
             </TooltipProvider>
           </div>
         </div>
-        {compactControls && projectPickerAvailable ? (
-          <div
-            className="inline-disclosure"
-            data-composer-workspace-drawer=""
-            data-state={showProjectPicker ? "open" : "closed"}
-            aria-hidden={showProjectPicker ? undefined : true}
-          >
-            <div className="inline-disclosure-clip">
-              <div className="inline-disclosure-content thread-composer-workspace-row flex min-w-0 items-center justify-between gap-2 rounded-b-[28px] bg-muted/45 px-3 py-1.5 dark:bg-white/[0.045] sm:px-4">
-                {workspaceControl}
-                <div className="ml-auto flex min-w-0 justify-end">{accessControl}</div>
-              </div>
-            </div>
-          </div>
-        ) : null}
       </div>
-      {compactControls && (!projectPickerAvailable || usageControl) ? (
-        <div className="thread-composer-meta mx-auto flex w-full max-w-[58rem] items-center justify-between gap-2 px-3">
-          {!projectPickerAvailable ? accessControl : null}
-          <div className="ml-auto">{usageControl}</div>
+      {workspaceControl || mobileWorkspaceControls && accessControl || usageInMeta && usageControl ? (
+        <div className={cn(
+          "thread-composer-meta mx-auto mt-1 flex w-full min-w-0 items-center gap-x-2 pr-2 sm:pr-3",
+          mobileWorkspaceControls ? "flex-nowrap gap-x-1 pr-0" : "flex-wrap gap-y-1",
+          isHero ? "max-w-[58rem]" : "max-w-[49.5rem]",
+          paletteBeside && "col-start-1 row-start-2",
+        )}>
+          <div className={cn("thread-composer-workspace-group flex min-w-0 items-center gap-1", mobileWorkspaceControls ? "flex-1" : "flex-auto max-[359px]:flex-wrap")}>
+            {workspaceControl}
+          </div>
+          {usageInMeta && usageControl || mobileWorkspaceControls && accessControl ? (
+            <div className={cn("ml-auto flex shrink-0 items-center gap-1", mobileWorkspaceControls && "h-11 max-w-[calc(100%-3rem)]")}>
+              {usageInMeta ? usageControl : null}
+              {mobileWorkspaceControls ? accessControl : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </form>
@@ -3046,7 +2993,7 @@ function QueuedPromptPreview({
   );
 }
 
-function ComposerCliMentionOverlay({
+function ComposerInlineReferenceOverlay({
   overlayRef,
   segments,
   isHero,
@@ -3055,7 +3002,7 @@ function ComposerCliMentionOverlay({
   ghostRange,
 }: {
   overlayRef: Ref<HTMLDivElement>;
-  segments: CapabilityMentionSegment[];
+  segments: InlineReferenceSegment[];
   isHero: boolean;
   isComposing: boolean;
   className: string;
@@ -3079,6 +3026,13 @@ function ComposerCliMentionOverlay({
         offset += segment.text.length;
         if (segment.kind === "text") {
           return <span key={`text-${index}`}>{segment.text}</span>;
+        }
+        if (segment.kind === "skill") {
+          return <SkillReferenceToken
+            key={`skill-${segment.name}-${index}`}
+            name={segment.name}
+            testId={`composer-skill-reference-${segment.name.toLowerCase()}`}
+          />;
         }
         const isGhost = ghostRange?.start === start && ghostRange.end === offset;
         const identity = `${segment.kind}-${segment.kind === "cli"
@@ -3440,74 +3394,26 @@ function AttachmentChip({
     image.status === "ready" && image.normalized && image.encodedBytes
       ? normalizedHint(image.file.size, image.encodedBytes)
       : formatBytes(image.file.size);
-  const tone =
-    image.status === "error"
-      ? "border-destructive/40 bg-destructive/5 text-destructive"
-      : "border-border/70 bg-muted/60";
+  const isThumbnail = image.kind === "image" && image.status !== "error";
+  const error = image.status === "error" && image.error ? formatError(image.error) : null;
 
   return (
-    <div
-      className={cn(
-        "group relative flex items-center gap-2 rounded-control border px-2 py-1.5",
-        "transition-colors motion-reduce:transition-none",
-        tone,
-      )}
-      data-testid="composer-chip"
-    >
-      <div className="relative h-10 w-10 overflow-hidden rounded-md bg-background">
-        {image.kind === "image" && image.previewUrl ? (
-          <img
-            src={image.previewUrl}
-            alt=""
-            aria-hidden
-            loading="eager"
-            draggable={false}
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center">
-            {image.kind === "image" ? (
-              <ImageIcon className="h-4 w-4 text-muted-foreground" aria-hidden />
-            ) : image.kind === "video" ? (
-              <Video className="h-4 w-4 text-muted-foreground" aria-hidden />
-            ) : (
-              <FileText className="h-4 w-4 text-muted-foreground" aria-hidden />
-            )}
-          </div>
-        )}
-        {image.status === "encoding" ? (
-          <div
-            className="absolute inset-0 flex items-center justify-center bg-background/60"
-            aria-label={labelEncoding}
-          >
-            <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden />
-          </div>
-        ) : null}
-      </div>
-      <div className="flex min-w-0 flex-col text-[11.5px] leading-4">
-        <span className="max-w-[min(14rem,calc(100vw-8rem))] truncate font-medium" title={image.file.name}>
-          {image.file.name}
-        </span>
-        <span className="truncate text-muted-foreground">
-          {image.status === "error" && image.error
-            ? formatError(image.error)
-            : sizeLabel}
-        </span>
-      </div>
-      <button
-        type="button"
-        ref={registerRef}
-        onClick={onRemove}
-        onKeyDown={onKeyDown}
-        aria-label={labelRemove}
-        className={cn(
-          "ml-1 grid h-5 w-5 flex-none place-items-center rounded-full",
-          "text-muted-foreground/80 hover:text-foreground",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-foreground/30",
-        )}
-      >
-        <X className="h-3.5 w-3.5" aria-hidden />
-      </button>
+    <div className="flex w-24 max-w-full shrink-0 flex-col gap-1" data-testid="composer-chip">
+      <AttachmentCard name={image.file.name} description={sizeLabel} invalid={!!error}
+        action={<button type="button" ref={registerRef} onClick={onRemove} onKeyDown={onKeyDown}
+          aria-label={labelRemove} aria-description={image.file.name} title={labelRemove}
+          className={cn(attachmentCardActionClassName, "group/remove focus-visible:bg-black/50 focus-visible:ring-white")}>
+          <span className="grid h-5 w-5 place-items-center rounded-full bg-black/65 text-white group-hover/remove:bg-black/80">
+            <X className="h-3 w-3" aria-hidden />
+          </span>
+        </button>}>
+        {isThumbnail && image.previewUrl ? <img src={image.previewUrl} alt={image.file.name} loading="eager" draggable={false}
+          className="h-full w-full object-cover" /> : <AttachmentTypeFace name={image.file.name} kind={image.kind} />}
+        {image.status === "encoding" ? <span className="absolute inset-0 flex items-center justify-center bg-background/60" aria-label={labelEncoding}>
+          <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden />
+        </span> : null}
+      </AttachmentCard>
+      {error ? <span className="break-words text-center text-[11px] leading-4 text-destructive">{error}</span> : null}
     </div>
   );
 }

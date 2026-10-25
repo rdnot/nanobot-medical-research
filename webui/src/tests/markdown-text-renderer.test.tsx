@@ -21,10 +21,10 @@ describe("MarkdownTextRenderer", () => {
     expect(link).toHaveClass("text-blue-500", "dark:text-blue-300");
   });
 
-  it("renders canonical session references as same-tab links", () => {
+  it.each(["#session/", "#/chat/"])("renders %s session references as same-tab links", (prefix) => {
     render(
       <MarkdownTextRenderer>
-        {"We discussed this in [收费设计](#session/websocket%3Apricing)."}
+        {`We discussed this in [收费设计](${prefix}websocket%3Apricing).`}
       </MarkdownTextRenderer>,
     );
 
@@ -32,7 +32,10 @@ describe("MarkdownTextRenderer", () => {
     expect(link).toHaveAttribute("href", "#/chat/websocket%3Apricing");
     expect(link).not.toHaveAttribute("target");
     expect(link.getAttribute("style")).toContain(
-      "text-decoration-color: var(--inline-token-highlight)",
+      "text-decoration-color: var(--inline-reference-highlight)",
+    );
+    expect(link.firstElementChild?.getAttribute("style")).toContain(
+      "color: var(--inline-reference-highlight)",
     );
   });
 
@@ -291,7 +294,8 @@ describe("MarkdownTextRenderer", () => {
   it("renders markdown links with file-looking names as file attachments", () => {
     render(<MarkdownTextRenderer>![index.html](/api/media/sig/html)</MarkdownTextRenderer>);
 
-    expect(screen.getByLabelText("File attachment")).toHaveTextContent("index.html");
+    expect(screen.getByRole("link", { name: "Download index.html" })).toHaveAttribute("download", "index.html");
+    expect(screen.getByRole("button", { name: "index.html" })).toBeVisible();
     expect(screen.queryByRole("img", { name: "index.html" })).not.toBeInTheDocument();
   });
 
