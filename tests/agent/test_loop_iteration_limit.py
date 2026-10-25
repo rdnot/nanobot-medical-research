@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
+from nanobot.agent.loop import _FORCE_FINAL_PROMPT, AgentLoop  # FORK: notice text
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
@@ -32,7 +32,12 @@ class BudgetProvider(LLMProvider):
     async def chat(self, messages, tools=None, **kwargs):
         self.requests.append(deepcopy(self._sanitize_empty_content(messages)))
         self.schemas.append(deepcopy(tools))
-        last_user = next(m for m in reversed(messages) if m.get("role") == "user")
+        # FORK: skip the fork's hidden force-final notice so this scripted model keeps
+        # calling tools and really reaches the iteration limit under test.
+        last_user = next(
+            m for m in reversed(messages)
+            if m.get("role") == "user" and m.get("content") != _FORCE_FINAL_PROMPT
+        )
         if str(last_user.get("content")).startswith("run the tests") and tools is not None:
             return LLMResponse(
                 content="running",
