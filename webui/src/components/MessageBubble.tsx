@@ -387,7 +387,7 @@ function IncomingSessionMessage({
       <div className="mb-1.5 flex items-center px-4 text-[12px] text-muted-foreground">
         <SessionHandleLabel id={handle.id}>{handleName}</SessionHandleLabel>
       </div>
-      <div className="relative min-w-0 rounded-floating bg-secondary/70 px-4 py-2">
+      <div data-theme-surface className="relative min-w-0 rounded-floating bg-secondary/70 px-4 py-2">
         {contextMenu}
         <div data-assistant-selectable="true" className="min-w-0">
           <MarkdownText
@@ -489,6 +489,7 @@ export function MessageBubble({
           <div data-user-text-bubble className="relative ml-auto w-fit max-w-full min-w-0">
             {contextMenu}
             <p
+              data-theme-surface
               data-temporary-message={temporary ? "true" : undefined}
               className={cn(
                 "ml-auto w-fit max-w-full min-w-0 rounded-floating px-4 py-2",
@@ -561,6 +562,8 @@ export function MessageBubble({
 function UserQuotedContext({ text, label }: { text: string; label: string }) {
   return (
     <blockquote
+      data-theme-surface
+      data-theme-ink
       className={cn(
         "ml-auto flex w-fit max-w-full min-w-0 items-start gap-2 rounded-control",
         "border border-border/60 bg-muted/35 px-3 py-2 text-left text-muted-foreground",
@@ -651,32 +654,42 @@ function MessageMedia({
   if (media.length === 0) return null;
   const images: UIImage[] = [];
   const seen = new Set<string>();
-  const nonImages: UIMediaAttachment[] = [];
+  const videos: UIMediaAttachment[] = [];
+  const files: UIMediaAttachment[] = [];
   for (const item of media) {
     const normalized = toMediaAttachment(item);
     if (normalized.kind === "image") {
       if (normalized.url && (inlineImages.has(normalized.url) || seen.has(normalized.url))) continue;
       if (normalized.url) seen.add(normalized.url);
       images.push({ url: normalized.url, name: normalized.name });
+    } else if (normalized.kind === "video") {
+      videos.push(normalized);
     } else {
-      nonImages.push(normalized);
+      files.push(normalized);
     }
   }
-  if (images.length === 0 && nonImages.length === 0) return null;
+  if (images.length === 0 && videos.length === 0 && files.length === 0) return null;
 
   return (
     <div
       className={cn(
-        "mt-2 flex flex-wrap gap-2",
-        align === "right" ? "justify-end" : "justify-start",
+        "mt-2 flex min-w-0 max-w-full flex-col gap-2",
+        align === "right" ? "items-end" : "items-start",
       )}
     >
       {images.length > 0 ? (
         <ImageGallery images={images} align={align} size={align === "left" ? "large" : "compact"} />
       ) : null}
-      {nonImages.map((item, i) => (
-        <AttachmentTile key={`${item.kind}-${i}`} attachment={item} pending={pending} />
+      {videos.map((item, i) => (
+        <AttachmentTile key={`video-${i}`} attachment={item} pending={pending} className="my-0" />
       ))}
+      {files.length > 0 ? (
+        <div className={cn("flex w-full min-w-0 flex-wrap items-start gap-2", align === "right" && "justify-end")}>
+          {files.map((item, i) => (
+            <AttachmentTile key={`file-${i}`} attachment={item} pending={pending} />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

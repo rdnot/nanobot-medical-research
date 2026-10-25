@@ -6,17 +6,17 @@ import { diagramFrame } from "./geometry"
 import { resolveDiagramSvg } from "./svg"
 import { rasterDiagram } from "./raster"
 import { outlineDiagramText, shapeDiagramText } from "./text"
+import { macOSFonts } from "./macos-fonts"
 import { DIAGRAM_FONT_SIZE, MAX_DIMENSION, MAX_PIXELS, OUTPUT_LIMIT, SOURCE_LIMIT, type DiagramAsset, type DiagramFont, type DiagramInput, type DiagramLayout } from "./types"
 
 type FontFile = ReturnType<typeof create>
 function systemFonts(file: (path: string) => FontFile): NonNullable<DiagramInput["fonts"]> {
+  if (process.platform === "darwin") return macOSFonts()
   const windows = join(process.env.SystemRoot || "C:/Windows", "Fonts")
   const candidates = process.platform === "win32"
     ? [[join(windows, "msyh.ttc"), join(windows, "msyhbd.ttc")]]
-    : process.platform === "darwin"
-      ? [["/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/PingFang.ttc"]]
-      : [["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"],
-        ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]]
+    : [["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"],
+      ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"]]
   for (const [regularPath, boldPath] of candidates) {
     if (!regularPath || !boldPath || !existsSync(regularPath) || !existsSync(boldPath)) continue
     const select = (path: string, bold: boolean): DiagramFont => {

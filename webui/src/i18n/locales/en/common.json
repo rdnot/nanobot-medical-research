@@ -372,7 +372,8 @@
     "brand": "nanobot",
     "loading": {
       "connecting": "Connecting to nanobot…",
-      "boot": "Loading nanobot…"
+      "boot": "Loading nanobot…",
+      "failed": "Couldn't load this view. Go back, or reload the page to try again."
     },
     "error": {
       "title": "Couldn't reach nanobot",
@@ -443,7 +444,7 @@
     "collapse": "Collapse sidebar",
     "newChat": "New topic",
     "searchAria": "Search",
-    "searchPlaceholder": "Search",
+    "searchPlaceholder": "Search loaded content",
     "searchResults": "Results",
     "noSearchResults": "No matching topics.",
     "recent": "Recent topics",
@@ -903,6 +904,28 @@
       "completed": "Task completed. Click to view the result.",
       "failed": "Task failed. Click for details.",
       "interrupted": "Task needs attention. Click to continue."
+    },
+    "appearance": {
+      "system": "System",
+      "reading": "Reading",
+      "readingHelp": "Adjust messages, code and the composer—not navigation.",
+      "custom": "Custom",
+      "customSize": "Custom text size",
+      "customRange": "Enter a whole number from {{min}} to {{max}} px.\nCode scales with the text; the composer stays at least 16px.",
+      "customInvalid": "Use a whole number from {{min}} to {{max}} px.\nYour text remains at {{size}} px.",
+      "small": "Small",
+      "standard": "Standard",
+      "large": "Large",
+      "preview": "Live preview",
+      "previewText": "**A little room to think.**\n\nClear words, comfortable reading. Make this space your own.",
+      "previewPlaceholder": "Where should we begin?",
+      "process": "Activity display",
+      "processHelp": "Choose how much detail appears as nanobot works.",
+      "autoHelp": "Show progress while working; keep finished work compact.",
+      "expandedHelp": "Keep activity details expanded by default.",
+      "summaryHelp": "Show changed files and line counts.",
+      "diffHelp": "Show code changes directly in the conversation.",
+      "collapsedHelp": "Keep code changes folded until you open them."
     },
     "readingTextSize": {
       "small": "Small reading text",
@@ -1783,14 +1806,14 @@
       "notSignedIn": "Not signed in",
       "localCodeHelp": "Complete sign-in in your browser. If nanobot does not connect automatically, paste the authorization code below.",
       "remoteCodeHelp": "Select Sign in to open xAI on your computer. After signing in, paste the authorization code shown by xAI below.",
-      "localCallbackHelp": "Complete sign-in in your browser. If nanobot does not connect automatically, copy the full localhost callback URL from the address bar and paste it below.",
-      "remoteCallbackHelp": "Open ChatGPT in this browser and finish signing in. When the localhost page fails to load, copy the full URL from the address bar and paste it below.",
+      "localCallbackHelp": "Finish signing in using your browser. If nanobot does not connect automatically, copy the full URL from the localhost page’s address bar—even if the page cannot load—paste it below, then select “Finish sign-in”.",
+      "remoteCallbackHelp": "Open ChatGPT in this browser and finish signing in. On the localhost page, copy the full URL from the address bar—even if the page cannot load—paste it below, then select “Finish sign-in”.",
       "authorizationCode": "Authorization code",
       "callbackUrl": "Callback URL",
-      "callbackUrlPlaceholder": "http://localhost:1455/auth/callback?code=…&state=…",
+      "callbackUrlPlaceholder": "Paste the full callback URL here",
       "openChatGPT": "Open ChatGPT",
       "pasteCallbackToContinue": "Paste the callback URL to continue.",
-      "waitingForCallback": "Waiting for the browser callback…",
+      "waitingForCallback": "Waiting for sign-in to finish…",
       "finishSignIn": "Finish sign-in"
     },
     "skills": {
@@ -2126,7 +2149,6 @@
       "placeholderThread": "Type your message…",
       "placeholderHero": "Describe what you’d like to do",
       "placeholderOpening": "Opening a new topic…",
-      "placeholderStreaming": "Model is responding…",
       "inputAria": "Message input",
       "goalStateStrip": "Goal: {{label}}",
       "goalStateFallback": "Goal",
@@ -2539,6 +2561,7 @@
     "imageAttachment": "Image attachment",
     "videoAttachment": "Video attachment",
     "fileAttachment": "File attachment",
+    "downloadAttachment": "Download {{name}}",
     "attachmentUnavailable": "Attachment unavailable",
     "dataTable": "Data table",
     "fileEditPreparing": "Preparing file edit…",

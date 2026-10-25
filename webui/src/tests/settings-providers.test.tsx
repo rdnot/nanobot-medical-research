@@ -566,7 +566,7 @@ describe("Settings providers", () => {
 
     await chooseProviderToConfigure("OpenAI Codex");
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-    const dialog = (await screen.findByText("Complete sign-in in your browser. If nanobot does not connect automatically, copy the full localhost callback URL from the address bar and paste it below.")).closest('[role="dialog"]') as HTMLElement;
+    const dialog = (await screen.findByText("Finish signing in using your browser. If nanobot does not connect automatically, copy the full URL from the localhost page’s address bar—even if the page cannot load—paste it below, then select “Finish sign-in”.")).closest('[role="dialog"]') as HTMLElement;
 
     expect(requestMutationMock).toHaveBeenCalledWith(
       "settings.provider.oauth_login",
@@ -576,10 +576,10 @@ describe("Settings providers", () => {
     expect(openMock).not.toHaveBeenCalled();
     expect(
       within(dialog).getByText(
-        "Complete sign-in in your browser. If nanobot does not connect automatically, copy the full localhost callback URL from the address bar and paste it below.",
+        "Finish signing in using your browser. If nanobot does not connect automatically, copy the full URL from the localhost page’s address bar—even if the page cannot load—paste it below, then select “Finish sign-in”.",
       ),
     ).toBeInTheDocument();
-    expect(within(dialog).getByText("Waiting for the browser callback…")).toBeInTheDocument();
+    expect(within(dialog).getByText("Waiting for sign-in to finish…")).toBeInTheDocument();
 
     expect(
       await screen.findByText("Signed in", {}, { timeout: 2500 }),
@@ -666,12 +666,12 @@ describe("Settings providers", () => {
       ).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-      const dialog = (await screen.findByText("Open ChatGPT in this browser and finish signing in. When the localhost page fails to load, copy the full URL from the address bar and paste it below.")).closest('[role="dialog"]') as HTMLElement;
+      const dialog = (await screen.findByText("Open ChatGPT in this browser and finish signing in. On the localhost page, copy the full URL from the address bar—even if the page cannot load—paste it below, then select “Finish sign-in”.")).closest('[role="dialog"]') as HTMLElement;
 
       expect(openMock).not.toHaveBeenCalled();
       expect(
         within(dialog).getByText(
-          "Open ChatGPT in this browser and finish signing in. When the localhost page fails to load, copy the full URL from the address bar and paste it below.",
+          "Open ChatGPT in this browser and finish signing in. On the localhost page, copy the full URL from the address bar—even if the page cannot load—paste it below, then select “Finish sign-in”.",
         ),
       ).toBeInTheDocument();
       expect(within(dialog).getByText("Paste the callback URL to continue.")).toBeInTheDocument();
@@ -680,7 +680,7 @@ describe("Settings providers", () => {
       });
       expect(callbackInput).toHaveAttribute(
         "placeholder",
-        "http://localhost:1455/auth/callback?code=…&state=…",
+        "Paste the full callback URL here",
       );
 
       fireEvent.click(within(dialog).getByRole("button", { name: "Open ChatGPT" }));

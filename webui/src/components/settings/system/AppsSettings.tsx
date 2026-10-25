@@ -211,12 +211,12 @@ export function AppsCatalogSettings({
     })),
   ]
     .filter((item) => {
-      if (normalizedQuery) return appsSearchText(item).includes(normalizedQuery);
-      if (filter === "ready") return appsReady(item);
-      if (filter === "cli") {
-        return item.kind === "cli" || item.preset.source === "agent-plugin";
-      }
-      return item.kind === "mcp" && item.preset.source !== "agent-plugin";
+      const matchesFilter = filter === "ready"
+        ? appsReady(item)
+        : filter === "cli"
+          ? item.kind === "cli" || item.preset.source === "agent-plugin"
+          : item.kind === "mcp" && item.preset.source !== "agent-plugin";
+      return matchesFilter && (!normalizedQuery || appsSearchText(item).includes(normalizedQuery));
     })
     .sort((left, right) => {
       const rank = Number(!appsReady(left)) - Number(!appsReady(right));
@@ -226,7 +226,7 @@ export function AppsCatalogSettings({
     ? (cliApps?.apps ?? []).find((app) => app.name === cliFocusName && app.installed)
     : null;
   const loading = (mcpPresetsLoading && !mcpPresets)
-    || ((filter !== "mcp" || Boolean(normalizedQuery)) && cliAppsLoading && !cliApps);
+    || (filter !== "mcp" && cliAppsLoading && !cliApps);
   const cliAppCount = cliApps?.apps.length ?? 0;
   const emptyTitle = normalizedQuery
     ? tx("settings.apps.empty", "No tools match your search.")
@@ -547,6 +547,7 @@ function McpAppsCatalogRow({
   const tx = (key: string, fallback: string) => t(key, { defaultValue: fallback });
   const [managementOpen, setManagementOpen] = useState(false);
   const [managementTab, setManagementTab] = useState<McpManagementTab>("overview");
+  const connectionStatusId = useId();
   useEffect(() => {
     if (!openConnection) return;
     setManagementTab("connection");
@@ -574,6 +575,7 @@ function McpAppsCatalogRow({
   const runtimeConnected = !toggleable && preset.runtime_status === "connected";
   const runtimeConnecting = !toggleable && preset.runtime_status === "connecting";
   const runtimeFailed = !toggleable && preset.installed && preset.runtime_status === "failed";
+  const connecting = Boolean(oauthFlow) || (runtimeConnecting && configuredInstalled);
   const statusLabel = toggleable
     ? tx("settings.nanobotFeatures.enabled", "Enabled")
     : runtimeConnected
@@ -612,8 +614,15 @@ function McpAppsCatalogRow({
   return (
     <article className="min-w-0 rounded-control transition-colors settings-hover">
       <div className="group flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 px-3 py-3">
+        <button
+          type="button"
+          aria-label={preset.display_name}
+          aria-describedby={connecting ? connectionStatusId : undefined}
+          onClick={() => openManagement()}
+          className="flex min-w-0 flex-[1_1_6rem] items-center gap-3 rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
         <McpPresetLogo preset={preset} showBrandLogos={showBrandLogos} />
-        <div className="min-w-[8rem] flex-[1_1_8rem]">
+        <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-baseline gap-2">
             <h3 className="truncate text-[14px] font-semibold leading-5 text-foreground">{preset.display_name}</h3>
             {showTypeBadge ? (
@@ -625,57 +634,44 @@ function McpAppsCatalogRow({
             ) : null}
           </div>
           <p
+            id={connectionStatusId}
             className={cn(
               "mt-0.5 flex min-w-0 items-center gap-1.5 text-[12.5px] leading-5 text-muted-foreground",
-              runtimeFailed && "font-medium text-destructive",
+              !connecting && runtimeFailed && "font-medium text-destructive",
             )}
           >
-            {runtimeFailed ? (
+            {connecting ? (
+              <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden />
+            ) : runtimeFailed ? (
               <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden />
             ) : null}
             <span className="truncate">
-              {runtimeFailed ? failureLabel : detail}
+              {connecting ? tx("settings.mcp.connectingLabel", "Connecting…") : runtimeFailed ? failureLabel : detail}
             </span>
-            {!runtimeFailed && agentPlugin && description && preset.requires ? (
+            {!connecting && !runtimeFailed && agentPlugin && description && preset.requires ? (
               <span className="min-w-0 truncate">{preset.requires}</span>
             ) : null}
           </p>
         </div>
+        </button>
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {oauthFlow ? (
-            <>
-              <AppsActionButton
-                ariaLabel={t("settings.mcp.connectingAccount", {
-                  name: preset.display_name,
-                  defaultValue: "Connecting {{name}}",
-                })}
-                visibleLabel={tx("settings.mcp.connectingLabel", "Connecting…")}
-                busy
-              />
-              <AppsActionButton
-                ariaLabel={tx("settings.actions.cancel", "Cancel")}
-                visibleLabel={tx("settings.actions.cancel", "Cancel")}
-                tone="danger"
-                onClick={onOAuthCancel}
-              />
-            </>
+            <AppsActionButton
+              ariaLabel={tx("settings.actions.cancel", "Cancel")}
+              visibleLabel={tx("settings.actions.cancel", "Cancel")}
+              tone="danger"
+              onClick={onOAuthCancel}
+            />
           ) : runtimeConnecting && configuredInstalled ? (
-            <>
-              <AppsActionButton
-                ariaLabel={`${preset.display_name}: ${tx("settings.mcp.connectingLabel", "Connecting…")}`}
-                visibleLabel={tx("settings.mcp.connectingLabel", "Connecting…")}
-                busy
-              />
-              <AppsActionButton
-                ariaLabel={tx("settings.mcp.remove", "Remove")}
-                busy={removeBusy}
-                disabled={busy && !removeBusy}
-                tone="danger"
-                onClick={() => onAction("remove", preset.name)}
-              >
-                <Trash2 className="h-4 w-4" aria-hidden />
-              </AppsActionButton>
-            </>
+            <AppsActionButton
+              ariaLabel={tx("settings.mcp.remove", "Remove")}
+              busy={removeBusy}
+              disabled={busy && !removeBusy}
+              tone="danger"
+              onClick={() => onAction("remove", preset.name)}
+            >
+              <Trash2 className="h-4 w-4" aria-hidden />
+            </AppsActionButton>
           ) : runtimeFailed ? (
             <AppsActionButton
               ariaLabel={t("settings.mcp.manageTitle", {

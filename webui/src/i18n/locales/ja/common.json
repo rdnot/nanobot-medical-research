@@ -372,7 +372,8 @@
     "brand": "nanobot",
     "loading": {
       "connecting": "nanobot に接続中…",
-      "boot": "nanobot を読み込み中…"
+      "boot": "nanobot を読み込み中…",
+      "failed": "この画面を読み込めませんでした。戻るか、ページを再読み込みしてお試しください。"
     },
     "error": {
       "title": "nanobot に接続できませんでした",
@@ -443,7 +444,7 @@
     "collapse": "サイドバーを閉じる",
     "newChat": "新しいトピック",
     "searchAria": "検索",
-    "searchPlaceholder": "検索",
+    "searchPlaceholder": "読み込み済みの内容を検索",
     "searchResults": "検索結果",
     "noSearchResults": "一致するトピックはありません。",
     "recent": "最近のトピック",
@@ -642,6 +643,28 @@
       "completed": "タスクが完了しました。クリックして結果を確認。",
       "failed": "タスクが失敗しました。クリックして詳細を確認。",
       "interrupted": "対応が必要です。クリックして続行。"
+    },
+    "appearance": {
+      "system": "システムに合わせる",
+      "reading": "読みやすさ",
+      "readingHelp": "メッセージ、コード、入力欄の文字サイズを調整します。ナビゲーションは変わりません。",
+      "custom": "カスタム",
+      "customSize": "文字サイズを指定",
+      "customRange": "{{min}}～{{max}} px の整数を入力してください。\nコードは本文に合わせて拡大縮小され、入力欄は最低 16px を保ちます。",
+      "customInvalid": "{{min}}～{{max}} px の整数を指定してください。\n現在の文字サイズは {{size}} px のままです。",
+      "small": "小",
+      "standard": "標準",
+      "large": "大",
+      "preview": "ライブプレビュー",
+      "previewText": "**考えるための、少しの余白。**\n\n明快な言葉と、心地よい読みやすさ。この空間を、あなたらしく。",
+      "previewPlaceholder": "何から始めましょうか？",
+      "process": "処理状況の表示",
+      "processHelp": "nanobot の作業中に表示する詳細の量を選びます。",
+      "autoHelp": "作業中は進捗を表示し、完了後はコンパクトにまとめます。",
+      "expandedHelp": "処理の詳細を既定で展開します。",
+      "summaryHelp": "変更されたファイルと行数を表示します。",
+      "diffHelp": "コードの変更を会話内に直接表示します。",
+      "collapsedHelp": "コードの変更は、開くまで折りたたんでおきます。"
     },
     "readingTextSize": {
       "small": "本文の文字サイズ：小",
@@ -1577,14 +1600,14 @@
       "notSignedIn": "未サインイン",
       "localCodeHelp": "ブラウザーでサインインを完了してください。通常は nanobot が自動で完了します。完了しない場合は、認証コードを下に貼り付けてください。",
       "remoteCodeHelp": "「サインイン」を選択して自分のコンピューターで xAI を開いてください。サインイン後、xAI に表示された認証コードを下に貼り付けてください。",
-      "localCallbackHelp": "ブラウザーでサインインを完了してください。通常は nanobot が自動で完了します。完了しない場合は、アドレスバーから localhost の完全なコールバック URL をコピーして下に貼り付けてください。",
-      "remoteCallbackHelp": "このブラウザーで ChatGPT を開いてサインインを完了してください。localhost ページを開けない場合は、アドレスバーの完全な URL をコピーして下に貼り付けてください。",
+      "localCallbackHelp": "ブラウザーでサインインを完了してください。nanobot が自動で接続されない場合は、localhost ページが開かなくても、アドレスバーの完全な URL をコピーして下に貼り付け、「サインインを完了」を選択してください。",
+      "remoteCallbackHelp": "このブラウザーで ChatGPT を開き、サインインを完了してください。localhost に移動したら、ページが開かなくても、アドレスバーの完全な URL をコピーして下に貼り付け、「サインインを完了」を選択してください。",
       "authorizationCode": "認証コード",
       "callbackUrl": "コールバック URL",
-      "callbackUrlPlaceholder": "http://localhost:1455/auth/callback?code=…&state=…",
+      "callbackUrlPlaceholder": "完全なコールバック URL をここに貼り付け",
       "openChatGPT": "ChatGPT を開く",
       "pasteCallbackToContinue": "続行するにはコールバック URL を貼り付けてください。",
-      "waitingForCallback": "ブラウザーのコールバックを待機中…",
+      "waitingForCallback": "サインインの完了を待機中…",
       "finishSignIn": "サインインを完了"
     },
     "skills": {
@@ -1920,7 +1943,6 @@
       "placeholderThread": "メッセージを入力…",
       "placeholderHero": "やりたいことを入力",
       "placeholderOpening": "新しいトピックを開いています…",
-      "placeholderStreaming": "モデルが応答しています…",
       "inputAria": "メッセージ入力欄",
       "goalStateStrip": "目標: {{label}}",
       "goalStateFallback": "目標",
@@ -2156,6 +2178,7 @@
     "imageAttachment": "画像の添付",
     "videoAttachment": "動画の添付",
     "fileAttachment": "ファイルの添付",
+    "downloadAttachment": "{{name}} をダウンロード",
     "attachmentUnavailable": "添付ファイルを利用できません",
     "dataTable": "データテーブル",
     "fileEditPreparing": "ファイル編集を準備中…",

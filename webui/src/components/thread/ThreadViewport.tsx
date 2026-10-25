@@ -88,6 +88,7 @@ export const HISTORY_WINDOW_INCREMENT = 120;
 interface HistoryScrollAnchor {
   key: string;
   offsetTop: number;
+  scrollTop: number;
 }
 
 const THREAD_DISPLAY_UNIT_SELECTOR = "[data-thread-display-unit]";
@@ -458,6 +459,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
     }
     historyScrollAnchorRef.current = {
       key,
+      scrollTop: scroller.scrollTop,
       // Normalize out the reveal lease, even when reading above its inline slot.
       offsetTop: element.getBoundingClientRect().top - viewport.top
         - (historySlotRef.current ? HISTORY_HOLD_PX : 0),
@@ -487,6 +489,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
     const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
     const nextTop = Math.min(maxScrollTop, Math.max(0, scroller.scrollTop + delta));
     threadMotionRef.current?.jumpTo(nextTop);
+    anchor.scrollTop = scroller.scrollTop;
     return true;
   }, []);
 
@@ -903,13 +906,17 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
       if (el.scrollTop > 1) historySpringRef.current?.leaveBoundary();
       const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
       const near = distance < NEAR_BOTTOM_PX;
-      const owner = threadMotionRef.current?.observeScroll(near) ?? "automatic";
+      // A detached history page's bottom is not the live tail.
+      const owner = threadMotionRef.current?.observeScroll(near && !historyWindow) ?? "automatic";
       const logicallyAtBottom = !historyWindow && (owner === "automatic" || (owner === "navigation" && near));
       setAtBottom((current) =>
         current === logicallyAtBottom ? current : logicallyAtBottom,
       );
       if (owner === "user") {
-        captureHistoryScrollAnchor();
+        // Restoring the anchor also emits scroll. Keep that reading position
+        // through lazy content resizing instead of selecting a prepended row.
+        const anchor = historyScrollAnchorRef.current;
+        if (!anchor || el.scrollTop !== anchor.scrollTop) captureHistoryScrollAnchor();
         if (allowHistoryLoad) maybeLoadEarlierFromScroll();
         if (allowHistoryLoad && distance < HISTORY_PREFETCH_MIN_PX
           && historyWindow?.hasMoreAfter && !navigation?.loading && !navigation?.error) navigation?.newer();
@@ -942,7 +949,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
       }
       threadMotionRef.current?.handleUserScrollIntent(
         canScrollInDirection(el, direction),
-        direction === "forward",
+        direction === "forward" && !historyWindow,
       );
     };
     const prepareHistoryPull = () => {
@@ -1026,11 +1033,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
         setAtHistoryTop(true);
         return;
       }
-      // Locally windowed messages need no network gesture or loading feedback.
-      if (hiddenMessageCount > 0) handleDirectionalInput(directionFromDelta(delta));
-      else threadMotionRef.current?.handleUserScrollIntent(
-        canScrollInDirection(el, directionFromDelta(delta)), delta > 0,
-      );
+      handleDirectionalInput(directionFromDelta(delta));
     };
     const handleTouchEnd = () => {
       const pulling = historyTouchRef.current?.pulling;
@@ -1200,6 +1203,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
             <div
               ref={composerDockRef}
               data-testid="thread-composer-dock"
+              data-theme-surface
               onInputCapture={(event) => {
                 if (event.target instanceof HTMLTextAreaElement) {
                   threadMotionRef.current?.handleComposerInput();
@@ -1213,7 +1217,7 @@ export const ThreadViewport = forwardRef<ThreadViewportHandle, ThreadViewportPro
               <div
                 className={cn(
                   hasThreadLayout
-                    ? "px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:px-4"
+                    ? "px-3 pb-[calc(0.5rem+env(safe-area-inset-bottom))] sm:px-4 sm:pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
                     : "",
                 )}
               >

@@ -43,6 +43,55 @@ async function connectXmind() {
 describe("SettingsView Apps catalog", () => {
   installSettingsViewTestHooks();
 
+  it("searches within the selected readiness or kind filter", async () => {
+    const figmaLocal = { ...xmindMcpPreset, name: "figma-local", display_name: "Figma local" };
+    const figmaConnected = {
+      ...xmindMcpPreset, name: "figma-connected", display_name: "Figma connected",
+      enabled: true, installed: true, configured: true, status: "configured",
+    };
+    const cliApp = {
+      name: "figma-cli", display_name: "Figma CLI", category: "design", description: "Figma tools",
+      requires: "", source: "catalog", entry_point: "figma", install_supported: true,
+      installed: true, available: true, status: "installed", skill_installed: false,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/settings") return jsonResponse(settingsPayload());
+      if (url === "/api/settings/cli-apps") return jsonResponse({
+        apps: [
+          cliApp,
+          { ...cliApp, name: "figma-pending", display_name: "Figma pending", installed: false },
+          { ...cliApp, name: "photoshop-cli", display_name: "Photoshop CLI", description: "Photo tools", entry_point: "photoshop" },
+        ],
+        installed_count: 2,
+      });
+      if (url === "/api/settings/mcp-presets") return jsonResponse({
+        presets: [figmaLocal, figmaConnected], installed_count: 1,
+      });
+      return { ok: false, status: 404, text: async () => "Not found" } as Response;
+    }));
+
+    renderSettingsView({ initialSection: "apps" });
+    fireEvent.click(await screen.findByRole("button", { name: "Ready" }));
+    fireEvent.change(screen.getByPlaceholderText("Search tools"), { target: { value: "figma" } });
+    expect(await screen.findByRole("heading", { name: "Figma connected" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Figma CLI" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Figma local" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Figma pending" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "MCP" }));
+    expect(screen.getByRole("heading", { name: "Figma local" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Figma connected" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Figma CLI" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Apps" }));
+    expect(screen.getByRole("heading", { name: "Figma pending" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Figma local" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Photoshop CLI" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("Search tools"), { target: { value: "" } });
+    expect(screen.getByRole("heading", { name: "Photoshop CLI" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Figma local" })).not.toBeInTheDocument();
+  });
+
   it.each([null, "", "  ", "http://127.0.0.1:8080"])("offers inline proxy setup for missing shared proxy %j", async (proxy) => {
     const settings = { ...settingsPayload(), runtime_config: { "network.proxy": proxy } };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -227,7 +276,7 @@ describe("SettingsView Apps catalog", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "Complete sign-in in the browser window.",
     );
-    expect(screen.getByRole("button", { name: "Connecting Xmind" })).toHaveTextContent(
+    expect(screen.getByRole("button", { name: "Xmind" })).toHaveAccessibleDescription(
       "Connecting…",
     );
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
@@ -281,7 +330,7 @@ describe("SettingsView Apps catalog", () => {
     expect(row).not.toBeNull();
     expect(row?.parentElement).toHaveClass("xl:grid-cols-2");
     const failed = within(row as HTMLElement).getByText("Connection failed.");
-    expect(failed.closest("button")).toBeNull();
+    expect(failed.closest("button")).toHaveAccessibleName("Xmind");
     expect(failed.closest("p")?.querySelector(".lucide-triangle-alert")).not.toBeNull();
     expect(row?.querySelector(".lucide-check")).toBeNull();
     expect(within(row as HTMLElement).getByRole("button", { name: "Manage Xmind" })).toHaveTextContent(
@@ -377,8 +426,8 @@ describe("SettingsView Apps catalog", () => {
     renderSettingsView({ initialSection: "apps" });
     fireEvent.click(await screen.findByRole("button", { name: "MCP" }));
 
-    expect(await screen.findByRole("button", { name: "Xmind: Connecting…" }))
-      .toHaveTextContent("Connecting…");
+    expect(await screen.findByRole("button", { name: "Xmind" }))
+      .toHaveAccessibleDescription("Connecting…");
     expect(await screen.findByRole(
       "button",
       { name: "Manage Xmind" },
@@ -689,7 +738,7 @@ describe("SettingsView Apps catalog", () => {
     await connectXmind();
 
     const cancelButton = await screen.findByRole("button", { name: "Cancel" });
-    expect(screen.getByRole("button", { name: "Connecting Xmind" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Xmind" })).toHaveAccessibleDescription("Connecting…");
     popup.closed = true;
     fireEvent.click(cancelButton);
 

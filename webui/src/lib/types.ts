@@ -458,6 +458,8 @@ export interface ChatSummary {
   /** Durable recovery state that needs attention after an interrupted turn. */
   recoveryState?: RecoveryState | null;
   workspaceScope?: WorkspaceScopePayload | null;
+  /** Server-owned project binding after the first accepted user message. */
+  projectLocked?: boolean;
   /** Stable, server-owned @handle for this session. */
   handle?: SessionHandle | null;
 }
@@ -1575,6 +1577,7 @@ export type InboundEvent =
       /** Legacy persisted transcripts may carry the final reasoning text here. */
       text?: string;
     } & InboundTurnMetadata)
+  | { event: "pairing_changed" }
   | {
       event: "runtime_model_updated";
       model_name: string;

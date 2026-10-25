@@ -5,8 +5,11 @@ import csv
 import hashlib
 import io
 import json
+import socket
 import subprocess
 import sys
+import textwrap
+from argparse import Namespace
 from pathlib import Path
 from zipfile import ZipFile, ZipInfo
 
@@ -14,6 +17,7 @@ import httpx
 import pytest
 
 from nanobot.release_feed import ReleaseFeed
+from scripts import verify_packaged_update as probe
 from scripts.verify_packaged_update import (
     Timings,
     assert_canonical_preserved,
@@ -253,3 +257,332 @@ def test_timings_persist_failure_and_finally_cleanup_without_exporting_secrets(t
     assert secret not in captured.out + captured.err
     assert "TIMING restart-failure/2/worker:" in captured.out
     assert "TIMING restart-failure/scenario_total:" in captured.out
+
+
+def test_worker_count_must_be_positive_before_creating_output(tmp_path):
+    script = Path(probe.__file__).resolve()
+    output = tmp_path / "must-not-exist"
+    result = subprocess.run([sys.executable, "-I", str(script), "--output", str(output), "--workers", "0"],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 2 and "--workers" in result.stderr
+    assert not output.exists()
+
+
+def test_lanes_balance_all_nine_scenarios_without_splitting_fifteen_journeys():
+    scenarios = list(probe.SCENARIOS)
+    assert probe.scenario_groups(scenarios, 1) == [scenarios]
+    groups = probe.scenario_groups(scenarios, 2)
+    assert groups == [
+        ["upgrade", "skipped-preview", "import-failure", "backup-failure", "restore-interruption"],
+        ["upgrade-again", "restart-failure", "worker-exit", "metadata-loss"],
+    ]
+    assert sorted(scenario for group in groups for scenario in group) == sorted(scenarios)
+    assert [sum(1 + (scenario in probe.TWO_JOURNEY_SCENARIOS) for scenario in group) for group in groups] == [8, 7]
+    assert probe.scenario_groups(["metadata-loss"], 2) == [["metadata-loss"]]
+    for workers in (3, 4):
+        groups = probe.scenario_groups(scenarios, workers)
+        assert len(groups) == workers
+        assert sorted(scenario for group in groups for scenario in group) == sorted(scenarios)
+        assert sum(1 + (scenario in probe.TWO_JOURNEY_SCENARIOS)
+                   for group in groups for scenario in group) == 15
+
+
+def parallel_controller(tmp_path, monkeypatch, *, mode="success"):
+    """Real stdlib-only controllers exercise orchestration, not native acceptance."""
+    script = tmp_path / "fake_controller.py"
+    script.write_text(f"MODE = {mode!r}\nTWO = {sorted(probe.TWO_JOURNEY_SCENARIOS)!r}\n" + textwrap.dedent('''\
+        import argparse
+        import hashlib
+        import json
+        import os
+        import subprocess
+        import sys
+        import time
+        from pathlib import Path
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--wheel", type=Path)
+        parser.add_argument("--commit")
+        parser.add_argument("--output", type=Path)
+        parser.add_argument("--workers", type=int)
+        parser.add_argument("--scenario", action="append")
+        parser.add_argument("--baseline-wheel")
+        parser.add_argument("--dock", action="store_true")
+        args = parser.parse_args()
+        output, lane = args.output, args.output.parent
+        output.mkdir()
+        worker = int(lane.name[-1])
+        def write(path, value):
+            path.write_text(json.dumps(value), encoding="utf-8")
+        keys = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME", "XDG_CACHE_HOME", "TMPDIR", "TMP", "TEMP", "PIP_INDEX_URL")
+        write(lane / "environment.json", {"env": {key: os.environ.get(key) for key in keys},
+              "workers": args.workers, "baseline_wheel": args.baseline_wheel,
+              "isolated": sys.flags.isolated, "no_bytecode": sys.flags.dont_write_bytecode, "pid": os.getpid()})
+        (lane / "ready").touch()
+        # A serial parent would time out here instead of ever starting lane 2.
+        deadline = time.monotonic() + 8
+        while not all((lane.parent / f"lane-{number}/ready").exists() for number in (1, 2)):
+            if time.monotonic() > deadline:
+                raise RuntimeError("Controllers did not overlap")
+            time.sleep(0.02)
+        secret = "temporary-api-token-must-stay-in-private-logs"
+        print(secret, flush=True)
+        print(secret, file=sys.stderr, flush=True)
+        write(output / "packaged-update-timings.json", {"schema_version": 1, "clock": "perf_counter",
+              "timings": [{"phase": "fixture", "scenario": args.scenario[0], "journey": 1,
+                           "seconds": 0.01, "status": "failed" if MODE == "exit" and worker == 1 else "succeeded"}]})
+        if MODE == "timeout" or (MODE == "exit-with-child" and worker == 1):
+            # The descendant owns a real listener, even if its controller exits.
+            child = "import json, socket, sys, time; from pathlib import Path; " \
+                    "s = socket.socket(); s.bind(('127.0.0.1', 0)); s.listen(); " \
+                    "Path(sys.argv[1]).write_text(json.dumps(s.getsockname()[1])); " \
+                    "deadline = time.monotonic() + 60; " \
+                    "exec('while time.monotonic() < deadline and not Path(sys.argv[2]).exists(): time.sleep(0.02)')"
+            subprocess.Popen([sys.executable, "-I", "-c", child,
+                              str(lane / "listener.json"), str(lane / "stop-listener")])
+            if MODE == "exit-with-child":
+                deadline = time.monotonic() + 8
+                while not (lane / "listener.json").exists():
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("Descendant listener did not start")
+                    time.sleep(0.02)
+                raise SystemExit(92)
+            time.sleep(60)
+        if MODE == "exit" and worker == 1:
+            raise SystemExit(91)
+        if worker == 1:
+            time.sleep(0.2)
+        results = []
+        for scenario in args.scenario:
+            result = {"scenario": scenario, "phase": "succeeded"}
+            if scenario in TWO:
+                result["subsequent_update"] = {"scenario": "upgrade", "phase": "succeeded"}
+            if MODE == "missing-journey" and scenario == "import-failure":
+                del result["subsequent_update"]
+            case = output / scenario
+            case.mkdir()
+            write(case / "result.json", result)
+            results.append(result)
+        write(output / "packaged-update-report.json", {
+            "target_sha256": "0" * 64 if MODE == "wrong-hash" else hashlib.sha256(args.wheel.read_bytes()).hexdigest(),
+            "candidate_commit": args.commit, "version": "0.3.6", "scenarios": results})
+        (lane / "finished").write_text(str(time.monotonic()))
+        '''), encoding="utf-8")
+    monkeypatch.setattr(probe, "__file__", str(script))
+    target = wheel(tmp_path, "0.3.6")
+    baseline = wheel(tmp_path, "0.3.5")
+    root = tmp_path / "evidence"
+    root.mkdir()
+    args = Namespace(wheel=target, baseline_wheel=baseline, output=root, commit="a" * 40,
+                     workers=2, dock=False, scenario=None)
+    return args, root, Timings(root / "packaged-update-timings.json")
+
+
+def test_parallel_controllers_isolate_accounts_and_merge_in_scenario_order(tmp_path, monkeypatch, capsys):
+    args, root, timings = parallel_controller(tmp_path, monkeypatch)
+    monkeypatch.setenv("PIP_INDEX_URL", "https://user:private-credential@example.invalid")
+    original_hash = digest(args.wheel)
+    results = probe.run_parallel(args, root, args.wheel, "0.3.6", original_hash, list(probe.SCENARIOS), timings)
+    assert [result["scenario"] for result in results] == list(probe.SCENARIOS)
+    assert sum(1 + ("subsequent_update" in result) for result in results) == 15
+    assert digest(args.wheel) == original_hash
+    assert float((root / "lane-2/finished").read_text()) < float((root / "lane-1/finished").read_text())
+    controllers = [json.loads((root / f"lane-{number}/environment.json").read_text()) for number in (1, 2)]
+    assert controllers[0]["pid"] != controllers[1]["pid"]
+    for number, controller in enumerate(controllers, 1):
+        assert controller["workers"] == 1 and controller["isolated"] and controller["no_bytecode"]
+        assert controller["baseline_wheel"] == str(args.baseline_wheel.resolve())
+        for key, value in controller["env"].items():
+            if key == "PIP_INDEX_URL":
+                assert value is None
+            else:
+                assert Path(value).is_relative_to(root / f"lane-{number}")
+    checkpoint = (root / "packaged-update-timings.json").read_text()
+    records = json.loads(checkpoint)["timings"]
+    assert [record.get("worker") for record in records] == [1, 2, None]
+    assert records[-1]["phase"] == "parallel_total" and records[-1]["status"] == "succeeded"
+    assert all(record["seconds"] >= 0 for record in records)
+    captured = capsys.readouterr()
+    assert "temporary-api-token" not in checkpoint + captured.out + captured.err
+    assert "private-credential" not in checkpoint + captured.out + captured.err
+    assert "temporary-api-token" in (root / "lane-1/controller.log").read_text()
+
+
+def test_parallel_failure_is_real_and_allows_other_lane_to_finish_cleanup(tmp_path, monkeypatch, capsys):
+    args, root, timings = parallel_controller(tmp_path, monkeypatch, mode="exit")
+    with pytest.raises(RuntimeError, match="lane failed"):
+        probe.run_parallel(args, root, args.wheel, "0.3.6", digest(args.wheel), list(probe.SCENARIOS), timings)
+    assert (root / "lane-2/finished").exists()
+    records = json.loads(timings.output.read_text())["timings"]
+    assert [(record.get("worker"), record["status"]) for record in records] == [
+        (1, "failed"), (2, "succeeded"), (None, "failed")]
+    assert not (root / "packaged-update-report.json").exists()
+    captured = capsys.readouterr()
+    assert "status 91" in captured.out
+    assert "temporary-api-token" not in timings.output.read_text() + captured.out + captured.err
+
+
+def test_parallel_deadline_kills_owned_controller_trees_and_their_listeners(tmp_path, monkeypatch, capsys):
+    from scripts.verify_installed_release import _wait_for_closed_listeners
+
+    args, root, timings = parallel_controller(tmp_path, monkeypatch, mode="timeout")
+    monkeypatch.setattr(probe, "LANE_TIMEOUT", 5)
+    with pytest.raises(RuntimeError, match="lane failed"):
+        probe.run_parallel(args, root, args.wheel, "0.3.6", digest(args.wheel), list(probe.SCENARIOS), timings)
+    ports = tuple(json.loads((root / f"lane-{number}/listener.json").read_text()) for number in (1, 2))
+    _wait_for_closed_listeners(ports)
+    assert json.loads(timings.output.read_text())["timings"][-1]["status"] == "failed"
+    captured = capsys.readouterr()
+    assert "deadline exceeded" in captured.out
+    assert "temporary-api-token" not in timings.output.read_text() + captured.out + captured.err
+
+
+def test_exited_controller_cannot_leave_a_descendant_listener_running(tmp_path, monkeypatch):
+    from scripts.verify_installed_release import _wait_for_closed_listeners
+
+    args, root, timings = parallel_controller(tmp_path, monkeypatch, mode="exit-with-child")
+    listener = root / "lane-1/listener.json"
+    try:
+        with pytest.raises(RuntimeError, match="lane failed"):
+            probe.run_parallel(args, root, args.wheel, "0.3.6", digest(args.wheel), list(probe.SCENARIOS), timings)
+        _wait_for_closed_listeners((json.loads(listener.read_text()),))
+    finally:
+        # A red baseline must not leak the process it deliberately exposed.
+        (root / "lane-1/stop-listener").touch()
+        if listener.exists():
+            _wait_for_closed_listeners((json.loads(listener.read_text()),))
+
+
+@pytest.mark.parametrize("mode,message", [("wrong-hash", "original candidate"), ("missing-journey", "every required")])
+def test_parallel_reports_must_prove_original_hash_and_complete_journey_coverage(tmp_path, monkeypatch, mode, message):
+    args, root, timings = parallel_controller(tmp_path, monkeypatch, mode=mode)
+    with pytest.raises(ValueError, match=message):
+        probe.run_parallel(args, root, args.wheel, "0.3.6", digest(args.wheel), list(probe.SCENARIOS), timings)
+    assert json.loads(timings.output.read_text())["timings"][-1]["status"] == "failed"
+
+
+@pytest.mark.parametrize("stop_failure", [False, True])
+def test_abnormal_lane_cleanup_does_not_depend_on_the_mutable_venv(tmp_path, monkeypatch, stop_failure):
+    root = tmp_path / "lane-1/run"
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    configs = []
+    for scenario in ("upgrade", "metadata-loss"):
+        config = root / scenario / "account/.nanobot/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"gateway": {"port": port}, "channels": {"websocket": {"port": port}}}))
+        configs.append(config)
+    calls = []
+    def stop(command, **kwargs):
+        calls.append((command, kwargs))
+        if stop_failure and len(calls) == 1:
+            raise subprocess.CalledProcessError(1, command)
+    monkeypatch.setattr(probe.subprocess, "run", stop)
+    if stop_failure:
+        with pytest.raises(RuntimeError, match="bounded cleanup"):
+            probe.cleanup_lane(root, ["upgrade", "worker-exit", "metadata-loss"])
+    else:
+        probe.cleanup_lane(root, ["upgrade", "worker-exit", "metadata-loss"])
+    assert len(calls) == 2  # Still try the second account if the first stop failed.
+    for (command, options), config in zip(calls, configs, strict=True):
+        assert command == [sys.executable, "-I", "-B", "-m", "nanobot", "gateway", "stop", "--config", str(config)]
+        assert options["env"]["HOME"] == str(config.parent.parent) and options["cwd"] == config.parents[2]
+        assert options["check"] and options["timeout"] == 60
+        assert options["stdout"] is options["stderr"]
+    assert not (root / "managed").exists()
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_serial_dispatch_reports_one_lane_and_checks_original_hash_at_the_end(tmp_path, monkeypatch, workers):
+    import scripts.build_tui_wheels
+
+    target = wheel(tmp_path, "0.3.6")
+    monkeypatch.setattr(scripts.build_tui_wheels, "wheel_files", lambda *args, **kwargs: (
+        {"nanobot/_build_commit.txt": b"a" * 40}, None, None))
+    args = Namespace(wheel=target, baseline_wheel=None, output=tmp_path / "serial", commit="a" * 40,
+                     workers=workers, dock=False, scenario=["upgrade"])
+    calls = []
+    def serial(args, root, selected, version, original_hash, scenarios, timings):
+        calls.append(root / "managed")
+        return [{"scenario": "upgrade"}]
+    monkeypatch.setattr(probe, "run_serial", serial)
+    report = probe.run(args)
+    assert calls == [args.output / "managed"]
+    assert (report["workers"], report["scenario_count"], report["journey_count"]) == (1, 1, 1)
+    args.output = tmp_path / "mutated"
+    def mutate(*args):
+        target.write_bytes(b"changed target")
+        return [{"scenario": "upgrade"}]
+    monkeypatch.setattr(probe, "run_serial", mutate)
+    with pytest.raises(AssertionError):
+        probe.run(args)
+
+
+def test_controller_error_does_not_print_exception_values_or_commands(tmp_path):
+    secret = "temporary-credential-must-not-appear"
+    target = tmp_path / (secret + ".whl")
+    result = subprocess.run([sys.executable, "-I", str(Path(probe.__file__).resolve()), "--wheel", str(target),
+                             "--commit", "a" * 40, "--output", str(tmp_path / "evidence")],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0 and "FileNotFoundError" in result.stderr
+    assert secret not in result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_serial_lanes_install_dependencies_once_and_keep_recovery_chains_on_the_same_venv(tmp_path, monkeypatch):
+    package = Path(__file__).resolve().parents[1] / "nanobot"
+    target = wheel(tmp_path, "0.3.6", worker=(package / "update_worker.py").read_bytes(),
+                   fallback=(package / "update_fallback.py").read_bytes())
+    original_hash = digest(target)
+    installations, dependencies, baselines, stages = [], [], [], {}
+    def execute(command, **options):
+        if "venv" in command:
+            installations.append(Path(command[-1]))
+            Path(command[-1]).mkdir()
+        elif "pip" in command:
+            (baselines if "--no-deps" in command else dependencies).append(command[0])
+        elif "--phase" in command:
+            phase = command[command.index("--phase") + 1]
+            case_root = Path(command[command.index("--output") + 1])
+            rows = stages.setdefault(case_root, [])
+            rows.append((phase, command[0]))
+            if phase == "prepare":
+                number = sum(stage == "prepare" for stage, _ in rows)
+                job = case_root / f"job-{number}"
+                job.mkdir()
+                probe.write(case_root / "launch.json", {"directory": str(job),
+                            "command": ["fixture-worker", str(case_root), command[0]]})
+            else:
+                case = probe.read(case_root / "case.json")
+                restored = case["scenario"] in probe.TWO_JOURNEY_SCENARIOS and case["scenario"] != "upgrade-again"
+                probe.write(case_root / "result.json", {
+                    **case, "phase": "restored" if restored else "succeeded",
+                    "running_version": case["baseline_version"] if restored else case["target_version"],
+                })
+        elif command[0] == "fixture-worker":
+            stages[Path(command[1])].append(("worker", command[2]))
+        elif "gateway" in command:
+            case_root = Path(command[-1]).parents[2]
+            stages[case_root].append(("cleanup", command[0]))
+        else:
+            pytest.fail("Unexpected verifier subprocess")
+    monkeypatch.setattr(probe.subprocess, "run", execute)
+    results = []
+    for worker, scenarios in enumerate(probe.scenario_groups(list(probe.SCENARIOS), 2), 1):
+        root = tmp_path / f"lane-{worker}/run"
+        root.mkdir(parents=True)
+        args = Namespace(baseline_wheel=None, commit="a" * 40, dock=False)
+        results.extend(probe.run_serial(args, root, target, "0.3.6", original_hash, scenarios,
+                                        Timings(root / "packaged-update-timings.json")))
+    assert len(installations) == len(dependencies) == 2 and len(set(installations)) == 2
+    assert len(baselines) == 9 and len(stages) == 9
+    assert sum(1 + ("subsequent_update" in result) for result in results) == 15
+    assert digest(target) == original_hash
+    for case_root, rows in stages.items():
+        journeys = 1 + (case_root.name in probe.TWO_JOURNEY_SCENARIOS)
+        assert [stage for stage, _ in rows] == ["prepare", "worker", "verify"] * journeys + ["cleanup"]
+        interpreters = {python for _, python in rows}
+        assert len(interpreters) == 1
+        assert Path(next(iter(interpreters))).is_relative_to(case_root.parent / "managed")

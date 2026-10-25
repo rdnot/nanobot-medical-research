@@ -372,7 +372,8 @@
     "brand": "nanobot",
     "loading": {
       "connecting": "Menghubungkan ke nanobot…",
-      "boot": "Memuat nanobot…"
+      "boot": "Memuat nanobot…",
+      "failed": "Tampilan ini tidak dapat dimuat. Kembali atau muat ulang halaman untuk mencoba lagi."
     },
     "error": {
       "title": "Tidak dapat menjangkau nanobot",
@@ -443,7 +444,7 @@
     "collapse": "Ciutkan sidebar",
     "newChat": "Topik baru",
     "searchAria": "Cari",
-    "searchPlaceholder": "Cari",
+    "searchPlaceholder": "Cari di konten yang sudah dimuat",
     "searchResults": "Hasil",
     "noSearchResults": "Tidak ada topik yang cocok.",
     "recent": "Topik terbaru",
@@ -642,6 +643,28 @@
       "completed": "Tugas selesai. Klik untuk melihat hasilnya.",
       "failed": "Tugas gagal. Klik untuk melihat detailnya.",
       "interrupted": "Tugas perlu perhatian. Klik untuk melanjutkan."
+    },
+    "appearance": {
+      "system": "Ikuti sistem",
+      "reading": "Membaca",
+      "readingHelp": "Sesuaikan pesan, kode, dan kolom pesan, tanpa mengubah navigasi.",
+      "custom": "Kustom",
+      "customSize": "Ukuran teks kustom",
+      "customRange": "Masukkan bilangan bulat dari {{min}} hingga {{max}} px.\nKode mengikuti ukuran teks; kolom input tetap minimal 16px.",
+      "customInvalid": "Gunakan bilangan bulat dari {{min}} hingga {{max}} px.\nTeks tetap berukuran {{size}} px.",
+      "small": "Kecil",
+      "standard": "Standar",
+      "large": "Besar",
+      "preview": "Pratinjau langsung",
+      "previewText": "**Sedikit ruang untuk berpikir.**\n\nKata-kata yang jelas, nyaman dibaca. Jadikan ruang ini milik Anda.",
+      "previewPlaceholder": "Dari mana kita mulai?",
+      "process": "Tampilan aktivitas",
+      "processHelp": "Pilih seberapa banyak detail yang ditampilkan saat nanobot bekerja.",
+      "autoHelp": "Tampilkan progres saat bekerja dan tampilan ringkas setelah selesai.",
+      "expandedHelp": "Perluas detail aktivitas secara default.",
+      "summaryHelp": "Tampilkan berkas yang diubah dan jumlah baris.",
+      "diffHelp": "Tampilkan perubahan kode langsung dalam percakapan.",
+      "collapsedHelp": "Lipat perubahan kode hingga Anda membukanya."
     },
     "readingTextSize": {
       "small": "Teks bacaan kecil",
@@ -1577,14 +1600,14 @@
       "notSignedIn": "Belum masuk",
       "localCodeHelp": "Selesaikan proses masuk di browser. nanobot biasanya menyelesaikannya secara otomatis; jika tidak, tempel kode otorisasi di bawah.",
       "remoteCodeHelp": "Pilih Masuk untuk membuka xAI di komputer Anda. Setelah masuk, tempel kode otorisasi yang ditampilkan xAI di bawah.",
-      "localCallbackHelp": "Selesaikan proses masuk di browser. nanobot biasanya menyelesaikannya secara otomatis; jika tidak, salin URL callback localhost lengkap dari bilah alamat dan tempel di bawah.",
-      "remoteCallbackHelp": "Buka ChatGPT di browser ini dan selesaikan proses masuk. Saat halaman localhost gagal dimuat, salin URL lengkap dari bilah alamat dan tempel di bawah.",
+      "localCallbackHelp": "Selesaikan proses masuk di browser. Jika nanobot tidak terhubung otomatis, salin URL lengkap dari bilah alamat halaman localhost, meskipun halaman tidak dapat dimuat, tempel di bawah, lalu pilih “Selesaikan masuk”.",
+      "remoteCallbackHelp": "Buka ChatGPT di browser ini dan selesaikan proses masuk. Setelah diarahkan ke halaman localhost, salin URL lengkap dari bilah alamat, meskipun halaman tidak dapat dimuat, tempel di bawah, lalu pilih “Selesaikan masuk”.",
       "authorizationCode": "Kode otorisasi",
       "callbackUrl": "URL callback",
-      "callbackUrlPlaceholder": "http://localhost:1455/auth/callback?code=…&state=…",
+      "callbackUrlPlaceholder": "Tempel URL callback lengkap di sini",
       "openChatGPT": "Buka ChatGPT",
       "pasteCallbackToContinue": "Tempel URL callback untuk melanjutkan.",
-      "waitingForCallback": "Menunggu callback browser…",
+      "waitingForCallback": "Menunggu proses masuk selesai…",
       "finishSignIn": "Selesaikan masuk"
     },
     "skills": {
@@ -1920,7 +1943,6 @@
       "placeholderThread": "Ketik pesan Anda…",
       "placeholderHero": "Jelaskan apa yang ingin Anda lakukan",
       "placeholderOpening": "Membuka topik baru…",
-      "placeholderStreaming": "Model sedang merespons…",
       "inputAria": "Input pesan",
       "goalStateStrip": "Tujuan: {{label}}",
       "goalStateFallback": "Tujuan",
@@ -2156,6 +2178,7 @@
     "imageAttachment": "Lampiran gambar",
     "videoAttachment": "Lampiran video",
     "fileAttachment": "Lampiran file",
+    "downloadAttachment": "Unduh {{name}}",
     "attachmentUnavailable": "Lampiran tidak tersedia",
     "dataTable": "Tabel data",
     "fileEditPreparing": "Menyiapkan perubahan file…",

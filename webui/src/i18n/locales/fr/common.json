@@ -372,7 +372,8 @@
     "brand": "nanobot",
     "loading": {
       "connecting": "Connexion à nanobot…",
-      "boot": "Chargement de nanobot…"
+      "boot": "Chargement de nanobot…",
+      "failed": "Impossible de charger cette vue. Revenez en arrière ou rechargez la page pour réessayer."
     },
     "error": {
       "title": "Impossible de joindre nanobot",
@@ -443,7 +444,7 @@
     "collapse": "Réduire la barre latérale",
     "newChat": "Nouveau sujet",
     "searchAria": "Rechercher",
-    "searchPlaceholder": "Rechercher",
+    "searchPlaceholder": "Rechercher dans le contenu chargé",
     "searchResults": "Résultats",
     "noSearchResults": "Aucun sujet correspondant.",
     "recent": "Sujets récents",
@@ -642,6 +643,28 @@
       "completed": "Tâche terminée. Cliquez pour voir le résultat.",
       "failed": "La tâche a échoué. Cliquez pour les détails.",
       "interrupted": "La tâche demande votre attention. Cliquez pour continuer."
+    },
+    "appearance": {
+      "system": "Système",
+      "reading": "Lecture",
+      "readingHelp": "Ajustez les messages, le code et la zone de saisie, sans changer la navigation.",
+      "custom": "Personnalisé",
+      "customSize": "Taille du texte personnalisée",
+      "customRange": "Saisissez un nombre entier entre {{min}} et {{max}} px.\nLe code suit la taille du texte ; le champ de saisie reste à 16px minimum.",
+      "customInvalid": "Utilisez un nombre entier entre {{min}} et {{max}} px.\nLe texte reste à {{size}} px.",
+      "small": "Petit",
+      "standard": "Standard",
+      "large": "Grand",
+      "preview": "Aperçu en direct",
+      "previewText": "**Un peu d’espace pour réfléchir.**\n\nDes mots clairs, une lecture agréable. Faites de cet espace le vôtre.",
+      "previewPlaceholder": "Par où commencer ?",
+      "process": "Affichage de l’activité",
+      "processHelp": "Choisissez le niveau de détail affiché pendant que nanobot travaille.",
+      "autoHelp": "Affichez la progression en cours et gardez les activités terminées compactes.",
+      "expandedHelp": "Gardez les détails de l’activité développés par défaut.",
+      "summaryHelp": "Affichez les fichiers modifiés et le nombre de lignes.",
+      "diffHelp": "Affichez les changements de code directement dans la conversation.",
+      "collapsedHelp": "Gardez les changements de code repliés jusqu’à leur ouverture."
     },
     "readingTextSize": {
       "small": "Texte de lecture : petit",
@@ -1577,14 +1600,14 @@
       "notSignedIn": "Non connecté",
       "localCodeHelp": "Terminez la connexion dans votre navigateur. nanobot termine généralement automatiquement ; sinon, collez le code d’autorisation ci-dessous.",
       "remoteCodeHelp": "Sélectionnez Se connecter pour ouvrir xAI sur votre ordinateur. Après la connexion, collez ci-dessous le code d’autorisation affiché par xAI.",
-      "localCallbackHelp": "Terminez la connexion dans votre navigateur. nanobot termine généralement automatiquement ; sinon, copiez l’URL complète de rappel localhost depuis la barre d’adresse et collez-la ci-dessous.",
-      "remoteCallbackHelp": "Ouvrez ChatGPT dans ce navigateur et terminez la connexion. Lorsque la page localhost ne se charge pas, copiez l’URL complète de la barre d’adresse et collez-la ci-dessous.",
+      "localCallbackHelp": "Terminez la connexion dans votre navigateur. Si nanobot ne se connecte pas automatiquement, copiez l’URL complète dans la barre d’adresse de la page localhost, même si elle ne se charge pas, collez-la ci-dessous, puis sélectionnez « Terminer la connexion ».",
+      "remoteCallbackHelp": "Ouvrez ChatGPT dans ce navigateur et terminez la connexion. Sur la page localhost, copiez l’URL complète dans la barre d’adresse, même si la page ne se charge pas, collez-la ci-dessous, puis sélectionnez « Terminer la connexion ».",
       "authorizationCode": "Code d’autorisation",
       "callbackUrl": "URL de callback",
-      "callbackUrlPlaceholder": "http://localhost:1455/auth/callback?code=…&state=…",
+      "callbackUrlPlaceholder": "Collez l’URL de callback complète ici",
       "openChatGPT": "Ouvrir ChatGPT",
       "pasteCallbackToContinue": "Collez l’URL de rappel pour continuer.",
-      "waitingForCallback": "En attente du rappel du navigateur…",
+      "waitingForCallback": "En attente de la fin de la connexion…",
       "finishSignIn": "Terminer la connexion"
     },
     "skills": {
@@ -1920,7 +1943,6 @@
       "placeholderThread": "Saisissez votre message…",
       "placeholderHero": "Décrivez ce que vous souhaitez faire",
       "placeholderOpening": "Ouverture d’un nouveau sujet…",
-      "placeholderStreaming": "Le modèle est en train de répondre…",
       "inputAria": "Champ de message",
       "goalStateStrip": "Objectif: {{label}}",
       "goalStateFallback": "Objectif",
@@ -2156,6 +2178,7 @@
     "imageAttachment": "Pièce jointe image",
     "videoAttachment": "Pièce jointe vidéo",
     "fileAttachment": "Pièce jointe",
+    "downloadAttachment": "Télécharger {{name}}",
     "attachmentUnavailable": "Pièce jointe indisponible",
     "dataTable": "Tableau de données",
     "fileEditPreparing": "Préparation de la modification du fichier…",

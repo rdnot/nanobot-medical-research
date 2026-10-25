@@ -8,14 +8,15 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ArrowRight, ChevronDown, Eye, EyeOff, Moon, ShieldCheck, Sun, X } from "lucide-react";
+import { ArrowRight, ChevronDown, Eye, EyeOff, ShieldCheck, X } from "lucide-react";
+import { ThemeToggleIcon } from "@/components/icons/ThemeToggleIcon";
 import { Trans, useTranslation } from "react-i18next";
 import { channelUiPresentation } from "@/channel-plugins/registry";
 import { StarPrompt } from "@/components/StarPrompt";
 import { Sidebar } from "@/components/Sidebar";
 import { RemoteInstances } from "@/components/remote/RemoteInstances";
 import { useRemoteConnections } from "@/components/remote/remote-context";
-import { RemoteConnectionsPage } from "@/components/remote/RemoteConnectionsPage";
+import { LazyRemoteConnectionsPage } from "@/components/remote/LazyRemoteConnectionsPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { SidebarResizeHandle, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH } from "@/components/SidebarResizeHandle";
 import { matchSidebarShortcut } from "@/lib/sidebar-shortcuts";
@@ -1146,7 +1147,6 @@ export default function App() {
       modelName={state.modelName}
       ingressLimits={state.ingressLimits}
       webuiCapabilities={state.webuiCapabilities}
-      checkUpdatesOnConnect={state.runtimeSurface !== "native" && state.webuiCapabilities.includes("webui.core.v1")}
       allowUpdateFlow={state.runtimeSurface !== "native"}
     >
       <BrowserNotifications client={state.client} />
@@ -1177,7 +1177,7 @@ function Shell({
   const updateFlow = useUpdateFlow();
   const localActive = remoteConnections?.localActive !== false;
   const managingConnections = remoteConnections?.managing === true && !remoteConnections?.activeHostId;
-  const { theme, toggle } = useTheme();
+  const { theme, preference: themePreference, toggle, setTheme } = useTheme();
   const managementMain = useRef<HTMLElement>(null);
   const reportManagementSurface = remoteConnections?.reportManagementSurface;
   useEffect(() => {
@@ -1281,6 +1281,7 @@ function Shell({
   const [pairingBusyCode, setPairingBusyCode] = useState<string | null>(null);
   const [pairingError, setPairingError] = useState<string | null>(null);
   const pairingRefreshRef = useRef<Promise<number> | null>(null);
+  const pairingRefreshPendingRef = useRef(false);
   const [snoozedPairingCodes, setSnoozedPairingCodes] = useState<Map<string, {
     until: number;
     deliveryStatus: PairingRequestInfo["delivery_status"];
@@ -1473,32 +1474,41 @@ function Shell({
   }, [updatedChatIds]);
 
   const refreshPairingRequests = useCallback((): Promise<number> => {
-    if (pairingRefreshRef.current) return pairingRefreshRef.current;
+    if (pairingRefreshRef.current) {
+      // An earlier snapshot may predate the notice or completed mutation.
+      pairingRefreshPendingRef.current = true;
+      return pairingRefreshRef.current;
+    }
 
     const request = (async () => {
-      try {
-        const payload = await fetchPairingRequests(getToken());
-        const requests = Array.isArray(payload.requests) ? payload.requests : [];
-        setPairingRequests(requests);
-        setSnoozedPairingCodes((current) => {
-          if (current.size === 0) return current;
-          const activeRequests = new Map(requests.map((request) => [request.code, request]));
-          const now = Date.now();
-          const next = new Map(
-            Array.from(current).filter(
-              ([code, snooze]) => activeRequests.has(code)
-                && snooze.until > now
-                && activeRequests.get(code)?.delivery_status === snooze.deliveryStatus,
-            ),
-          );
-          return next.size === current.size ? current : next;
-        });
-        return requests.length;
-      } catch {
-        // Pairing is an opportunistic WebUI affordance. The slash command path
-        // remains available if this polling request fails.
-        return 0;
-      }
+      let requestCount: number;
+      do {
+        pairingRefreshPendingRef.current = false;
+        try {
+          const payload = await fetchPairingRequests(getToken());
+          const requests = Array.isArray(payload.requests) ? payload.requests : [];
+          setPairingRequests(requests);
+          setSnoozedPairingCodes((current) => {
+            if (current.size === 0) return current;
+            const activeRequests = new Map(requests.map((request) => [request.code, request]));
+            const now = Date.now();
+            const next = new Map(
+              Array.from(current).filter(
+                ([code, snooze]) => activeRequests.has(code)
+                  && snooze.until > now
+                  && activeRequests.get(code)?.delivery_status === snooze.deliveryStatus,
+              ),
+            );
+            return next.size === current.size ? current : next;
+          });
+          requestCount = requests.length;
+        } catch {
+          // Pairing is an opportunistic WebUI affordance. The slash command path
+          // remains available if this polling request fails.
+          requestCount = 0;
+        }
+      } while (pairingRefreshPendingRef.current);
+      return requestCount;
     })();
     const clearRequest = () => {
       if (pairingRefreshRef.current === request) pairingRefreshRef.current = null;
@@ -1516,17 +1526,24 @@ function Shell({
     const poll = async () => {
       const requestCount = await refreshPairingRequests();
       if (disposed) return;
+      if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(
         () => void poll(),
         requestCount > 0 ? PAIRING_POLL_INTERVAL_MS : PAIRING_IDLE_POLL_INTERVAL_MS,
       );
     };
+    const requestRefresh = () => { void poll(); };
+    const unsubscribePairing = client.onPairingChange(requestRefresh);
+    const unsubscribeReady = client.onReady(requestRefresh);
     void poll();
     return () => {
       disposed = true;
+      pairingRefreshPendingRef.current = false;
       if (timer !== null) window.clearTimeout(timer);
+      unsubscribePairing();
+      unsubscribeReady();
     };
-  }, [pageVisible, refreshPairingRequests]);
+  }, [client, pageVisible, refreshPairingRequests]);
 
   const activeSession = useMemo<ChatSummary | null>(() => {
     if (!activeKey) return null;
@@ -2255,8 +2272,8 @@ function Shell({
   }, [client, onModelNameChange]);
 
   useEffect(() => {
-    return client.onRunStatus((chatId, startedAt) => {
-      if (startedAt != null) {
+    return client.onRunStatus((chatId, state) => {
+      if (state.active) {
         const nextRunning = new Set(runningChatIdsRef.current);
         nextRunning.add(chatId);
         runningChatIdsRef.current = nextRunning;
@@ -2465,9 +2482,10 @@ function Shell({
         });
       } catch (e) {
         setPairingError((e as Error).message);
-        void refreshPairingRequests();
       } finally {
         setPairingBusyCode(null);
+        // A mutation reply can be older than an already-delivered notification.
+        void refreshPairingRequests();
       }
     },
     [client, refreshPairingRequests],
@@ -2845,11 +2863,7 @@ function Shell({
                   onClick={toggle}
                   className="h-8 w-8 rounded-full text-muted-foreground/85 hover:bg-accent/40 hover:text-foreground"
                 >
-                  {theme === "dark" ? (
-                    <Sun className="h-4 w-4" />
-                  ) : (
-                    <Moon className="h-4 w-4" />
-                  )}
+                  <ThemeToggleIcon theme={theme} />
                 </Button>
               )
             }
@@ -2875,6 +2889,7 @@ function Shell({
               }}
             >
               <div
+                data-theme-surface
                 className={cn(
                   "absolute inset-y-0 left-0 h-full w-full overflow-hidden",
                   showHostChrome
@@ -2944,11 +2959,13 @@ function Shell({
                 activeKey={activeKey}
                 loading={loading}
                 titleOverrides={sidebarState.title_overrides}
+                messageCache={threadMessageCache}
                 onSelect={onSelectSearchResult}
               />
             </Suspense>
           ) : null}
         <main ref={managementMain}
+          data-theme-surface
           aria-hidden={managingConnections && remoteConnections?.embeddedManagement || undefined}
           {...(managingConnections && remoteConnections?.embeddedManagement ? { inert: "" } : {})}
           className={cn(
@@ -3004,6 +3021,7 @@ function Shell({
                           <ThreadShell
                             session={activeSession}
                             sessions={sessions}
+                            titleOverrides={sidebarState.title_overrides}
                             title={headerTitle}
                             temporary={temporaryChatRequested}
                             temporaryChatIds={temporaryChatIds}
@@ -3054,6 +3072,7 @@ function Shell({
                         <ThreadShell
                           session={paneSession}
                           sessions={sessions}
+                          titleOverrides={sidebarState.title_overrides}
                           title={pane.title}
                           temporaryChatIds={temporaryChatIds}
                           messageCache={threadMessageCache}
@@ -3111,19 +3130,19 @@ function Shell({
             </div>}
             {view !== "chat" && (
               <div className="absolute inset-0 flex flex-col">
-                {view === "remote" ? <RemoteConnectionsPage
+                {view === "remote" ? <LazyRemoteConnectionsPage
                   mainNavigationExpanded={showMainSidebar && hostSidebarOpen}
                   hostChromeInset={showHostChrome}
                   onBackToChat={onBackToChat}
                 /> : <Suspense fallback={<StartupShell embedded surface={view} sidebarExpanded={hostSidebarOpen} />}>
                   <SettingsView
                     registerExitGuard={registerSettingsExitGuard}
-                    theme={theme}
+                    themePreference={themePreference}
                     initialSection={settingsInitialSection}
                     initialSettings={settingsSnapshot}
                     showSidebar={view === "settings"}
                     mainNavigationExpanded={showMainSidebar && hostSidebarOpen}
-                    onToggleTheme={toggle}
+                    onChangeTheme={setTheme}
                     onBackToChat={onBackToChat}
                     onModelNameChange={onModelNameChange}
                     onSettingsChange={setSettingsSnapshot}
@@ -3145,7 +3164,7 @@ function Shell({
             )}
           </div>
           {managingConnections && !remoteConnections?.embeddedManagement && <div className="absolute inset-0 flex flex-col">
-            <RemoteConnectionsPage
+            <LazyRemoteConnectionsPage
               mainNavigationExpanded={showMainSidebar && hostSidebarOpen}
               hostChromeInset={showHostChrome}
               onBackToChat={() => remoteConnections?.closeManagement()}

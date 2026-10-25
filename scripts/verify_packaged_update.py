@@ -21,19 +21,29 @@ import os
 import platform
 import re
 import secrets
+import signal
 import socket
 import sqlite3
 import subprocess
 import sys
 import time
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 from urllib.parse import quote
 from zipfile import ZIP_DEFLATED, ZipFile
 
+if TYPE_CHECKING:
+    from nanobot.agent.tools._windows_job import WindowsJob
+
 SCENARIOS = ("upgrade", "upgrade-again", "skipped-preview", "import-failure", "restart-failure",
              "backup-failure", "worker-exit", "metadata-loss", "restore-interruption")
+TWO_JOURNEY_SCENARIOS = {"upgrade-again", "import-failure", "restart-failure", "backup-failure",
+                         "metadata-loss", "restore-interruption"}
+# Each lane retains the existing per-command deadlines and cleanup. This outer
+# bound also covers a stuck controller; it is not permission to leave it running.
+LANE_TIMEOUT = 30 * 60
 
 
 def digest(path: Path) -> str:
@@ -68,14 +78,22 @@ class Timings:
                       "seconds": time.perf_counter() - started,
                       "status": "succeeded" if succeeded else "failed"}
             self.records.append(record)
-            # The controller owns this exclusive root before starting any timer.
-            # Replace the checkpoint atomically so a later failed phase cannot
-            # leave a partially written report. This is not a durability/fsync test.
-            temporary = self.output.with_suffix(".tmp")
-            write(temporary, {"schema_version": 1, "clock": "perf_counter", "timings": self.records})
-            temporary.replace(self.output)
+            self.checkpoint()
             label = "/".join(str(value) for value in (scenario, journey, phase) if value is not None)
             print(f"TIMING {label}: {record['seconds']:.3f}s ({record['status']})", flush=True)
+
+    def checkpoint(self) -> None:
+        # Each controller owns its file. The parent imports only settled lane
+        # checkpoints, never raw logs or concurrent writes to a shared report.
+        temporary = self.output.with_suffix(".tmp")
+        write(temporary, {"schema_version": 1, "clock": "perf_counter", "timings": self.records})
+        temporary.replace(self.output)
+
+    def merge(self, source: Path, worker: int) -> None:
+        keys = ("phase", "scenario", "journey", "seconds", "status")
+        self.records.extend({**{key: row[key] for key in keys}, "worker": worker}
+                            for row in read(source)["timings"])
+        self.checkpoint()
 
 
 def replace_once(source: bytes, old: bytes, new: bytes) -> bytes:
@@ -620,28 +638,170 @@ def verify_data(root: Path, expected: str) -> bool:
     return sqlite_expected
 
 
-def run(args) -> dict:
+def isolated_environment(root: Path) -> dict[str, str]:
+    from scripts.verify_installed_release import host_environment
+
+    system = host_environment(dict(os.environ))
+    system.update(HOME=str(root), USERPROFILE=str(root), APPDATA=str(root / "config"),
+                  LOCALAPPDATA=str(root / "data"), XDG_CONFIG_HOME=str(root / "config"),
+                  XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"),
+                  TMPDIR=str(root), TMP=str(root), TEMP=str(root),
+                  PIP_CONFIG_FILE=os.devnull, PIP_NO_INPUT="1", PIP_DISABLE_PIP_VERSION_CHECK="1", PYTHONUTF8="1",
+                  NANOBOT_TUI_NO_DOWNLOAD="1", NO_COLOR="1", PATH=os.defpath)
+    if os.name == "nt":
+        system["PATH"] = str(Path(system["SYSTEMROOT"]) / "System32")
+    return system
+
+
+def scenario_groups(scenarios: list[str], workers: int) -> list[list[str]]:
+    groups: list[list[str]] = [[] for _ in range(min(workers, len(scenarios)))]
+    loads = [0] * len(groups)
+    for scenario in scenarios:
+        lane = min(range(len(groups)), key=loads.__getitem__)
+        groups[lane].append(scenario)
+        loads[lane] += 1 + (scenario in TWO_JOURNEY_SCENARIOS)
+    return groups
+
+
+def check_coverage(results: list[dict], scenarios: list[str]) -> None:
+    if [result["scenario"] for result in results] != scenarios:
+        raise ValueError("Lane report does not cover its assigned scenarios in order")
+    for result in results:
+        if ("subsequent_update" in result) != (result["scenario"] in TWO_JOURNEY_SCENARIOS):
+            raise ValueError("Lane report does not cover every required upgrade journey")
+
+
+def stop_controller(process: subprocess.Popen, owner: WindowsJob | None) -> None:
+    # Tree ownership outlives the controller: an exited supervisor can leave an
+    # installer running. Clear that tree before stopping its detached gateways.
+    if owner is not None:
+        owner.terminate()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process.wait(timeout=15)
+
+
+def cleanup_lane(output: Path, scenarios: list[str]) -> None:
+    """After abnormal controller exit, stop only its explicitly configured gateways."""
+    from scripts.verify_installed_release import _wait_for_closed_listeners
+
+    # Use the controller's installed package, not the potentially interrupted
+    # managed venv. Gateway stop validates the recorded process identity itself.
+    failed = False
+    with (output.parent / "cleanup.log").open("w", encoding="utf-8") as log:
+        for scenario in scenarios:
+            case_root = output / scenario
+            config_file = case_root / "account/.nanobot/config.json"
+            if not config_file.exists():
+                continue
+            try:
+                env = isolated_environment(case_root / "account")
+                env.update(TMPDIR=str(case_root), TMP=str(case_root), TEMP=str(case_root))
+                subprocess.run([sys.executable, "-I", "-B", "-m", "nanobot", "gateway", "stop", "--config",
+                                str(config_file)], env=env, cwd=case_root, stdout=log, stderr=log,
+                               timeout=60, check=True)
+                config = read(config_file)
+                _wait_for_closed_listeners((config["gateway"]["port"], config["channels"]["websocket"]["port"]))
+            except Exception:
+                failed = True
+    if failed:
+        raise RuntimeError("A lane gateway did not finish bounded cleanup")
+
+
+def run_parallel(args, root: Path, target: Path, version: str, original_hash: str,
+                 scenarios: list[str], timings: Timings) -> list[dict]:
+    groups = scenario_groups(scenarios, args.workers)
+    jobs = []
+    failed = False
+    with timings.measure("parallel_total"), ExitStack() as stack:
+        try:
+            deadline = time.monotonic() + LANE_TIMEOUT
+            for worker, selected in enumerate(groups, 1):
+                lane = root / f"lane-{worker}"
+                lane.mkdir(mode=0o700)
+                output = lane / "run"  # The child exclusively creates this root.
+                env = isolated_environment(lane)
+                # Controller dependencies are shared read-only; do not write
+                # bytecode into their environment from either lane.
+                command = [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--wheel", str(target),
+                           "--commit", args.commit, "--output", str(output), "--workers", "1"]
+                if args.baseline_wheel:
+                    command.extend(("--baseline-wheel", str(args.baseline_wheel.resolve(strict=True))))
+                if args.dock:
+                    command.append("--dock")
+                for scenario in selected:
+                    command.extend(("--scenario", scenario))
+                # No child stdout/stderr is replayed. It can contain credentials,
+                # including assertion messages and dynamically issued API tokens.
+                log = stack.enter_context((lane / "controller.log").open("w", encoding="utf-8"))
+                owner = None
+                flags = 0
+                if os.name == "nt":
+                    from nanobot.agent.tools._windows_job import WindowsJob
+
+                    owner = stack.enter_context(closing(WindowsJob.create()))
+                    flags = subprocess.CREATE_NEW_PROCESS_GROUP | owner.creation_flags
+                process = subprocess.Popen(command, env=env, cwd=lane, stdout=log, stderr=log,
+                                           start_new_session=os.name != "nt", creationflags=flags)
+                if owner is not None:
+                    try:
+                        owner.assign_and_resume(process.pid)
+                    except BaseException:
+                        if process.poll() is None:
+                            process.kill()
+                        process.wait(timeout=15)
+                        raise
+                jobs.append((worker, selected, output, process, owner))
+            for worker, _, _, process, _ in jobs:
+                try:
+                    status = process.wait(timeout=max(0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    failed = True
+                    print(f"FAIL lane-{worker}: controller deadline exceeded", flush=True)
+                    break
+                if status:
+                    failed = True
+                    print(f"FAIL lane-{worker}: controller exited with status {status}", flush=True)
+        finally:
+            cleanup_failed = False
+            # Finish or terminate every owned controller before importing JSON.
+            # An ordinary failing lane does not interrupt another lane's cleanup.
+            for _, selected, output, process, owner in jobs:
+                try:
+                    stop_controller(process, owner)
+                    if process.returncode:
+                        cleanup_lane(output, selected)
+                except Exception:
+                    cleanup_failed = True
+            for worker, _, output, _, _ in jobs:
+                checkpoint = output / "packaged-update-timings.json"
+                if checkpoint.exists():
+                    timings.merge(checkpoint, worker)
+            if cleanup_failed:
+                raise RuntimeError("A lane did not finish bounded cleanup")
+        if failed:
+            raise RuntimeError("Packaged update lane failed; raw logs remain private")
+        results = {}
+        for _, selected, output, _, _ in jobs:
+            report = read(output / "packaged-update-report.json")
+            if (report["target_sha256"] != original_hash or report["candidate_commit"] != args.commit
+                    or report["version"] != version):
+                raise ValueError("Lane did not verify the original candidate wheel")
+            check_coverage(report["scenarios"], selected)
+            results.update((result["scenario"], result) for result in report["scenarios"])
+        return [results[scenario] for scenario in scenarios]
+
+
+def run_serial(args, root: Path, target: Path, version: str, original_hash: str,
+               scenarios: list[str], timings: Timings) -> list[dict]:
     from packaging.utils import parse_wheel_filename
     from packaging.version import Version
 
-    # The build environment supplies dependencies for metadata construction only.
-    # All product imports and execution happen in the separately installed wheel.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from scripts.build_tui_wheels import wheel_files
-    from scripts.verify_installed_release import _wait_for_closed_listeners, host_environment
+    from scripts.verify_installed_release import _wait_for_closed_listeners
 
-    target = args.wheel.resolve(strict=True)
-    version = str(parse_wheel_filename(target.name)[1])
-    tags = parse_wheel_filename(target.name)[3]
-    if len(tags) != 1 or any(tag.platform == "any" for tag in tags):
-        raise ValueError("Acceptance requires the final native wheel, not an intermediate universal wheel")
-    files, _, _ = wheel_files(target, version, platform=next(iter(tags)).platform)
-    if files["nanobot/_build_commit.txt"].decode().strip() != args.commit:
-        raise ValueError("Target wheel does not contain the requested candidate commit")
-    original_hash = digest(target)
-    root = args.output.resolve()
-    root.mkdir(mode=0o700)  # Exclusive evidence root. Never use a user's installation.
-    timings = Timings(root / "packaged-update-timings.json")
     environment = root / "managed"
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     base = Version(version).release
@@ -654,25 +814,17 @@ def run(args) -> dict:
         if Version(baseline_version) >= Version(version):
             raise ValueError("Baseline must precede the target")
     results = []
-    system = host_environment(dict(os.environ))
-    system.update(HOME=str(root), USERPROFILE=str(root), APPDATA=str(root / "config"),
-                  LOCALAPPDATA=str(root / "data"), XDG_CONFIG_HOME=str(root / "config"),
-                  XDG_CACHE_HOME=str(root / "cache"), XDG_DATA_HOME=str(root / "data"),
-                  TMPDIR=str(root), TMP=str(root), TEMP=str(root),
-                  PIP_CONFIG_FILE=os.devnull, PIP_NO_INPUT="1", PIP_DISABLE_PIP_VERSION_CHECK="1", PYTHONUTF8="1",
-                  NANOBOT_TUI_NO_DOWNLOAD="1", NO_COLOR="1", PATH=os.defpath)
-    if os.name == "nt":
-        system["PATH"] = str(Path(system["SYSTEMROOT"]) / "System32")
-    # Install once, without inherited user pip settings; every case resets only
-    # nanobot in this private environment. Dependencies stay pinned by its snapshot.
+    system = isolated_environment(root)
+    # Install once per lane, without inherited user pip settings; every case
+    # resets only nanobot. No mutable venv or dependency snapshot crosses lanes.
     with timings.measure("venv"):
-        subprocess.run([sys.executable, "-I", "-m", "venv", str(environment)], check=True, env=system, timeout=90)
+        subprocess.run([sys.executable, "-I", "-B", "-m", "venv", str(environment)], check=True, env=system, timeout=90)
     with timings.measure("initial_dependency_install"):
         subprocess.run([str(python), "-I", "-m", "pip", "install", "--only-binary=:all:", str(target)],
                        check=True, env=system, timeout=600, stdout=subprocess.DEVNULL)
     write(environment / "nanobot-install.json", {"schema_version": 1, "owner": "nanobot-installer",
                                                "environment": str(environment), "extras": []})
-    for scenario in args.scenario or SCENARIOS:
+    for scenario in scenarios:
         with timings.measure("scenario_total", scenario=scenario):
             with timings.measure("fixture", scenario=scenario, journey=1):
                 case_root = root / scenario
@@ -747,15 +899,6 @@ def run(args) -> dict:
                         assert result["subsequent_update"]["phase"] == "succeeded"
                         write(case_root / "result.json", result)
                     results.append(result)
-                except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                    log.flush()
-                    tail = (case_root / "acceptance.log").read_text(encoding="utf-8", errors="replace")[-8192:]
-                    config_file = account / ".nanobot/config.json"
-                    if config_file.exists():
-                        token = read(config_file)["channels"]["websocket"]["tokenIssueSecret"]
-                        tail = tail.replace(token, "[redacted]")
-                    print(tail, file=sys.stderr)
-                    raise
                 finally:
                     with timings.measure("cleanup", scenario=scenario):
                         subprocess.run([str(python), "-I", "-m", "nanobot", "gateway", "stop", "--config",
@@ -776,11 +919,42 @@ def run(args) -> dict:
                                 _wait_dock(Path(dock_address), present=False)
                                 results[-1]["dock_stopped"] = True
             print(f"PASS {scenario}: {results[-1]['phase']}", flush=True)
+    return results
+
+
+def run(args) -> dict:
+    from packaging.utils import parse_wheel_filename
+
+    # The build environment supplies dependencies for metadata construction only.
+    # Product phases run in the separately installed wheel, never this checkout.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.build_tui_wheels import wheel_files
+
+    target = args.wheel.resolve(strict=True)
+    _, parsed_version, _, tags = parse_wheel_filename(target.name)
+    version = str(parsed_version)
+    if len(tags) != 1 or any(tag.platform == "any" for tag in tags):
+        raise ValueError("Acceptance requires the final native wheel, not an intermediate universal wheel")
+    files, _, _ = wheel_files(target, version, platform=next(iter(tags)).platform)
+    if files["nanobot/_build_commit.txt"].decode().strip() != args.commit:
+        raise ValueError("Target wheel does not contain the requested candidate commit")
+    original_hash = digest(target)
+    scenarios = list(args.scenario or SCENARIOS)
+    if len(set(scenarios)) != len(scenarios):
+        raise ValueError("Select each scenario only once")
+    root = args.output.resolve()
+    root.mkdir(mode=0o700)  # Exclusive evidence root. Never use a user's installation.
+    timings = Timings(root / "packaged-update-timings.json")
+    workers = min(args.workers, len(scenarios))
+    runner = run_parallel if workers > 1 else run_serial
+    results = runner(args, root, target, version, original_hash, scenarios, timings)
+    check_coverage(results, scenarios)
     assert digest(target) == original_hash
     return {"platform": platform.system(), "machine": platform.machine(), "python": platform.python_version(),
             "target_sha256": original_hash, "candidate_commit": args.commit, "version": version,
             "release_transport": "local fixture; no public-download proof", "interactive_ui_e2e": False,
-            "release_approval": "private unsigned fixture; not signature acceptance",
+            "release_approval": "private unsigned fixture; not signature acceptance", "workers": workers,
+            "scenario_count": len(results), "journey_count": sum(1 + ("subsequent_update" in result) for result in results),
             "scenarios": results}
 
 
@@ -791,9 +965,13 @@ def main() -> None:
     parser.add_argument("--commit")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--scenario", action="append", choices=SCENARIOS)
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Maximum independent lanes, each with its own installation (default: 1)")
     parser.add_argument("--dock", action="store_true", help="Verify native macOS background Dock lifecycle")
     parser.add_argument("--phase", choices=("prepare", "verify"), help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.workers < 1:
+        parser.error("--workers must be positive")
     if not sys.flags.isolated:
         parser.error("Run with python -I")
     if args.dock and sys.platform != "darwin":
@@ -808,8 +986,13 @@ def main() -> None:
         return
     if not args.wheel or not args.commit:
         parser.error("--wheel and --commit are required")
-    result = run(args)
-    write(args.output / "packaged-update-report.json", result)
+    try:
+        result = run(args)
+        write(args.output / "packaged-update-report.json", result)
+    except Exception as error:
+        # Exception values/commands can include temporary credentials. Only the
+        # structured checkpoints and this safe class name may leave the account.
+        raise SystemExit(f"Packaged update verification failed ({type(error).__name__}); raw logs remain private") from None
 
 
 if __name__ == "__main__":

@@ -117,7 +117,7 @@ jobs:
         run: |
           python -I scripts/verify_packaged_update.py \
             --wheel "$ACCEPTANCE_WHEEL" --commit "$ACCEPTANCE_COMMIT" \
-            --output "$RUNNER_TEMP/packaged-update"
+            --output "$RUNNER_TEMP/packaged-update" --workers 2
 
       # Raw acceptance logs contain disposable credentials. Export only structured evidence.
       - name: Retain native acceptance evidence
@@ -131,5 +131,6 @@ jobs:
             ${{ runner.temp }}/packaged-update/packaged-update-report.json
             ${{ runner.temp }}/packaged-update/packaged-update-timings.json
             ${{ runner.temp }}/packaged-update/*/result.json
+            ${{ runner.temp }}/packaged-update/lane-*/run/*/result.json
           if-no-files-found: error
           retention-days: 3

@@ -737,6 +737,9 @@ class AgentLoop:
 
         runtime_control = AgentRuntimeControl(self)
         self.register_runtime_context_provider(runtime_control.workspace_context)
+        self.register_runtime_context_provider(
+            partial(turn_continuation.iteration_limit_context, self.sessions.state),
+        )
         ctx = ToolContext(
             config=self.tools_config,
             network=self.network_config,
@@ -1885,7 +1888,7 @@ class AgentLoop:
                         pending_queue=pending,
                         delivery=delivery,
                     )
-                    continuing = turn_continuation.internal_continuation_pending(msg.metadata)
+                    continuing = delivery.continuation_pending
                     await delivery.complete(
                         response,
                         publish_completion=not continuing,
@@ -1895,6 +1898,8 @@ class AgentLoop:
                         coordinator.complete(msg, response=response)
                 except asyncio.CancelledError:
                     logger.info("Task cancelled for session {}", session_key)
+                    # The queued continuation is cancelled with this session worker.
+                    delivery.continuation_pending = False
                     try:
                         await delivery.abort_stream()
                     except Exception:
@@ -1927,15 +1932,11 @@ class AgentLoop:
                     logger.opt(exception=log_content).error(
                         "Error processing message for session {}", session_key,
                     )
-                    await delivery.fail(
-                        publish_completion=not turn_continuation.internal_continuation_pending(
-                            msg.metadata
-                        )
-                    )
+                    await delivery.fail(publish_completion=not delivery.continuation_pending)
                     for coordinator in self._automation_turn_coordinators:
                         coordinator.complete(msg, error=exc)
                 finally:
-                    if not turn_continuation.internal_continuation_pending(msg.metadata):
+                    if not delivery.continuation_pending:
                         await delivery.idle()
         except asyncio.CancelledError:
             if not completion_published and self.commands.requires_session_queue(command_text(msg)):
@@ -2537,7 +2538,7 @@ class AgentLoop:
         ctx.delivery.record_usage(result.round_usages)
         if ctx.kind is TurnKind.USER:
             current = await self.sessions.state.read_metadata(ctx.session_key)
-            await turn_continuation.maybe_continue_turn(
+            ctx.delivery.continuation_pending = await turn_continuation.maybe_continue_turn(
                 ctx, session_metadata=current["metadata"] if current else {},
             )
 
@@ -2565,6 +2566,11 @@ class AgentLoop:
         turn_continuation.prepare_save_boundary(ctx)
         if ctx.usage is not None and not ctx.ephemeral:
             session.metadata["_last_usage"] = ctx.usage.to_dict()
+        if ctx.kind is TurnKind.USER and not ctx.ephemeral:
+            turn_continuation.record_iteration_limit(
+                session.metadata, ctx.stop_reason,
+                continuation_pending=ctx.delivery.continuation_pending,
+            )
         self._save_turn(
             session, ctx.all_messages, ctx.save_skip,
             turn_latency_ms=ctx.turn_latency_ms,

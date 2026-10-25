@@ -372,7 +372,8 @@
     "brand": "nanobot",
     "loading": {
       "connecting": "Đang kết nối tới nanobot…",
-      "boot": "Đang tải nanobot…"
+      "boot": "Đang tải nanobot…",
+      "failed": "Không thể tải giao diện này. Hãy quay lại hoặc tải lại trang để thử lại."
     },
     "error": {
       "title": "Không thể kết nối tới nanobot",
@@ -443,7 +444,7 @@
     "collapse": "Thu gọn thanh bên",
     "newChat": "Chủ đề mới",
     "searchAria": "Tìm kiếm",
-    "searchPlaceholder": "Tìm kiếm",
+    "searchPlaceholder": "Tìm trong nội dung đã tải",
     "searchResults": "Kết quả",
     "noSearchResults": "Không có chủ đề phù hợp.",
     "recent": "Chủ đề gần đây",
@@ -642,6 +643,28 @@
       "completed": "Tác vụ đã hoàn tất. Nhấp để xem kết quả.",
       "failed": "Tác vụ thất bại. Nhấp để xem chi tiết.",
       "interrupted": "Tác vụ cần chú ý. Nhấp để tiếp tục."
+    },
+    "appearance": {
+      "system": "Theo hệ thống",
+      "reading": "Đọc",
+      "readingHelp": "Điều chỉnh tin nhắn, mã và ô soạn thảo, không thay đổi phần điều hướng.",
+      "custom": "Tùy chỉnh",
+      "customSize": "Cỡ chữ tùy chỉnh",
+      "customRange": "Nhập số nguyên từ {{min}} đến {{max}} px.\nMã thay đổi theo cỡ chữ; ô nhập liệu luôn giữ tối thiểu 16px.",
+      "customInvalid": "Hãy dùng số nguyên từ {{min}} đến {{max}} px.\nCỡ chữ vẫn giữ ở {{size}} px.",
+      "small": "Nhỏ",
+      "standard": "Tiêu chuẩn",
+      "large": "Lớn",
+      "preview": "Xem trước trực tiếp",
+      "previewText": "**Một chút không gian để suy nghĩ.**\n\nCâu chữ rõ ràng, đọc thật thoải mái. Biến không gian này thành của riêng bạn.",
+      "previewPlaceholder": "Chúng ta nên bắt đầu từ đâu?",
+      "process": "Hiển thị hoạt động",
+      "processHelp": "Chọn mức độ chi tiết hiển thị khi nanobot làm việc.",
+      "autoHelp": "Hiển thị tiến độ khi đang làm việc và thu gọn khi hoàn tất.",
+      "expandedHelp": "Mặc định mở rộng chi tiết hoạt động.",
+      "summaryHelp": "Hiển thị các tệp đã thay đổi và số dòng.",
+      "diffHelp": "Hiển thị thay đổi mã ngay trong cuộc trò chuyện.",
+      "collapsedHelp": "Thu gọn thay đổi mã cho đến khi bạn mở ra."
     },
     "readingTextSize": {
       "small": "Cỡ chữ đọc nhỏ",
@@ -1577,14 +1600,14 @@
       "notSignedIn": "Chưa đăng nhập",
       "localCodeHelp": "Hoàn tất đăng nhập trong trình duyệt. nanobot thường tự động hoàn tất; nếu không, hãy dán mã ủy quyền bên dưới.",
       "remoteCodeHelp": "Chọn Đăng nhập để mở xAI trên máy tính của bạn. Sau khi đăng nhập, hãy dán mã ủy quyền do xAI hiển thị bên dưới.",
-      "localCallbackHelp": "Hoàn tất đăng nhập trong trình duyệt. nanobot thường tự động hoàn tất; nếu không, hãy sao chép URL callback localhost đầy đủ từ thanh địa chỉ và dán vào bên dưới.",
-      "remoteCallbackHelp": "Mở ChatGPT trong trình duyệt này và hoàn tất đăng nhập. Khi trang localhost không tải được, hãy sao chép URL đầy đủ từ thanh địa chỉ và dán vào bên dưới.",
+      "localCallbackHelp": "Hoàn tất đăng nhập trong trình duyệt. Nếu nanobot không tự động kết nối, hãy sao chép URL đầy đủ từ thanh địa chỉ của trang localhost, ngay cả khi trang không tải được, dán vào bên dưới rồi chọn “Hoàn tất đăng nhập”.",
+      "remoteCallbackHelp": "Mở ChatGPT trong trình duyệt này và hoàn tất đăng nhập. Khi chuyển đến trang localhost, hãy sao chép URL đầy đủ từ thanh địa chỉ, ngay cả khi trang không tải được, dán vào bên dưới rồi chọn “Hoàn tất đăng nhập”.",
       "authorizationCode": "Mã ủy quyền",
       "callbackUrl": "URL callback",
-      "callbackUrlPlaceholder": "http://localhost:1455/auth/callback?code=…&state=…",
+      "callbackUrlPlaceholder": "Dán URL callback đầy đủ vào đây",
       "openChatGPT": "Mở ChatGPT",
       "pasteCallbackToContinue": "Dán URL callback để tiếp tục.",
-      "waitingForCallback": "Đang chờ callback từ trình duyệt…",
+      "waitingForCallback": "Đang chờ hoàn tất đăng nhập…",
       "finishSignIn": "Hoàn tất đăng nhập"
     },
     "skills": {
@@ -1920,7 +1943,6 @@
       "placeholderThread": "Nhập tin nhắn…",
       "placeholderHero": "Mô tả điều bạn muốn làm",
       "placeholderOpening": "Đang mở chủ đề mới…",
-      "placeholderStreaming": "Mô hình đang trả lời…",
       "inputAria": "Ô nhập tin nhắn",
       "goalStateStrip": "Mục tiêu: {{label}}",
       "goalStateFallback": "Mục tiêu",
@@ -2156,6 +2178,7 @@
     "imageAttachment": "Tệp hình ảnh đính kèm",
     "videoAttachment": "Tệp video đính kèm",
     "fileAttachment": "Tệp đính kèm",
+    "downloadAttachment": "Tải xuống {{name}}",
     "attachmentUnavailable": "Tệp đính kèm không khả dụng",
     "dataTable": "Bảng dữ liệu",
     "fileEditPreparing": "Đang chuẩn bị sửa tệp…",
