@@ -1,7 +1,7 @@
 """FORK: the fork's per-turn "Tools used:" summary must reach WebUI/TUI
 clients tagged with ``kind: "tools_summary"`` so they can keep it out of the
-activity-to-answer grouping (see nanobot/channels/websocket/runtime.py,
-`send_projected_message`). A message without the ``_tools_summary`` metadata
+activity-to-answer grouping (see nanobot/webui/outbound_delivery.py,
+`_send_message`). A message without the ``_tools_summary`` metadata
 marker must be unaffected and keep emitting no ``kind`` at all.
 """
 
@@ -95,13 +95,14 @@ async def test_tools_summary_is_persisted_with_answer_phase() -> None:
     mock_ws = AsyncMock()
     channel._attach(mock_ws, "chat-phase")
     captured: dict[str, Any] = {}
-    original = channel._persist_turn_transcript_event
+    outbound = channel._outbound
+    original = outbound._persist_turn_transcript_event
 
     def _capture(*args: Any, **kwargs: Any) -> Any:
         captured.update(kwargs)
         return original(*args, **kwargs)
 
-    channel._persist_turn_transcript_event = _capture  # type: ignore[method-assign]
+    outbound._persist_turn_transcript_event = _capture  # type: ignore[method-assign]
 
     await channel.send(OutboundMessage(
         channel="websocket",
@@ -115,17 +116,12 @@ async def test_tools_summary_is_persisted_with_answer_phase() -> None:
 
 async def test_tools_summary_kind_survives_history_replay(tmp_path) -> None:
     """FORK: the thread endpoint must replay the summary with its kind so the
-    WebUI keeps it out of the activity-to-answer grouping after a reload. Covers
-    both durable paths: the live recorder append and the once-only import of
-    legacy ``~/.nanobot/webui/*.jsonl`` transcripts that already carry the kind
-    (an unknown kind there aborts the whole import)."""
+    WebUI keeps it out of the activity-to-answer grouping after a reload
+    (upstream removed the legacy ``~/.nanobot/webui/*.jsonl`` import, so only the
+    live recorder append path remains)."""
     from nanobot.session.display_history import HistoryKind
     from nanobot.session.manager import SessionManager
-    from nanobot.webui.history import (
-        HISTORY_IMPORT_MARKER,
-        collect_legacy_history,
-        fact_from_record,
-    )
+    from nanobot.webui.history import fact_from_record
     from nanobot.webui.transcript import (
         WEBUI_TRANSCRIPT_SCHEMA_VERSION,
         build_webui_thread_response,
@@ -144,22 +140,14 @@ async def test_tools_summary_kind_survives_history_replay(tmp_path) -> None:
 
     assert fact_from_record(records("x")[2]).kind is HistoryKind.TOOLS_SUMMARY
 
-    legacy = tmp_path / "legacy"
-    legacy.mkdir()
-    (legacy / f"{SessionManager.safe_key('websocket:legacy')}.jsonl").write_text(
-        "".join(json.dumps(r) + "\n" for r in records("legacy")), encoding="utf-8",
-    )
     sessions = SessionManager(tmp_path / "workspace", sessions_root=tmp_path / "sessions")
-    await sessions.state.migrate_history(
-        HISTORY_IMPORT_MARKER, lambda rows: collect_legacy_history(rows, directory=legacy),
-    )
     live = await sessions.state.get("websocket:live")
     await sessions.state.finish_turn(live)
     await sessions.state.append_history(
         live.key, [fact_from_record(r) for r in records("live")], expected_generation=live.generation,
     )
 
-    for key in ("websocket:legacy", "websocket:live"):
+    for key in ("websocket:live",):
         body = await sessions.state.project_history(
             key, lambda history, key=key: build_webui_thread_response(key, history=history),
         )
