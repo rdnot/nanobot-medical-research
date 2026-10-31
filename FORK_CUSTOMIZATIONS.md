@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified October 26, 2026 — upstream `83b611284`, merge main `49adfd78c`)
+## Customizations (verified October 31, 2026 — upstream `8b37976d3` (0.4.0), merge main `967ccadc2`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
@@ -47,10 +47,11 @@ is marked `# UPSTREAM` where that helps during merges.
 - `_dispatch_command` skips persisting the command turn for `/c` as it does for `/new`
   (both reset the session; persisting into the reset session would conflict).
 
-### `nanobot/channels/websocket/runtime.py`, WebUI and TUI (`tools_summary` kind)
-- `send_projected_message` tags the summary (`_tools_summary` metadata) with
-  `kind: "tools_summary"`, persisted with phase `answer`. WebSocket only; other channels
-  receive a normal message.
+### `nanobot/webui/outbound_delivery.py`, WebUI and TUI (`tools_summary` kind)
+- `WebUIOutboundDelivery._send_message` (upstream moved WebSocket message serialization out of
+  `channels/websocket/runtime.py`) tags the summary (`_tools_summary` metadata) with
+  `kind: "tools_summary"`, persisted with phase `answer`; `outbound_wire.MessageWirePayload.kind`
+  allows the value. WebSocket only; other channels receive a normal message.
 - WebUI: `types.ts` (kind unions), `thread-event-projection.ts` (own assistant bubble, does not
   close the active answer), `activity-timeline.ts` (hard boundary like `compaction`, so the
   summary is never merged into the answer) and `components/thread/ThreadMessages.tsx`
@@ -64,7 +65,9 @@ is marked `# UPSTREAM` where that helps during merges.
   same as the live wire.
 
 ### `nanobot/agent/turn_hooks.py`
-- `AgentTurnHookSpec.progress_hook` lets the loop supply the fork hook subclass.
+- `AgentTurnHookSpec.progress_hook` lets the loop supply the fork hook subclass. (Upstream moved
+  tool-hint rendering into the channels, so neither the spec nor the fork hook carries
+  `tool_hint_max_length` any more.)
 
 ### `nanobot/agent/tools/context.py`
 - `ToolContext.max_output_tokens` (fork field).
@@ -101,7 +104,8 @@ is marked `# UPSTREAM` where that helps during merges.
 - `AgentDefaults.max_tool_result_chars` 400,000 (upstream 16,000).
 
 ### `nanobot/providers/base.py`
-- `LLMProvider._CHAT_RETRY_DELAYS = (1, 2, 4, 8, 16)` (upstream `(1, 2, 4)`).
+- `LLMProvider._CHAT_RETRY_DELAYS = (1, 2, 4, 8, 16)` (upstream `(1, 2, 4)`). Upstream's jittered
+  backoff (`random.uniform(base / 2, base)`) applies on top of the fork ladder.
 
 ### `pyproject.toml` / `Dockerfile`
 - Core dependencies (not an extra, so `uv sync`/`pip install -e .` always carry them):
@@ -133,7 +137,7 @@ is marked `# UPSTREAM` where that helps during merges.
   `test_web_fetch_url_sanitization.py`, `test_private_tool_logging.py`,
   `test_tool_descriptions.py`, `test_filesystem_tools.py`, `test_read_enhancements.py`,
   retry-count tests (`tests/providers/test_provider_retry.py`,
-  `tests/agent/test_runner_fallback.py`), WebUI settings tests (`use_jina_reader` default),
+  `tests/agent/test_runner_fallback.py` — jitter bounds asserted against the fork ladder), WebUI settings tests (`use_jina_reader` default),
   outbound collectors that skip `_tools_summary` (`tests/cron/test_cron_reply_contract.py`,
   `tests/webui/test_automation_chat_binding.py`), and the image media-type case test in
   `test_web_fetch_security.py` (one request, no httpx image preflight; params dropped).
