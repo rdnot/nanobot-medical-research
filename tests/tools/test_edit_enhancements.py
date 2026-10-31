@@ -1,6 +1,3 @@
-"""Tests for EditFileTool enhancements: read-independent editing, path suggestions,
-notebook JSON editing, and create-file semantics."""
-
 import asyncio
 import os
 
@@ -10,16 +7,8 @@ from nanobot.agent.tools import file_state
 from nanobot.agent.tools.apply_patch import ApplyPatchTool
 from nanobot.agent.tools.filesystem import EditFileTool, ReadFileTool
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Read-independent editing
-# ---------------------------------------------------------------------------
 
 class TestEditReadTracking:
-    """edit_file validates current contents independently of prior reads."""
 
     @pytest.fixture()
     def file_states(self):
@@ -58,9 +47,8 @@ class TestEditReadTracking:
         f = tmp_path / "a.py"
         f.write_text("hello world", encoding="utf-8")
         await read_tool.execute(path=str(f))
-        # Ensure mtime changes for filesystems with coarse timestamp resolution
+        # FORK: ensure mtime changes on filesystems with coarse timestamp resolution
         await asyncio.sleep(0.05)
-        # External modification
         mtime = f.stat().st_mtime
         f.write_text("hello universe", encoding="utf-8")
         os.utime(f, (mtime + 2, mtime + 2))
@@ -81,12 +69,7 @@ class TestEditReadTracking:
         assert f.read_text() == "hello earth"
 
 
-# ---------------------------------------------------------------------------
-# Create-file semantics
-# ---------------------------------------------------------------------------
-
 class TestEditCreateFile:
-    """edit_file with old_text='' creates new file if not exists."""
 
     @pytest.fixture()
     def tool(self, tmp_path):
@@ -106,7 +89,6 @@ class TestEditCreateFile:
         f.write_text("existing content", encoding="utf-8")
         result = await tool.execute(path=str(f), old_text="", new_text="new content")
         assert "Error" in result or "already exists" in result.lower()
-        # File should be unchanged
         assert f.read_text() == "existing content"
 
     @pytest.mark.asyncio
@@ -118,12 +100,7 @@ class TestEditCreateFile:
         assert f.read_text() == "print('hi')"
 
 
-# ---------------------------------------------------------------------------
-# .ipynb editing
-# ---------------------------------------------------------------------------
-
 class TestEditIpynbFiles:
-    """edit_file edits notebooks as normal JSON files."""
 
     @pytest.fixture()
     def tool(self, tmp_path):
@@ -142,12 +119,7 @@ class TestEditIpynbFiles:
         assert f.read_text(encoding="utf-8") == '{"cells": [{"cell_type": "markdown", "source": "hi"}]}'
 
 
-# ---------------------------------------------------------------------------
-# Path suggestion on not-found
-# ---------------------------------------------------------------------------
-
 class TestEditPathSuggestion:
-    """edit_file should suggest similar paths on not-found."""
 
     @pytest.fixture()
     def tool(self, tmp_path):
@@ -157,7 +129,6 @@ class TestEditPathSuggestion:
     async def test_suggests_similar_filename(self, tool, tmp_path):
         f = tmp_path / "config.py"
         f.write_text("x = 1", encoding="utf-8")
-        # Typo: conifg.py
         result = await tool.execute(
             path=str(tmp_path / "conifg.py"), old_text="x = 1", new_text="x = 2",
         )
