@@ -1,5 +1,3 @@
-"""Turn-scoped hook assembly for agent runs."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -30,9 +28,8 @@ class AgentTurnHookSpec:
     metadata: dict[str, Any] | None = None
     session_key: str | None = None
     workspace: Path | None = None
-    tool_hint_max_length: int = 40
     # FORK: optional pre-built progress hook (subclass of AgentProgressHook)
-    # with extra behavior (force_final_threshold, all_tool_calls_log, _tool_hint).
+    # with extra behavior (force_final_threshold, all_tool_calls_log).
     # When provided, it replaces the plain AgentProgressHook that upstream builds.
     progress_hook: AgentHook | None = None
     registered_hook_factories: list[AgentTurnHookFactory] = field(default_factory=list)
@@ -56,7 +53,6 @@ def build_agent_turn_hook(spec: AgentTurnHookSpec) -> AgentHook:
             events=spec.events,
             streaming=spec.streaming,
             session_key=spec.session_key,
-            tool_hint_max_length=spec.tool_hint_max_length,
             log_content=log_content,
         )
     if spec.ephemeral and not spec.run_extra_hooks_for_ephemeral:

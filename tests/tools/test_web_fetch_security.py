@@ -141,7 +141,6 @@ async def test_web_fetch_blocks_localhost_even_in_full_workspace_scope(tmp_path)
 
 @pytest.mark.asyncio
 async def test_web_fetch_result_contains_untrusted_flag(monkeypatch: pytest.MonkeyPatch):
-    """When fetch succeeds, result JSON must include untrusted=True and the banner."""
     tool = WebFetchTool()
     _patch_web_fetch_fake_client(monkeypatch)
 

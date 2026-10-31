@@ -116,6 +116,8 @@ export interface UIMessage {
   id: string;
   role: Role;
   content: string;
+  /** Literal output bypasses Markdown and content-based reply recognition. */
+  renderAs?: "text";
   /** Invocation-time snapshots, never resolved from today's model presets. */
   responseSources?: ResponseSource[];
   kind?: MessageKind;
@@ -129,7 +131,6 @@ export interface UIMessage {
   toolEvents?: ToolProgressEvent[];
   /** Oversized persisted trace content that can be fetched when activity is expanded. */
   traceDetail?: UITraceDetail;
-  /** Activity rows: explicit file edits emitted by edit tools. */
   fileEdits?: UIFileEdit[];
   /** Activity rows created during the same agent phase share one collapsible block. */
   activitySegmentId?: string;
@@ -142,7 +143,6 @@ export interface UIMessage {
   compactReply?: "empty" | "failed";
   /** User turn: optimistic blob URLs for preview. Replay: placeholder chips. */
   images?: UIImage[];
-  /** Signed or local UI-renderable media attachments. */
   media?: UIMediaAttachment[];
   /** App-specific CLI adapters explicitly attached to this user turn. */
   cliApps?: UICliAppAttachment[];
@@ -154,8 +154,6 @@ export interface UIMessage {
    * incrementally from ``reasoning_delta`` frames; finalized when
    * ``reasoning_end`` arrives. */
   reasoning?: string;
-  /** True while ``reasoning_delta`` frames are still arriving for this turn.
-   * Drives the shimmer header on ``ReasoningBubble``. */
   reasoningStreaming?: boolean;
   /** End-to-end wall time for this assistant turn (persisted ``latency_ms`` / ``turn_end``). */
   latencyMs?: number;
@@ -182,7 +180,6 @@ export interface UIMessage {
   reasoningStreamId?: string;
   /** Ephemeral delivery lifecycle for optimistic user messages. */
   deliveryStatus?: MessageDeliveryStatus;
-  /** Structured rejection reason shown with a failed optimistic message. */
   deliveryErrorKind?: MessageDeliveryErrorKind;
 }
 
@@ -395,7 +392,6 @@ interface AgentUIBlob {
   data?: unknown;
 }
 
-/** WebSocket snapshot for sustained goals (`goal_state` events; keyed by ``chat_id``). */
 export interface GoalStateWsPayload {
   active: boolean;
   status?: "active" | "blocked";
@@ -458,7 +454,7 @@ export interface ChatSummary {
   /** Durable recovery state that needs attention after an interrupted turn. */
   recoveryState?: RecoveryState | null;
   workspaceScope?: WorkspaceScopePayload | null;
-  /** Server-owned project binding after the first accepted user message. */
+  /** Persisted sessions keep their project; only unpersisted drafts can change it. */
   projectLocked?: boolean;
   /** Stable, server-owned @handle for this session. */
   handle?: SessionHandle | null;
@@ -1517,6 +1513,7 @@ export type InboundEvent =
       event: "message";
       chat_id: string;
       text: string;
+      render_as?: "text";
       reply_to?: string;
       media?: string[];
       media_urls?: Array<{ url: string; name?: string; kind?: UIMediaKind }>;
@@ -1708,7 +1705,6 @@ export interface OutboundMcpPresetMention {
   brand_color?: string | null;
 }
 
-/** Response shape for ``GET .../webui-thread`` (server-built transcript replay). */
 interface WebuiThreadPagePayload {
   before_cursor?: string | null;
   has_more_before?: boolean;
@@ -1799,6 +1795,7 @@ export type Outbound =
       session_mentions?: SessionMention[];
       quoted_context?: string;
       intent?: "create_automation";
+      user_shell?: true;
       workspace_scope?: WorkspaceScopePayload;
       turn_id?: string;
       /** Marks messages sent by the embedded WebUI, without changing the
