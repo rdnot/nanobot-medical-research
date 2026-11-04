@@ -11,6 +11,8 @@ type Role = "user" | "assistant" | "tool" | "system";
 type MessageKind = "message" | "trace" | "compaction" | "tools_summary";
 
 export interface UIContextCompaction extends ContextCompaction {
+  /** Lifecycle event sequence, independent of the row's display position. */
+  turnSeq?: number;
   /** Live wire transitions announce; hydrated transcript rows stay silent. */
   announce?: boolean;
 }
@@ -181,6 +183,22 @@ export interface UIMessage {
   /** Ephemeral delivery lifecycle for optimistic user messages. */
   deliveryStatus?: MessageDeliveryStatus;
   deliveryErrorKind?: MessageDeliveryErrorKind;
+}
+
+/** Turn-owned telemetry, not a transcript row or body-history source. */
+export interface UIModelRequestSnapshot {
+  runId: string;
+  sequence: number;
+  turnSeq?: number;
+  retiredRunIds: string[];
+  createdAt: number;
+  completedAt?: number;
+  /** Last turn sequence reporting fresh context usage. */
+  usageTurnSeq?: number;
+  ended?: boolean;
+  usage?: TurnUsage;
+  roundUsages?: RoundUsage[];
+  contextWindowTokens?: number;
 }
 
 export interface UICliAppAttachment {
@@ -1589,6 +1607,17 @@ export type InboundEvent =
       reauth_provider?: string;
     }
   | ({
+      event: "model_request";
+      chat_id: string;
+      request_id: string;
+      run_id: string;
+      sequence: number;
+      phase: "started" | "completed" | "failed" | "cancelled";
+      usage?: TurnUsage;
+      round_usages?: RoundUsage[];
+      context_window_tokens?: number;
+    } & InboundTurnMetadata)
+  | ({
       event: "turn_end";
       chat_id: string;
       latency_ms?: number;
@@ -1655,6 +1684,7 @@ export type InboundEvent =
     };
 
 type ThreadProjectionEventName =
+  | "model_request"
   | "user_message"
   | "message"
   | "file_edit"
