@@ -6,7 +6,7 @@ import pytest
 
 from agent.session_helpers import run_session, stop_loop, visible_message
 from nanobot.agent.automation_turns import AutomationTurnError
-from nanobot.agent.loop import AgentLoop
+from nanobot.agent.loop import _FORCE_FINAL_PROMPT, AgentLoop  # FORK: notice text
 from nanobot.agent.tools.context import current_request_context
 from nanobot.agent.tools.cron import CronTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
@@ -633,7 +633,13 @@ async def test_active_goal_prioritizes_real_followup_before_internal_prompt(loop
             while not requests or "cli:test" in loop._pending_queues:
                 await asyncio.sleep(0.01)
         assert len(requests) == (2 if complete_on_followup else 3)
-        assert visible_message(requests[1][-1])["content"] == "Inspect file B first"
+        # FORK: the force-final notice is a hidden-history user message that can
+        # trail the real followup in the same request — assert on the followup.
+        followup = next(
+            m for m in reversed(requests[1])
+            if m.get("role") == "user" and m.get("content") != _FORCE_FINAL_PROMPT
+        )
+        assert visible_message(followup)["content"] == "Inspect file B first"
         if not complete_on_followup:
             assert is_hidden_history_message(requests[2][-1])
             assert "Please continue working toward the objective" in requests[2][-1]["content"]
