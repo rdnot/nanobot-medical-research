@@ -102,6 +102,15 @@ is marked `# UPSTREAM` where that helps during merges.
   `SessionManager.save()` refuses once the async session owner runs); `/rerun` (`cmd_rerun`: runs `workspace/rerun.bat`,
   intentionally unsandboxed); help text entries.
 
+### `nanobot/agent/loop.py` — `_cancel_active_tasks`
+- Skips `asyncio.current_task()` when cancelling a session's tasks. `/c` and `/new`
+  dispatched on an idle session run ON the session worker, and the worker delivers the
+  command's own confirmation; cancelling it dropped the reply on every gateway channel
+  (discord, whatsapp, websocket showed typing/turn_end but no text; CLI one-shot mode
+  dispatches outside the gateway). Mirrors `_aclose_unlocked`'s self-exclusion; other
+  tracked tasks, subagents and exec sessions are still cancelled
+  (`tests/command/test_fork_clear_command.py::test_session_command_reply_survives_own_worker`).
+
 ### `nanobot/channels/whatsapp/runtime.py`
 - `_markdown_to_whatsapp()` applied in `WhatsAppChannel.send`.
 
