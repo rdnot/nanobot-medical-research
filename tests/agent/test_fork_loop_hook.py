@@ -73,6 +73,13 @@ async def test_before_execute_tools_logs_dict_arguments_only():
     ]
 
 
+def test_fork_hook_forwards_upstream_workspace(tmp_path):
+    # Upstream progress hook tracks per-tool workspaces; the fork subclass must forward it.
+    hook = _ForkProgressHook(force_final_threshold=5, workspace=tmp_path)
+    assert hook._workspace == tmp_path
+    assert _ForkProgressHook(force_final_threshold=5)._workspace is None
+
+
 def test_build_tools_summary_uses_real_tool_argument_names():
     summary = AgentLoop._build_tools_summary([
         {"name": "web_search", "arguments": {"query": "pneumonia guidelines"}},
