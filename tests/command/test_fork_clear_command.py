@@ -1,12 +1,13 @@
 """FORK: /c clears the session without memory consolidation."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
+from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import GenerationSettings, LLMResponse
 
@@ -49,4 +50,50 @@ async def test_clear_command_resets_live_session_without_archiving(tmp_path: Pat
     assert "session cleared" in response.content.lower()
     assert (await loop.sessions.state.get("cli:test")).messages == []
     archive.assert_not_called()
+    await loop.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command,needle",
+    [("/c", "session cleared"), ("/new", "new session started")],
+)
+async def test_session_command_reply_survives_own_worker(
+    tmp_path: Path, command: str, needle: str
+) -> None:
+    """FORK: /c and /new dispatched on an idle session run on its worker.
+
+    On chat channels (discord, whatsapp) an idle session has no pending queue,
+    so the gateway enqueues the command and the session worker itself runs it.
+    The command cancels the session's active tasks as its first action; before
+    the fix that included the worker delivering the command's own confirmation,
+    so the channel only showed the typing indicator and never the reply
+    (CLI/WebUI dispatch outside the worker and were unaffected).
+    """
+    loop = _make_loop(tmp_path)
+    loop.consolidator.archive_session = AsyncMock()  # type: ignore[method-assign]
+    replies: list[OutboundMessage] = []
+    loop.bus.outbound_recorder = replies.append  # type: ignore[attr-defined]
+
+    # Bind the async session owner with one ordinary turn, as a gateway would.
+    await loop._process_message(
+        InboundMessage(channel="discord", sender_id="user", chat_id="dm", content="hi")
+    )
+    assert loop.sessions.state.is_bound
+
+    # Gateway dispatch: no pending queue exists, so the command creates the
+    # session worker and runs ON it.
+    await loop._dispatch_inbound(
+        InboundMessage(channel="discord", sender_id="user", chat_id="dm", content=command)
+    )
+    key = "discord:dm"
+    workers = tuple(loop._active_tasks.get(key, ()))
+    assert workers, "session worker was not created"
+    results = await asyncio.gather(*workers, return_exceptions=True)
+    assert not any(isinstance(r, BaseException) for r in results), results
+
+    assert any(
+        needle in (m.content or "").lower() for m in replies
+    ), [m.content for m in replies]
+    assert (await loop.sessions.state.get(key)).messages == []
     await loop.aclose()

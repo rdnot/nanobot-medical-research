@@ -1075,7 +1075,17 @@ class AgentLoop:
 
     async def _cancel_active_tasks(self, key: str) -> int:
         pending = self._pending_queues.get(key)
-        tasks = tuple(self._active_tasks.pop(key, set()))
+        # FORK: a session command (/c, /new) dispatched on an idle session runs
+        # on the session worker itself, and its confirmation reply is delivered
+        # by that same task. Cancelling the worker here would cancel the
+        # command's own reply (chat channels showed typing-then-silence; CLI
+        # and priority commands dispatch outside the worker). Skip only the
+        # calling task; every other tracked task is still cancelled. The worker
+        # exits on its own once its queue drains.
+        current = asyncio.current_task()
+        tasks = tuple(
+            t for t in self._active_tasks.pop(key, set()) if t is not current
+        )
         cancelled = sum(1 for t in tasks if not t.done() and t.cancel())
         journal_session = await self.sessions.state.read(key)
         journaled_followup_ids = (
