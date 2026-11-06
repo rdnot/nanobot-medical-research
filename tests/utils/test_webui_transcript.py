@@ -315,6 +315,13 @@ def test_thread_response_receipts_for_folded_legacy_deltas(
         [{"turn_id": "turn-folded", "ranges": [[6, 6], [10, 10]]}],
     ]
     assert history.read(key) == original_rows
+    # Migration compaction retains its existing record format, without HTTP metadata.
+    assert transcript_module.compact_legacy_records(original_rows) == [
+        original_rows[0], original_rows[3],
+        {**original_rows[6], "text": primary_text},
+        {**original_rows[7], "text": "other"},
+        original_rows[8],
+    ]
 
 
 def test_event_projection_defers_trace_details_without_legacy_fallback(history,
@@ -1255,7 +1262,8 @@ def test_existing_shell_output_uses_canonical_command_identity_not_bang_text(his
 
 
 @pytest.mark.parametrize("phase", ["started", "completed", "failed", "cancelled"])
-def test_model_request_persists_through_reconnect_projection(history, tmp_path, phase):
+@pytest.mark.parametrize("measured", [False, True])
+def test_model_request_persists_through_reconnect_projection(history, tmp_path, phase, measured):
     from nanobot.events import ModelRequestEvent
     from nanobot.providers.base import LLMUsage
     from nanobot.session.manager import SessionManager
@@ -1267,6 +1275,7 @@ def test_model_request_persists_through_reconnect_projection(history, tmp_path, 
     projection = project_notification("requests", ModelRequestEvent(
         request_id="request", run_id="run", sequence=2, phase=phase,
         usage=usage, round_usages=(usage,) * 10, context_window_tokens=32000,
+        request_usage=usage if measured else None,
     ))
     assert projection is not None
     assert projection.persistence == "turn_activity"
