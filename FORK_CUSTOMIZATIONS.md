@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified November 4, 2026 — upstream `84d96d8a1`, merge main `39214983d`)
+## Customizations (verified November 6, 2026 — upstream `f5c359476`, merge main `c62482909`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
@@ -37,6 +37,7 @@ is marked `# UPSTREAM` where that helps during merges.
 ### `nanobot/agent/loop.py`
 - `_ForkProgressHook(AgentProgressHook)`: injects one hidden force-final notice when
   `iteration >= max_iterations - 2`; records every tool call in `all_tool_calls_log`.
+  Forwards upstream's `workspace=` (per-tool workspace tracking) to `AgentProgressHook`.
 - `AgentLoop._build_tools_summary()`; summary published in `_prepare_outbound` for
   `TurnKind.USER` turns only. The log travels via `TurnContext.tool_calls_log` →
   `_run_agent_loop(tool_calls_log=...)`.
