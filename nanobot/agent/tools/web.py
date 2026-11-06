@@ -243,6 +243,10 @@ _JS_SHELL_SIGNALS = (
 _CLOUDFLARE_SIGNALS = (
     "just a moment", "checking your browser", "cf-browser-verification", "cf_chl_opt",
 )
+# Server-rendered old.reddit.com thread/listing containers — the only reddit
+# pages a plain HTTP client (the _fetch_raw legacy hop) may accept as content.
+# New reddit renders shreddit-* web components instead of these.
+_OLD_REDDIT_CONTENT_MARKERS = ("commentarea", "usertext-body", "sitetable")
 
 
 def _looks_like_html(content_bytes: bytes, content_type: str = "") -> bool:
@@ -267,6 +271,11 @@ def _is_content_sufficient(content_bytes: bytes, url: str, content_type: str = "
     Non-HTML payloads (JSON, XML, PDF, images, plain text) are always sufficient:
     a browser cannot improve them and would mislabel them as HTML.
     """
+    if not content_bytes or not content_bytes.strip():
+        # An empty (or whitespace-only) body is never usable content. Without
+        # this, e.g. reddit's empty 302 hop body would count as "non-HTML →
+        # sufficient" and be returned as the page.
+        return False
     if not _looks_like_html(content_bytes, content_type):
         return True
     raw = content_bytes.decode("utf-8", errors="replace").lower()
@@ -292,14 +301,25 @@ def _is_content_sufficient(content_bytes: bytes, url: str, content_type: str = "
         if len(visible) < 500:
             return False
 
-    if "reddit.com" in lowered_url:
-        if any(m in raw for m in (
-            "shreddit-app", "shreddit-post", "shreddit-comment",
-            "shreddit-comment-tree", "faceplate-tracker", 'data-testid="post-content"',
-        )):
+    _reddit_host = urlparse(url).hostname or ""
+    if _reddit_host == "reddit.com" or _reddit_host.endswith(".reddit.com"):
+        # Reddit gates logged-out traffic per IP: old.reddit 302s to a login /
+        # "welcome to reddit" page that follows redirects as a 200 with ~330 KB
+        # of chrome. That page carries shreddit-app/faceplate-tracker AND
+        # references shreddit-post inside CSS selectors — so markers are
+        # matched against markup only (style/script payloads stripped) and in
+        # element syntax ("<shreddit-post", "<shreddit-comment"), which cannot
+        # appear in CSS text. Only a rendered post/comments (new reddit) or the
+        # server-rendered old.reddit containers count as content.
+        _markup = re.sub(r"<(style|script)\b[^>]*>.*?</\1\s*>", " ", raw, flags=re.S | re.I)
+        if (
+            "<shreddit-post" in _markup
+            or "<shreddit-comment" in _markup
+            or 'data-testid="post-content"' in _markup
+            or any(m in _markup for m in _OLD_REDDIT_CONTENT_MARKERS)
+        ):
             return True
-        if 'id="comment-tree"' in raw and "shreddit-comment" not in raw:
-            return False
+        return False
 
     if "bbc.com" in lowered_url or "bbc.co.uk" in lowered_url:
         # BBC's initial HTML only has a brief intro block; the article body is
@@ -937,7 +957,12 @@ async def _fetch_raw(
     curl_result: _FetchResult | None = None
     if is_reddit:
         # www.reddit.com is a JS shell (and now answers 403 even to stealth
-        # browsers); old.reddit.com serves the thread server-rendered.
+        # browsers); old.reddit.com serves the thread server-rendered. When
+        # reddit gates the IP, old.reddit 302s to old.reddit.com/login/
+        # (reason=lor2) — a 200 after redirects with login chrome but no
+        # post/comments. _is_content_sufficient rejects marker-less reddit
+        # pages, so the wall falls through to the browser tier instead of
+        # being returned as content.
         legacy_url = _reddit_legacy_url(url)
         if legacy_url is not None:
             legacy = await _fetch_curl_cffi(legacy_url, proxy, ua)
@@ -961,7 +986,19 @@ async def _fetch_raw(
         is_pubmed=is_pubmed, is_bookshelf=is_bookshelf,
     )
     if browser_result is not None:
-        return browser_result
+        if (
+            is_reddit and not lowered.endswith(".json")
+            and not _is_content_sufficient(
+                browser_result[0], url, str(browser_result[1].get("content-type", "")),
+            )
+        ):
+            # The stealth browser rendered reddit's login wall (HTTP 200, no
+            # thread markers); fail over to httpx instead of returning it.
+            # .json URLs are exempt: the browser wraps reddit's JSON in
+            # <html><pre>, which execute() unwraps — it has no markers by design.
+            logger.debug("Reddit: browser tier returned a login/shell page → httpx")
+        else:
+            return browser_result
     return await _fetch_httpx(url, proxy, ua)
 
 

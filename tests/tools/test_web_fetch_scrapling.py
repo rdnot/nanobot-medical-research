@@ -118,6 +118,48 @@ def test_ncbi_cookie_proof_of_work_shell_is_a_challenge():
     assert _has_pubmed_article_content(article)
 
 
+def test_reddit_pages_need_content_markers():
+    # New reddit render: actual shreddit post/comment ELEMENTS.
+    shreddit = "<html><body><shreddit-post>post</shreddit-post><shreddit-comment>comment</shreddit-comment></body></html>"
+    assert _is_content_sufficient(shreddit.encode(), "https://www.reddit.com/r/x/comments/1/", "text/html")
+    old_thread = "<html><body><div class='commentarea'><div class='usertext-body'>comment</div></div></body></html>"
+    assert _is_content_sufficient(old_thread.encode(), "https://old.reddit.com/r/x/comments/1/", "text/html")
+    listing = "<html><body><div id='siteTable_t3_1'>post</div></body></html>"
+    assert _is_content_sufficient(listing.encode(), "https://old.reddit.com/r/x/", "text/html")
+    # Regression (live, Nov 2026): when reddit gates the IP, old.reddit 302s to
+    # a 200 "welcome to reddit" page (~330 KB) whose CSS references
+    # shreddit-post inside selectors (":has(shreddit-post[hidden])") and whose
+    # chrome carries shreddit-app/faceplate-tracker. Markers must be matched
+    # against markup only, in element syntax — the CSS text must not count.
+    welcome = (
+        "<html><head><style>"
+        ".x:has(shreddit-post[hidden]) .perspectives-comment-list{display:none}"
+        ".commentarea{color:red} .usertext-body{margin:0}"
+        "</style></head><body><shreddit-app></shreddit-app>"
+        "<faceplate-tracker></faceplate-tracker>"
+        + "<a href='/login'>log in</a>" * 400
+        + "</body></html>"
+    ).encode()
+    assert not _is_content_sufficient(welcome, "https://old.reddit.com/r/x/comments/1/", "text/html")
+    assert not _is_content_sufficient(welcome, "https://www.reddit.com/r/x/comments/1/", "text/html")
+    # Login/nag wall without any shell markers — insufficient however big.
+    wall = ("<html><body><div class='header'>reddit</div>"
+            + "<a href='/login'>log in to continue</a>" * 400 + "</body></html>").encode()
+    assert not _is_content_sufficient(wall, "https://old.reddit.com/r/x/comments/1/", "text/html")
+    # Marker-less shell (the old id="comment-tree" case) is still insufficient.
+    shell = b"<html><body><div id='comment-tree'></div></body></html>"
+    assert not _is_content_sufficient(shell, "https://www.reddit.com/r/x/comments/1/", "text/html")
+    # JSON payloads never need a browser; empty bodies are never sufficient
+    # (reddit's 302 hop returns an empty body with no content-type).
+    assert _is_content_sufficient(b'{"kind": "Listing"}', "https://www.reddit.com/x.json", "application/json")
+    assert not _is_content_sufficient(b"", "https://old.reddit.com/r/x/", "")
+    assert not _is_content_sufficient(b"   ", "https://old.reddit.com/r/x/", "")
+    # The gate is host-based: a non-reddit URL that merely mentions reddit.com
+    # in its path is not reddit-gated.
+    other = ("<html><body>" + "<p>Unrelated article text here.</p>" * 300 + "</body></html>").encode()
+    assert _is_content_sufficient(other, "https://example.com/reddit.com/thread", "text/html")
+
+
 # ---------------------------------------------------------------------------
 # browser tier
 # ---------------------------------------------------------------------------
@@ -527,7 +569,11 @@ def test_reddit_legacy_url():
 @pytest.mark.asyncio
 async def test_reddit_thread_served_by_old_reddit_before_browser(monkeypatch):
     seen: list[str] = []
-    thread = "<html><body>" + "<div class='comment'><p>Real comment text here.</p></div>" * 60 + "</body></html>"
+    thread = (
+        "<html><body><div class='commentarea'><div class='sitetable'>"
+        + "<div class='comment'><div class='usertext-body'><p>Real comment text here.</p></div></div>" * 60
+        + "</div></div></body></html>"
+    )
 
     async def _curl(url, proxy, user_agent):
         seen.append(url)
@@ -543,3 +589,88 @@ async def test_reddit_thread_served_by_old_reddit_before_browser(monkeypatch):
     assert (status, fetcher) == (200, "curl_cffi")
     assert seen == ["https://old.reddit.com/r/hermesagent/comments/1wvhzvv/x/"]
     assert b"Real comment text" in content
+
+
+@pytest.mark.asyncio
+async def test_reddit_login_wall_on_old_reddit_escalates_to_browser(monkeypatch):
+    """A logged-out login wall from old.reddit.com (HTTP 200, site chrome, no
+    thread markers) must not be returned as content: the stealth browser on the
+    original URL runs next — this is the "login screen" regression."""
+    seen: list[str] = []
+    # Wall chrome big enough to pass the generic <8000 small-page heuristic.
+    wall = ("<html><body><div class='header'>reddit</div>"
+            + "<a href='/login'>log in to continue</a>" * 400
+            + "</body></html>")
+
+    async def _curl(url, proxy, user_agent):
+        seen.append(url)
+        return wall.encode(), {"content-type": "text/html"}, 200, "curl_cffi"
+
+    rendered = ("<html><body><shreddit-app><shreddit-post>post</shreddit-post>"
+                "<shreddit-comment>Real comment text here.</shreddit-comment>"
+                "</shreddit-app></body></html>")
+    calls: list[dict[str, Any]] = []
+    _install_fake_scrapling(monkeypatch, [_FakePage(rendered)], calls)
+
+    async def _unexpected_httpx(*a, **kw):
+        raise AssertionError("httpx tier must not run when the browser tier succeeds")
+
+    monkeypatch.setattr(web_module, "_fetch_curl_cffi", _curl)
+    monkeypatch.setattr(web_module, "_fetch_httpx", _unexpected_httpx)
+
+    content, _h, status, fetcher = await web_module._fetch_raw(
+        "https://www.reddit.com/r/ClaudeAI/comments/1/x/"
+    )
+
+    assert (status, fetcher) == (200, "scrapling")
+    assert seen == ["https://old.reddit.com/r/ClaudeAI/comments/1/x/"]
+    assert b"shreddit-comment" in content
+    browser_urls = [c["fetch"]["url"] for c in calls if "fetch" in c]
+    assert browser_urls == ["https://www.reddit.com/r/ClaudeAI/comments/1/x/"]
+
+
+@pytest.mark.asyncio
+async def test_reddit_browser_login_wall_falls_to_httpx(monkeypatch):
+    """When the stealth browser itself renders the login wall (HTTP 200, no
+    thread markers), _fetch_raw fails over to httpx instead of returning it."""
+    wall = "<html><body>log in to continue</body></html>"
+    calls: list[dict[str, Any]] = []
+    _install_fake_scrapling(monkeypatch, [_FakePage(wall)], calls)
+
+    async def _curl_none(url, proxy, user_agent):
+        return None
+
+    async def _httpx(url, proxy, user_agent):
+        return b"<html>blocked</html>", {"content-type": "text/html"}, 403, "httpx"
+
+    monkeypatch.setattr(web_module, "_fetch_curl_cffi", _curl_none)
+    monkeypatch.setattr(web_module, "_fetch_httpx", _httpx)
+
+    _c, _h, status, fetcher = await web_module._fetch_raw(
+        "https://www.reddit.com/r/ClaudeAI/comments/1/x/"
+    )
+    assert (status, fetcher) == (403, "httpx")
+
+
+@pytest.mark.asyncio
+async def test_reddit_json_via_browser_bypasses_marker_gate(monkeypatch):
+    """Browser-tier reddit .json responses are HTML-wrapped JSON with no thread
+    markers — the marker gate must not reject them (execute() unwraps them)."""
+    wrapped = "<html><body><pre>" + json.dumps([{"kind": "Listing"}]).replace("<", "&lt;") + "</pre></body></html>"
+    calls: list[dict[str, Any]] = []
+    _install_fake_scrapling(monkeypatch, [_FakePage(wrapped)], calls)
+
+    async def _unexpected_curl(url, proxy, user_agent):
+        raise AssertionError("curl_cffi tier must be skipped for reddit")
+
+    async def _unexpected_httpx(*a, **kw):
+        raise AssertionError("httpx tier must not run when the browser tier succeeds")
+
+    monkeypatch.setattr(web_module, "_fetch_curl_cffi", _unexpected_curl)
+    monkeypatch.setattr(web_module, "_fetch_httpx", _unexpected_httpx)
+
+    content, _h, status, fetcher = await web_module._fetch_raw(
+        "https://www.reddit.com/r/medicine/comments/1/x/.json"
+    )
+    assert (status, fetcher) == (200, "scrapling")
+    assert b"Listing" in content

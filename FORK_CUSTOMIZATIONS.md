@@ -33,6 +33,16 @@ is marked `# UPSTREAM` where that helps during merges.
 - Scrapling branch only: `AsyncStealthySession` tier between curl_cffi and httpx with
   Cloudflare/reCAPTCHA handling, `_is_content_sufficient`, BBC live-blog/Next.js extractors,
   SearXNG → configured-provider fallback.
+- Scrapling branch only — Reddit gating (Nov 2026): `_fetch_raw` tries `old.reddit.com`
+  via curl_cffi first; when reddit gates the IP, old.reddit 302s to a 200 "welcome to
+  reddit" page whose CSS *references* `shreddit-post` inside selectors. `_is_content_sufficient`
+  therefore gates reddit HTML on markup-only element markers (`<shreddit-post` /
+  `<shreddit-comment` / `data-testid="post-content"` / `_OLD_REDDIT_CONTENT_MARKERS`
+  `commentarea`·`usertext-body`·`sitetable`) with `<style>`/`<script>` payloads stripped,
+  host-checked against `*.reddit.com`, and rejects empty bodies; the browser tier's reddit
+  result gets the same check (`.json` URLs exempt — the browser wraps reddit JSON in
+  `<html><pre>`, unwrapped by `execute()`). A gated thread now escalates
+  old.reddit → stealth browser on www → httpx instead of returning the login page.
 
 ### `nanobot/agent/loop.py`
 - `_ForkProgressHook(AgentProgressHook)`: injects one hidden force-final notice when
