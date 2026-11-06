@@ -102,6 +102,8 @@ HTTP, HTTPS, SOCKS5, and SOCKS5H URLs are accepted; individual integrations reta
 
 </details>
 
+Legacy proxy migration is supported throughout 0.4.x and is removed in **0.5.0**. On upgrade, one legacy proxy address moves to `network.proxy` and previously configured features receive `useProxy: true`. The migrated configuration is written on the next normal save, including `nanobot onboard --refresh`. If the old configuration contains different proxy addresses, choose one and set `network.proxy` explicitly before upgrading; multiple per-feature addresses are no longer supported. For Discord configurations that store the entire proxy URL in an environment variable and credentials separately, combine them into one full URL environment variable and set `network.proxy` to that reference before upgrading. Credential references inside a URL remain references when saved. Back up the original configuration before saving if you may need to downgrade.
+
 ## Environment Variables for Secrets
 
 Instead of storing secrets directly in `config.json`, you can use `${VAR_NAME}` references that are resolved from environment variables at startup:
@@ -2374,6 +2376,8 @@ The tool result distinguishes a hard-runtime termination from inactivity. With `
 
 Silence is not proof that a command is stuck: builds, downloads, and buffered programs can be quiet while working. Only bytes received through stdout or stderr count as activity; output redirected to files is not observed, and reading logs does not refresh the inactivity clock. Inactivity checks do not detect prompts or supply answers. Choose `"terminate"` only when stopping a quiet command is acceptable, and use a finite hard runtime when total execution time must remain bounded. Shell sessions are not durable jobs and should not be used as a replacement for a scheduler or service manager. A command that detaches a background service and exits is not a managed job; these timing checks do not manage that service afterward.
 
+
+With a Unix sandbox enabled, the selected shell and any requested login profile run inside the sandbox, with its workspace-scoped `HOME`. Custom interpreters outside the exposed system paths require an explicit read-only bind. Tool PATH settings affect commands inside the sandbox, not selection of the host launcher. Install `bwrap` in the operating system's default executable search path (normally `/bin:/usr/bin`); a custom parent or tool `PATH` cannot override that launcher. Seatbelt uses `/usr/bin/sandbox-exec`. A missing or failed launcher never falls back to unsandboxed execution.
 
 ## Pairing
 

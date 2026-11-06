@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, TypeVar, cast
 
 from nanobot.providers.base import ProviderConversationState
-from nanobot.session.display_history import HistoryFact, HistoryKind, HistoryReader
+from nanobot.session.display_history import HistoryFact, HistoryImport, HistoryKind, HistoryReader
+from nanobot.session.history_graph import history_record_size
 from nanobot.session.history_visibility import is_hidden_history_message
 from nanobot.session.manager import (
     Session,
@@ -201,8 +202,10 @@ class SqliteSessionStore:
             if owned:
                 connection.close()
 
-    def initialize(self) -> None:
-        """Initialize or upgrade the SQLite schema."""
+    # TODO(0.5.0): Remove JSONL import and backup finalization; retain throughout 0.4.x.
+    def initialize(self, workspace: Path) -> None:
+        """Upgrade the schema and import legacy sessions in one atomic transaction."""
+        workspace = workspace.expanduser().resolve(strict=False)
         # WAL is persistent and must be enabled outside a transaction.
         if self.path.is_symlink():
             raise RuntimeError("session database must not be a symlink")
@@ -228,6 +231,22 @@ class SqliteSessionStore:
             for target, migrate in enumerate(_SCHEMA_MIGRATIONS[version:], start=version + 1):
                 migrate(db)
                 db.execute(f"PRAGMA user_version = {target}")
+            marker = db.execute(
+                "SELECT value FROM storage_meta WHERE key='jsonl_import'"
+            ).fetchone()
+            if marker is None:
+                from nanobot.session.jsonl_migration import migrate_jsonl
+
+                migrate_jsonl(self, workspace)
+                db.execute("INSERT INTO storage_meta (key, value) VALUES ('jsonl_import', 'complete')")
+            elif marker[0] != "complete":
+                raise RuntimeError(
+                    f"invalid JSONL migration marker in {self.path}: {marker[0]!r}; "
+                    "restore a valid database backup or repair the marker explicitly"
+                )
+        from nanobot.session.jsonl_migration import finish_workspace_migration
+
+        finish_workspace_migration(self, workspace)
 
     def _metadata(self, db: sqlite3.Connection, key: str, raw: str) -> dict[str, Any]:
         metadata = _object(raw)
@@ -421,6 +440,36 @@ class SqliteSessionStore:
                 "updated_at": session.updated_at.isoformat(),
                 "metadata": session.metadata, "messages": session.messages}
 
+    def migrate_history(
+        self, name: str, collect: Callable[[list[SessionInfo]], list[HistoryImport]],
+    ) -> None:
+        """Commit a channel-owned legacy import and its once-only marker together."""
+        with self.transaction() as db:
+            marker = db.execute("SELECT value FROM storage_meta WHERE key=?", (name,)).fetchone()
+            if marker is not None:
+                if marker[0] != "complete":
+                    raise RuntimeError(f"invalid history import marker: {name}")
+                return
+            for item in collect(self.list_sessions()):
+                session = self.load(item.key, history=False)
+                if session is None:
+                    session = Session(key=item.key)
+                    if item.created_at_ms:
+                        session.created_at = datetime.fromtimestamp(item.created_at_ms / 1000)
+                    if item.updated_at_ms:
+                        session.updated_at = datetime.fromtimestamp(item.updated_at_ms / 1000)
+                    self.save(session)
+                revision = self.project_history(item.key, lambda reader: reader.revision)
+                if revision is not None and revision[1] >= 0:
+                    raise SessionConflictError(f"history already exists before import: {item.key}")
+                self.append_history(item.key, item.facts, expected_generation=session.generation)
+                db.execute("UPDATE history_heads SET updated_at_ms=max(updated_at_ms, ?) WHERE session_key=?",
+                           (item.updated_at_ms, item.key))
+                # Import ownership survives deletion: another namespace must not
+                # mistake this instance-wide backup for a new orphan later.
+                db.execute("INSERT INTO storage_meta (key, value) VALUES (?, 'complete')", (f"{name}:{item.key}",))
+            db.execute("INSERT INTO storage_meta (key, value) VALUES (?, 'complete')", (name,))
+
     def project_history(self, key: str, project: Callable[[HistoryReader], _T]) -> _T:
         """Project durable display facts and canonical messages from one snapshot."""
         with self.transaction(write=False) as db:
@@ -428,8 +477,25 @@ class SqliteSessionStore:
 
     def append_history(
         self, key: str, facts: list[HistoryFact], *, expected_generation: str | None,
-    ) -> None:
-        encoded = [(fact, fact.encode()) for fact in facts]
+        skip_invalid: bool = False,
+    ) -> list[str]:
+        encoded: list[tuple[HistoryKind, int, str, str]] = []
+        errors: list[str] = []
+        for fact in facts:
+            try:
+                record = fact.encode()
+                # Freeze all transaction inputs from the encoded snapshot; never
+                # revisit mutable content after serialization has completed.
+                preview = ""
+                if fact.kind in {HistoryKind.INPUT, HistoryKind.ANSWER, HistoryKind.ANSWER_SEGMENT}:
+                    preview = message_preview_text({"content": json.loads(record)["content"].get("text", "")})
+                encoded.append((fact.kind, fact.created_at_ms, record, preview))
+            except (ValueError, TypeError) as exc:
+                if not skip_invalid:
+                    raise
+                errors.append(str(exc))
+        if not encoded and errors:
+            return errors
         with self.transaction() as db:
             row = db.execute("SELECT generation FROM sessions WHERE key=?", (key,)).fetchone()
             if row is None or (expected_generation is not None and row[0] != expected_generation):
@@ -441,7 +507,7 @@ class SqliteSessionStore:
             ).fetchone()
             ordinal, position = (int(tail[0]), int(tail[1])) if tail is not None else (0, 0)
             completed = tail is not None and bool(tail[2])
-            for fact, record in encoded:
+            for kind, created_at_ms, record, preview in encoded:
                 if completed:
                     ordinal, position = ordinal + 1, 0
                 if position == 0:
@@ -449,25 +515,24 @@ class SqliteSessionStore:
                         "INSERT INTO history_turns VALUES (?, ?, 0, 0, 0, 0)", (key, ordinal),
                     )
                 db.execute("INSERT INTO history_entries VALUES (?, ?, ?, ?, ?)", (
-                    key, ordinal, position, fact.kind.value, record,
+                    key, ordinal, position, kind.value, record,
                 ))
-                completed = fact.kind is HistoryKind.COMPLETION
+                completed = kind is HistoryKind.COMPLETION
                 db.execute(
                     """UPDATE history_turns SET record_count=record_count+1, byte_count=byte_count+?,
                        user_count=user_count+?, completed=? WHERE session_key=? AND ordinal=?""",
-                    (len(record.encode("utf-8")), int(fact.kind is HistoryKind.INPUT),
+                    (history_record_size(record), int(kind is HistoryKind.INPUT),
                      int(completed), key, ordinal),
                 )
                 position += 1
-                if fact.kind in {HistoryKind.INPUT, HistoryKind.ANSWER, HistoryKind.ANSWER_SEGMENT}:
-                    preview = message_preview_text({"content": fact.content.get("text", "")})
-                    if preview:
-                        field = "user_preview" if fact.kind is HistoryKind.INPUT else "preview"
-                        db.execute(f"UPDATE history_heads SET {field}=? WHERE session_key=? AND {field}=''", (preview, key))
+                if preview:
+                    field = "user_preview" if kind is HistoryKind.INPUT else "preview"
+                    db.execute(f"UPDATE history_heads SET {field}=? WHERE session_key=? AND {field}=''", (preview, key))
                 db.execute("UPDATE history_heads SET updated_at_ms=max(updated_at_ms, ?) WHERE session_key=?",
-                           (fact.created_at_ms, key))
+                           (created_at_ms, key))
             if encoded:
                 db.execute("UPDATE history_heads SET revision=revision+1 WHERE session_key=?", (key,))
+        return errors
 
     def copy_history_prefix(self, source_key: str, target: Session, before_input: int) -> bool:
         """Copy a display prefix alongside its canonical fork, in the caller's transaction."""

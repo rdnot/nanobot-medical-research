@@ -35,7 +35,6 @@ from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, res
 from nanobot.agent.tools.message import capture_message_deliveries
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.runtime_control import AgentRuntimeControl
-from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.turn_delivery import (
     TurnDelivery,
     TurnDeliveryFactory,
@@ -154,12 +153,14 @@ class _ForkProgressHook(AgentProgressHook):
         force_final_threshold: int,
         session_key: str | None = None,
         log_content: bool = True,
+        workspace: Path | None = None,
     ) -> None:
         super().__init__(
             events=events,
             streaming=streaming,
             session_key=session_key,
             log_content=log_content,
+            workspace=workspace,
         )
         self._force_final_threshold = force_final_threshold
         self._force_final_injected = False
@@ -526,6 +527,7 @@ class AgentLoop:
         )
         self._idle_compact_check_interval_s = idle_compact_check_interval_seconds
         self._next_idle_compact_check_at = time.monotonic()
+        self._idle_compact_check_running = False
         if model_preset:
             self.set_model_preset(model_preset, publish_update=False)
         self.commands = CommandRouter()
@@ -1056,50 +1058,6 @@ class AgentLoop:
             return
         await dispatch_and_publish()
 
-    async def execute_user_shell_command(self, ctx: CommandContext) -> OutboundMessage:
-        """Execute one trusted user command with the active workspace policy."""
-        metadata = dict(ctx.msg.metadata or {})
-        tool = self.tools.get("exec")
-        if not isinstance(tool, ExecTool):
-            content = "Shell execution is disabled in this nanobot configuration."
-        else:
-            session = ctx.session or await self.sessions.state.get(ctx.key)
-            scope = self.workspace_scopes.for_turn(
-                channel=ctx.msg.channel,
-                message_metadata=metadata,
-                session_metadata=session.metadata,
-            )
-            request_token = bind_request_context(RequestContext(
-                channel=ctx.msg.channel,
-                chat_id=ctx.msg.chat_id,
-                message_id=metadata.get("message_id"),
-                session_key=ctx.key,
-                session_generation=session.generation,
-                original_user_text=f"!{ctx.args.strip()}",
-                runtime=ctx.runtime,
-                metadata=metadata,
-                sender_id=ctx.msg.sender_id,
-                turn_id=metadata.get("webui_turn_id"),
-                workspace=scope.project_path,
-                log_content=session.policy.log_content,
-            ))
-            workspace_token = bind_workspace_scope(scope)
-            try:
-                result = await tool.execute_to_completion(
-                    command=ctx.args.strip(),
-                    working_dir=str(scope.project_path),
-                )
-                content = str(result)
-            finally:
-                reset_workspace_scope(workspace_token)
-                reset_request_context(request_token)
-        return OutboundMessage(
-            channel=ctx.msg.channel,
-            chat_id=ctx.msg.chat_id,
-            content=content,
-            metadata={**metadata, "render_as": "text"},
-        )
-
     def _track_active_task(self, key: str, task: asyncio.Task[Any]) -> None:
         tasks = self._active_tasks.setdefault(key, set())
         tasks.add(task)
@@ -1290,7 +1248,7 @@ class AgentLoop:
                 except asyncio.QueueEmpty:
                     break
 
-            async def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any]:
+            async def _to_user_message(pending_msg: InboundMessage) -> dict[str, Any] | None:
                 content = pending_msg.content
                 image_paths = pending_msg.media if pending_msg.media else None
                 if image_paths:
@@ -1322,6 +1280,10 @@ class AgentLoop:
                         message_metadata=_prompt_scope_metadata(metadata),
                         session_metadata=_prompt_scope_metadata(session.metadata) if session is not None else None,
                     )
+                    # A follow-up cannot inherit another input's tool authority.
+                    # Leave it for the FIFO worker to run with its own scope.
+                    if scope != effective_scope:
+                        return None
                     pending_request = RequestContext(
                         channel=pending_msg.channel,
                         chat_id=pending_msg.chat_id,
@@ -1374,7 +1336,10 @@ class AgentLoop:
                     # owns completion, command dispatch, and control metadata.
                     if not self._can_inject_message(pending_msg):
                         break
-                    converted.append(await _to_user_message(pending_msg))
+                    row = await _to_user_message(pending_msg)
+                    if row is None:
+                        break
+                    converted.append(row)
                     consumed_inputs.append(pending_msg)
                 if execution_scope is not None:
                     try:
@@ -1476,6 +1441,7 @@ class AgentLoop:
             force_final_threshold=force_final_threshold,  # FORK
             session_key=session.key if session else None,
             log_content=request_ctx.log_content,  # UPSTREAM privacy flag
+            workspace=effective_scope.project_path,  # UPSTREAM tool-workspace tracking
         )
         effective_tools = tools if tools is not None else self.tools
         file_state_token = bind_file_states(self._file_state_store.for_session(active_session_key))
@@ -1585,12 +1551,13 @@ class AgentLoop:
         return result
 
     async def _check_expired_sessions_if_due(self) -> None:
-        if self.bus.admission.paused:
+        if self.bus.admission.paused or self._idle_compact_check_running:
             return
         now = time.monotonic()
         if now < self._next_idle_compact_check_at:
             return
         self._next_idle_compact_check_at = now + self._idle_compact_check_interval_s
+        self._idle_compact_check_running = True
         try:
             with self.bus.admission.activity():
                 await self.auto_compact.check_expired(
@@ -1600,6 +1567,8 @@ class AgentLoop:
                 )
         except SessionOperationQueueFullError:
             logger.debug("Skipping idle archival while session storage is busy")
+        finally:
+            self._idle_compact_check_running = False
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
@@ -1614,7 +1583,9 @@ class AgentLoop:
                     async with asyncio.timeout(1.0):
                         msg = await self.bus.consume_inbound()
                 except asyncio.TimeoutError:
-                    await self._check_expired_sessions_if_due()
+                    # Storage may wait behind a turn that /stop needs to cancel.
+                    if not self.bus.admission.paused:
+                        self.schedule_background(self._check_expired_sessions_if_due())
                     continue
                 except asyncio.CancelledError:
                     # Preserve real task cancellation so shutdown can complete cleanly.
@@ -1984,7 +1955,8 @@ class AgentLoop:
                 if self._pending_queues.get(key) is pending:
                     self._pending_queues.pop(key)
                     await self._cancel_pending_messages(key, pending, asyncio.CancelledError())
-            if self._background_tasks:
+            # A scan can schedule archival while shutdown waits for it.
+            while self._background_tasks:
                 await asyncio.gather(*self._background_tasks, return_exceptions=True)
         except BaseException as exc:
             errors.append(exc)

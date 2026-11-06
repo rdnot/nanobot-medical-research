@@ -25,10 +25,8 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { HoverHint } from "@/components/ui/tooltip";
@@ -51,6 +49,7 @@ export interface WorkbenchPane {
 
 interface PaneRenderContext {
   active: boolean;
+  multiplePanes: boolean;
   headerPortalTarget: HTMLElement | null | undefined;
   composerPortalTarget: HTMLElement | null | undefined;
   navigationFrame: HTMLElement | null | undefined;
@@ -634,10 +633,6 @@ export function PaneWorkbench({
             align="end"
             onCloseAutoFocus={(event) => event.preventDefault()}
           >
-            <DropdownMenuLabel>
-              {t("workbench.layout", { defaultValue: "Pane layout" })}
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
             <DropdownMenuRadioGroup
               value={layout}
               onValueChange={(value) => {
@@ -701,8 +696,8 @@ export function PaneWorkbench({
             data-testid="pane-grid"
             data-layout={effectiveLayout}
             className={cn(
-              "grid h-full min-h-0 min-w-0 overflow-hidden",
-              chrome && displayedPanes.length > 1 && "gap-px bg-border/55",
+              "grid h-full min-h-0 min-w-0 overflow-hidden bg-background",
+              chrome && displayedPanes.length > 1 && "gap-px",
             )}
             style={gridStyle}
           >
@@ -723,11 +718,15 @@ export function PaneWorkbench({
                   data-testid={`workbench-pane-${pane.key}`}
                   onPointerDownCapture={(event) => handlePanePointerDown(pane.key, event)}
                   onFocusCapture={(event) => handlePaneFocus(pane.key, event)}
-                  className="workbench-pane relative flex min-h-0 min-w-0 overflow-hidden bg-background"
+                  className={cn(
+                    "workbench-pane relative flex min-h-0 min-w-0 overflow-hidden bg-background",
+                    chrome && displayedPanes.length > 1 && "shadow-[0_0_0_1px_hsl(var(--border)/0.55)]",
+                  )}
                   style={layoutGeometry.paneStyles[index]}
                 >
                   {renderPane(pane, {
                     active,
+                    multiplePanes: displayedPanes.length > 1,
                     headerPortalTarget: chrome && displayedPanes.length > 1 ? headerPortalTarget : undefined,
                     composerPortalTarget: chrome ? composerPortalTarget : undefined,
                     navigationFrame: displayedPanes.length === 1 ? navigationFrame : undefined,

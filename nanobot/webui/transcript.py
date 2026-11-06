@@ -28,12 +28,19 @@ from nanobot.session.display_history import (
     HistoryFact,
     HistoryReader,
 )
+from nanobot.session.history_graph import (
+    decode_graph,
+    decode_snapshot,
+    graph_decoding,
+    graph_size_adjustment,
+)
 from nanobot.session.history_visibility import is_hidden_history_message
 from nanobot.session.manager import Session, SessionManager
 from nanobot.session.sqlite_store import SessionConflictError
 from nanobot.session.state import SessionOperationQueueFullError
 from nanobot.webui.history import (
     fact_from_record,
+    initialize_history,
     record_from_fact,
     turn_records,
 )
@@ -233,7 +240,7 @@ def _record_json_line(record: dict[str, Any]) -> str:
 def _records_bytes(records: list[dict[str, Any]]) -> int:
     total = 0
     for record in records:
-        total += len(_record_json_line(record).encode("utf-8")) + 1
+        total += len(_record_json_line(record).encode("utf-8")) + graph_size_adjustment(record) + 1
     return total
 
 
@@ -311,6 +318,25 @@ def _compact_completed_stream_deltas(
         for index, record in enumerate(turn)
         if index not in dropped_indexes
     ], len(dropped_indexes)
+
+
+def _compact_completed_turns(
+    turns: list[list[dict[str, Any]]],
+) -> tuple[list[list[dict[str, Any]]], int]:
+    compacted: list[list[dict[str, Any]]] = []
+    dropped = 0
+    for turn in turns:
+        next_turn, turn_dropped = _compact_completed_stream_deltas(turn)
+        compacted.append(next_turn)
+        dropped += turn_dropped
+    return compacted, dropped
+
+
+
+
+def compact_legacy_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    turns, _ = _compact_completed_turns(_split_transcript_turns(records))
+    return [record for turn in turns for record in turn]
 
 
 def _records_with_replay_identity(
@@ -507,6 +533,11 @@ class WebUITranscriptRecorder:
         self._log = log
         self._turn_sequences: dict[tuple[str, str], int] = {}
 
+    async def initialize(self) -> None:
+        sessions = self.sessions
+        if sessions is not None:
+            await initialize_history(sessions)
+
     def client_turn_metadata(self, value: Any) -> dict[str, str]:
         return {WEBUI_TURN_METADATA_KEY: normalize_webui_turn_id(value)}
 
@@ -581,9 +612,6 @@ class WebUITranscriptRecorder:
         for event in events:
             try:
                 fact = fact_from_record(_record_for_append(event))
-                if len(events) > 1:
-                    # An invalid member must not roll back otherwise valid activity.
-                    fact.encode()
                 facts.append(fact)
             except (ValueError, TypeError) as exc:
                 self._log.warning("history append failed for {}: {}", chat_id, exc)
@@ -591,8 +619,12 @@ class WebUITranscriptRecorder:
         if not facts:
             return False
         try:
-            await self.sessions.state.append_history(webui_session_key(chat_id), facts,
-                                                     expected_generation=generation)
+            errors = await self.sessions.state.append_history(webui_session_key(chat_id), facts,
+                                                              expected_generation=generation,
+                                                              skip_invalid=len(events) > 1)
+            for error in errors:
+                self._log.warning("history append failed for {}: {}", chat_id, error)
+            valid = valid and not errors
         except (OSError, ValueError, TypeError, sqlite3.Error, SessionConflictError, SessionOperationQueueFullError) as exc:
             self._log.warning("history append failed for {}: {}", chat_id, exc)
             return False
@@ -1515,6 +1547,8 @@ def _client_projection_event(
             "compaction_id": compaction_id,
             "phase": phase,
         }
+        if (snapshot := decode_snapshot(record.get("context_snapshot"))) is not None:
+            projected["context_snapshot"] = snapshot
         reason = record.get("reason")
         if isinstance(reason, str) and reason in {"idle", "context_pressure", "manual", "provider_native"}:
             projected["reason"] = reason
@@ -1533,6 +1567,10 @@ def _client_projection_event(
             ):
                 return None
             projected.update(request_id=request_id, run_id=run_id, sequence=sequence, phase=phase)
+            if "request_usage" in record:
+                projected["request_usage"] = _sanitize_turn_usage(record["request_usage"]) or None
+            if (graph := decode_graph(record.get("context_graph"))) is not None:
+                projected["context_graph"] = graph
         latency_ms = record.get("latency_ms")
         if isinstance(latency_ms, int | float) and latency_ms >= 0:
             projected["latency_ms"] = int(latency_ms)
@@ -1762,6 +1800,7 @@ def build_session_thread_response(
             "active_turn_id": turn_id if active else None}
 
 
+@graph_decoding()
 def build_webui_thread_response(
     session_key: str,
     *,
