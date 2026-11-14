@@ -249,20 +249,6 @@ def _unsafe_url_request_error(exc: BaseException) -> str | None:
     return str(exc) if isinstance(exc, UnsafeURLRequestError) else None
 
 
-def _web_fetch_text_result(
-    url: str, final_url: object, status: int, extractor: str, text: str, max_chars: int,
-) -> str:
-    truncated = len(text) > max_chars
-    if truncated:
-        text = text[:max_chars]
-    text = f"{_UNTRUSTED_BANNER}\n\n{text}"
-    return json.dumps({
-        "url": url, "finalUrl": final_url, "status": status,
-        "extractor": extractor, "truncated": truncated, "length": len(text),
-        "untrusted": True, "text": text,
-    }, ensure_ascii=False)
-
-
 # UPSTREAM (SSRF hardening + credential-URL protection):
 # Credential-URL helpers ensure URLs bearing secrets (userinfo, signed-URL
 # params, token/key query values) are never forwarded to the remote Jina reader.
@@ -460,7 +446,7 @@ async def _fetch_httpx(url: str, proxy: str | None, user_agent: str) -> _FetchRe
                 transport=None if proxy else PinnedDNSAsyncTransport(),
                 mounts=None if proxy else httpx_env_proxy_mounts(),
             ) as client,
-            open_redirected_get(client, url, check_target=validate_url_target) as (r, _chain),
+            open_redirected_get(client, url, check_target=_validate_url_safe) as (r, _chain),
         ):
             content = await r.aread()
             return content, {k.lower(): v for k, v in r.headers.items()}, r.status_code, "httpx"
@@ -1529,7 +1515,7 @@ class WebFetchTool(Tool):
         url = url.strip(" \t\r\n`\"'")
         extract_mode = kwargs.pop("extractMode", extract_mode)
         max_chars = int(kwargs.pop("maxChars", max_chars) or self.max_chars)
-        is_valid, error_msg = validate_url_target(url)
+        is_valid, error_msg = _validate_url_safe(url)  # FORK: single validation point (tests patch it)
         if not is_valid:
             return ToolResult.error(json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False))
 
