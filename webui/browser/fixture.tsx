@@ -28,11 +28,14 @@ import { TypographyFixture } from "./typography-fixture";
 import { CodeWrappingFixture } from "./code-wrapping-fixture";
 import { InlineReferencesFixture } from "./inline-references-fixture";
 import { HistoryBoundaryFixture } from "./history-boundary-fixture";
+import { installHistoryBoundaryPreviewApi } from "./history-boundary-preview";
 import { ChatFailureFixture } from "./chat-failure-fixture";
 import { ThreadLoadingFixture } from "./thread-loading-fixture";
 import { AnswerOrderFixture } from "./answer-order-fixture";
 import { SidebarActivityFixture } from "./sidebar-activity-fixture";
 import { ActivityLogosFixture } from "./activity-logos-fixture";
+import { ActivityWheelFixture } from "./activity-wheel-fixture";
+import { ExecSessionFixture } from "./exec-session-fixture";
 import { HistoryHydrationFixture } from "./history-hydration-fixture";
 import { IdleCompactionFixture, installIdleCompactionApi } from "./idle-compaction-fixture";
 import { FileEditPathFixture } from "./file-edit-path-fixture";
@@ -44,9 +47,12 @@ import { ComposerActionFixture } from "./composer-action-fixture";
 import { MobileChatLayoutFixture } from "./mobile-chat-layout-fixture";
 import { ThemeToggleFixture } from "./theme-toggle-fixture";
 import { DisplayMathFixture } from "./display-math-fixture";
+import { MarkdownDollarRefsFixture } from "./markdown-dollar-refs-fixture";
 import { AttachmentLayoutFixture } from "./attachment-layout-fixture";
 import { LoadedSessionSearchFixture } from "./loaded-session-search-fixture";
 import { AppearanceFixture } from "./appearance-fixture";
+import { ContinuityFixture } from "./continuity-fixture";
+import { installSessionTransitionPreviewApi, SessionTransitionFixture } from "./session-transition-fixture";
 import { installSubagentDockApi, SubagentDockFixture } from "./subagent-dock-fixture";
 
 const history: UIMessage[] = [
@@ -106,10 +112,17 @@ function SessionMessagesFixture() {
 }
 
 const parameters = new URLSearchParams(location.search);
+const historyPreview = parameters.get("preview");
+if (parameters.get("case") === "history-boundary"
+  && (historyPreview === "slow" || historyPreview === "fast" || historyPreview === "pages" || historyPreview === "error")) {
+  installHistoryBoundaryPreviewApi(historyPreview);
+}
 const railClient = new NanobotClient({ url: "ws://127.0.0.1:8765", reconnect: false });
 const railHistory: UIMessage[] = Array.from({ length: 5 }, (_, index) => [
   { id: `u${1995 + index}`, role: "user" as const, content: `Question ${1995 + index}`, createdAt: index + 1 },
-  { id: `a${1995 + index}`, role: "assistant" as const, content: "A synthetic answer.\n\n".repeat(8), createdAt: index + 1 },
+  { id: `a${1995 + index}`, role: "assistant" as const, content: parameters.has("focus-links") && index === 4
+    ? Array.from({ length: 45 }, (_, i) => `[Reference ${i}](https://example.test/ref${i})`).join("\n")
+    : "A synthetic answer.\n\n".repeat(8), createdAt: index + 1 },
 ]).flat();
 function RailFixture() {
   const [messages, setMessages] = useState(parameters.has("real") ? [] : railHistory);
@@ -147,7 +160,9 @@ function RailFixture() {
       <button onClick={() => setStreaming(true)} disabled={streaming}>{streaming ? "Streaming" : "Simulate stream"}</button>
     </div>}
     {parameters.has("workbench") ? <PaneWorkbench
-      panes={[{ key: "rail", title: "Rail conversation" }]} activePaneKey="rail" layout="columns" showLayoutControl={false}
+      panes={parameters.has("focus-links")
+        ? [{ key: "rail", title: "Rail conversation" }, { key: "other", title: "Other conversation" }]
+        : [{ key: "rail", title: "Rail conversation" }]} activePaneKey="rail" layout="columns" showLayoutControl={false}
       onActivatePane={() => {}} onAddPane={() => {}} onLayoutChange={() => {}} onPaneOrderChange={() => {}}
       renderPane={(_pane, context) => <>
         {viewport(context.composerPortalTarget !== undefined, context.navigationFrame)}
@@ -221,12 +236,22 @@ if (parameters.get("case") === "skeleton-additions") installSkeletonPreviewApi()
 if (parameters.get("case") === "tools-catalog") installToolsCatalogPreviewApi();
 if (parameters.get("case") === "idle-compaction") installIdleCompactionApi();
 if (parameters.get("case") === "subagent-dock") installSubagentDockApi();
+if (parameters.get("case") === "session-transition" && parameters.has("preview")) installSessionTransitionPreviewApi();
 await initializeI18n();
-if (parameters.get("case") === "appearance" && parameters.has("lang")) {
+if (parameters.get("case") === "activity-wheel") await setAppLanguage("zh-CN");
+if ((["appearance", "session-transition"].includes(parameters.get("case") ?? "") || historyPreview) && parameters.has("lang")) {
   await setAppLanguage(normalizeLocale(parameters.get("lang")));
 }
+const widePreview = new URL(location.href);
+widePreview.searchParams.delete("narrow");
 createRoot(document.getElementById("root")!).render(<TooltipProvider>
-  {parameters.get("case") === "appearance"
+  {parameters.get("case") === "session-transition" && parameters.has("narrow")
+    ? <iframe title="Narrow goal preview" src={widePreview.href} style={{ display: "block", margin: "0 auto", height: "100dvh", width: "100%", maxWidth: 390, border: 0 }} />
+    : parameters.get("case") === "session-transition"
+    ? <SessionTransitionFixture />
+    : parameters.get("case") === "continuity"
+    ? <ContinuityFixture />
+    : parameters.get("case") === "appearance"
     ? <AppearanceFixture />
     : parameters.get("case") === "loaded-session-search"
     ? <LoadedSessionSearchFixture />
@@ -254,12 +279,18 @@ createRoot(document.getElementById("root")!).render(<TooltipProvider>
     ? <AnswerOrderFixture />
     : parameters.get("case") === "activity-logos"
     ? <ActivityLogosFixture parameters={parameters} />
+    : parameters.get("case") === "activity-wheel"
+    ? <ActivityWheelFixture />
+    : parameters.get("case") === "exec-session"
+    ? <ExecSessionFixture />
     : parameters.get("case") === "sidebar-activity"
     ? <SidebarActivityFixture />
     : parameters.get("case") === "chat-failure"
     ? <ChatFailureFixture parameters={parameters} />
     : parameters.get("case") === "display-math"
     ? <DisplayMathFixture />
+    : parameters.get("case") === "markdown-dollar-refs"
+    ? <MarkdownDollarRefsFixture />
     : parameters.get("case") === "code-wrapping"
     ? <CodeWrappingFixture />
     : parameters.get("case") === "typography"
@@ -279,7 +310,7 @@ createRoot(document.getElementById("root")!).render(<TooltipProvider>
     : parameters.get("case") === "new-chat-skeleton"
     ? <ClientProvider client={railClient} token="fixture"><NewChatSkeletonFixture /></ClientProvider>
     : parameters.get("case") === "skeleton-additions"
-    ? <ClientProvider client={railClient} token="fixture"><SkeletonAdditionsFixture /></ClientProvider>
+    ? <ClientProvider client={railClient} token="fixture" webuiCapabilities={parameters.has("sandboxSettings") ? ["webui.sandbox-settings.v1"] : []}><SkeletonAdditionsFixture /></ClientProvider>
     : parameters.get("case") === "skeleton"
     ? <ClientProvider client={railClient} token="fixture"><SkeletonFixture surface={parameters.get("surface") ?? "skills"} loading={parameters.has("loading")} /></ClientProvider>
     : parameters.get("case") === "tools-catalog"

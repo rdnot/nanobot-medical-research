@@ -9,7 +9,8 @@ import json
 import mimetypes
 import os
 import re
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from typing import Any, cast
 from urllib.parse import parse_qsl, quote, urljoin, urlparse
 
@@ -30,6 +31,13 @@ from nanobot.agent.tools.web_config import (
     WebFetchConfig,
     WebSearchConfig,
     WebToolsConfig,
+)
+from nanobot.execution.http import RedirectLimitError, open_redirected_get
+from nanobot.security.network import (
+    PinnedDNSAsyncTransport,
+    UnsafeURLRequestError,
+    httpx_env_proxy_mounts,
+    validate_url_target,
 )
 
 _DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"  # FORK: full Chrome UA
@@ -89,7 +97,7 @@ def _normalize(text: str) -> str:
 
 
 def _validate_url(url: str) -> tuple[bool, str]:
-    """Validate URL scheme/domain. Does NOT check resolved IPs (use _validate_url_safe for that)."""
+    """Validate the configured endpoint's syntax without resolving DNS."""
     try:
         p = urlparse(url)
         if p.scheme not in ('http', 'https'):
@@ -101,10 +109,9 @@ def _validate_url(url: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-def _validate_url_safe(url: str) -> tuple[bool, str]:
-    from nanobot.security.network import validate_url_target
-
-    return validate_url_target(url)
+def _redirect_error(url: str, error: UnsafeURLRequestError | RedirectLimitError) -> str:
+    detail = f"Redirect blocked: {error}" if isinstance(error, UnsafeURLRequestError) else str(error)
+    return ToolResult.error(json.dumps({"error": detail, "url": url}, ensure_ascii=False))
 
 
 # FORK: Truncate at paragraph/sentence boundary instead of mid-sentence
@@ -234,30 +241,26 @@ def _resolve_url_safe(url: str) -> tuple[bool, str, tuple[str, ...]]:
     return resolve_url_target(url)
 
 
-def _pinned_dns_transport() -> httpx.AsyncBaseTransport:
-    from nanobot.security.network import PinnedDNSAsyncTransport
-
-    return PinnedDNSAsyncTransport()
-
-
-def _fetch_client_kwargs(proxy: str | None, timeout: float) -> dict[str, Any]:
-    from nanobot.security.network import httpx_env_proxy_mounts
-
-    kwargs: dict[str, Any] = {"timeout": timeout}
-    if proxy:
-        kwargs["proxy"] = proxy
-    else:
-        kwargs["transport"] = _pinned_dns_transport()
-        mounts = httpx_env_proxy_mounts()
-        if mounts:
-            kwargs["mounts"] = mounts
-    return kwargs
+def _validate_url_safe(url: str) -> tuple[bool, str]:
+    return validate_url_target(url)
 
 
 def _unsafe_url_request_error(exc: BaseException) -> str | None:
-    from nanobot.security.network import UnsafeURLRequestError
-
     return str(exc) if isinstance(exc, UnsafeURLRequestError) else None
+
+
+def _web_fetch_text_result(
+    url: str, final_url: object, status: int, extractor: str, text: str, max_chars: int,
+) -> str:
+    truncated = len(text) > max_chars
+    if truncated:
+        text = text[:max_chars]
+    text = f"{_UNTRUSTED_BANNER}\n\n{text}"
+    return json.dumps({
+        "url": url, "finalUrl": final_url, "status": status,
+        "extractor": extractor, "truncated": truncated, "length": len(text),
+        "untrusted": True, "text": text,
+    }, ensure_ascii=False)
 
 
 # UPSTREAM (SSRF hardening + credential-URL protection):
@@ -307,42 +310,6 @@ def _redact_url_for_log(url: str) -> str:
         return f"{parsed.scheme}://{authority}"
     except ValueError:
         return "<redacted URL>"
-async def _get_with_safe_redirects(
-    client: httpx.AsyncClient,
-    url: str,
-    headers: dict[str, str] | None = None,
-) -> tuple[httpx.Response | None, str | None]:
-    current_url = url
-    for _ in range(MAX_REDIRECTS + 1):
-        is_valid, error_msg, _ = _resolve_url_safe(current_url)
-        if not is_valid:
-            return None, f"Redirect blocked: {error_msg}"
-
-        try:
-            response = await client.get(current_url, headers=headers, follow_redirects=False)
-        except httpx.RequestError as exc:
-            unsafe_error = _unsafe_url_request_error(exc)
-            if unsafe_error is not None:
-                return None, f"Redirect blocked: {unsafe_error}"
-            raise
-        is_redirect = 300 <= response.status_code < 400
-        if not is_redirect:
-            return response, None
-
-        location = response.headers.get("location")
-        if not location:
-            return response, None
-
-        next_url = urljoin(str(response.url), location)
-        is_valid, error_msg = _validate_url_safe(next_url)
-        if not is_valid:
-            await response.aclose()
-            return None, f"Redirect blocked: {error_msg}"
-
-        await response.aclose()
-        current_url = next_url
-
-    return None, f"Too many redirects: exceeded limit of {MAX_REDIRECTS}"
 
 
 def _format_results(query: str, items: list[dict[str, Any]], n: int) -> str:
@@ -481,17 +448,26 @@ async def _fetch_curl_cffi(
 
 
 async def _fetch_httpx(url: str, proxy: str | None, user_agent: str) -> _FetchResult:
-    """Tier 2: httpx with the upstream pinned-DNS transport and per-hop redirect checks."""
+    """Tier 2: httpx through upstream's pinned-DNS transport and ``open_redirected_get``
+    (every hop validated, redirect bodies closed unread)."""
     logger.debug("httpx fetch: {}", "proxy enabled" if proxy else "direct connection")
-    async with httpx.AsyncClient(**_fetch_client_kwargs(proxy, 30.0)) as client:
-        r, redirect_error = await _get_with_safe_redirects(
-            client, url, headers=_fetch_headers(user_agent, impersonating=False),
-        )
-        if redirect_error:
-            raise RedirectBlockedError(redirect_error)
-        if r is None:
-            raise RuntimeError("Fetch failed")
-        return r.content, {k.lower(): v for k, v in r.headers.items()}, r.status_code, "httpx"
+    try:
+        async with (
+            httpx.AsyncClient(
+                proxy=proxy or None,
+                timeout=30.0,
+                headers=_fetch_headers(user_agent, impersonating=False),
+                transport=None if proxy else PinnedDNSAsyncTransport(),
+                mounts=None if proxy else httpx_env_proxy_mounts(),
+            ) as client,
+            open_redirected_get(client, url, check_target=validate_url_target) as (r, _chain),
+        ):
+            content = await r.aread()
+            return content, {k.lower(): v for k, v in r.headers.items()}, r.status_code, "httpx"
+    except UnsafeURLRequestError as e:
+        raise RedirectBlockedError(f"Redirect blocked: {e}") from e
+    except RedirectLimitError as e:
+        raise RedirectBlockedError(str(e)) from e
 
 
 async def _fetch_raw(
@@ -720,7 +696,7 @@ class WebSearchTool(Tool):
             logger.debug("Using hardcoded SearXNG URL: {}", DEFAULT_SEARXNG_URL)
         else:
             provider = self.config.provider.strip().lower() or "brave"
-        n = min(max(count or self.config.max_results, 1), 10)
+        n = int(min(max(count or self.config.max_results, 1), 10))
 
         if provider == "olostep":
             return await self._search_olostep(query, n)
@@ -1552,19 +1528,29 @@ class WebFetchTool(Tool):
     ) -> Any:
         url = url.strip(" \t\r\n`\"'")
         extract_mode = kwargs.pop("extractMode", extract_mode)
-        max_chars = cast(int, kwargs.pop("maxChars", max_chars) or self.max_chars)
-        is_valid, error_msg = _validate_url_safe(url)
+        max_chars = int(kwargs.pop("maxChars", max_chars) or self.max_chars)
+        is_valid, error_msg = validate_url_target(url)
         if not is_valid:
             return ToolResult.error(json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False))
 
         # FORK: the tiered fetcher below (curl_cffi -> httpx) replaces upstream's
         # httpx pre-fetch. Both tiers validate every redirect hop; the httpx tier
-        # also pins DNS. Jina forwarding stays gated on credential-bearing URLs.
-        jina_remote_safe = not _url_carries_credentials(url)
-
+        # also pins DNS. Jina (opt-in) only receives a URL whose full redirect
+        # chain upstream's local preflight verified; images skip Jina.
         result = None
-        if self.config.use_jina_reader and jina_remote_safe:
-            result = await self._fetch_jina(url, max_chars)
+        if self.config.use_jina_reader:
+            redirect_chain: tuple[str, ...] = ()
+            try:
+                async with self._open_page(url, timeout=15.0) as (r, chain):
+                    if not _image_mime_for(r.headers.get("content-type", ""), url):
+                        redirect_chain = chain
+            except (UnsafeURLRequestError, RedirectLimitError) as e:
+                return _redirect_error(url, e)
+            except Exception as e:
+                logger.debug(
+                    "Jina preflight failed for {} ({})", _redact_url_for_log(url), type(e).__name__,
+                )
+            result = await self._fetch_jina(redirect_chain, max_chars)
             if result is not None:
                 return result
 
@@ -1588,8 +1574,8 @@ class WebFetchTool(Tool):
             # --- PDF ---
             elif "application/pdf" in ctype or url.lower().endswith(".pdf"):
                 text = _extract_pdf_text(content_bytes)
+                text = _smart_truncate(text, max_chars)  # FORK: truncate content, keep the banner whole
                 text = f"{_UNTRUSTED_BANNER}\n\n{text}"
-                text = _smart_truncate(text, max_chars)
                 result = json.dumps({
                     "url": url, "status": status_code, "fetcher": fetcher,
                     "extractor": "pymupdf", "truncated": "[...truncated...]" in text,
@@ -1609,8 +1595,8 @@ class WebFetchTool(Tool):
                     else:
                         logger.warning("JSON parse failed for {} ({}): falling back to raw text", url, e)
                     text = content_bytes.decode("utf-8", errors="replace")
+                    text = _smart_truncate(text, max_chars)  # FORK: truncate content, keep the banner whole
                     text = f"{_UNTRUSTED_BANNER}\n\n[JSON parse failed]\n\n{text}"
-                    text = _smart_truncate(text, max_chars)
                     result = json.dumps({   # <-- must build result here
                         "url": url, "status": status_code, "fetcher": fetcher,
                         "extractor": "raw", "truncated": "[...truncated...]" in text,
@@ -1660,11 +1646,11 @@ class WebFetchTool(Tool):
                                 if isinstance(replies, dict):
                                     _walk(cast(list[dict[str, Any]], replies["data"]["children"]), depth + 1)
                         _walk(cast(list[dict[str, Any]], raw[1]["data"]["children"]))
-                        text = f"{_UNTRUSTED_BANNER}\n\n" + "\n\n".join(parts)
+                        text = "\n\n".join(parts)
                     else:
                         text = json.dumps(raw, indent=2, ensure_ascii=False)
-                        text = f"{_UNTRUSTED_BANNER}\n\n{text}"
-                    text = _smart_truncate(text, max_chars)
+                    text = _smart_truncate(text, max_chars)  # FORK: truncate content, keep the banner whole
+                    text = f"{_UNTRUSTED_BANNER}\n\n{text}"
                     result = json.dumps({
                         "url": url, "status": status_code, "fetcher": fetcher,
                         "extractor": "reddit" if "reddit.com" in url else "json",
@@ -1678,8 +1664,8 @@ class WebFetchTool(Tool):
                 raw_html = content_bytes.decode("utf-8", errors="replace")
                 meta = _extract_meta(raw_html)
                 text, extractor = _html_to_text(raw_html, extract_mode)
+                text = _smart_truncate(text, max_chars)  # FORK: truncate content, keep the banner whole
                 text = f"{_UNTRUSTED_BANNER}\n\n{text}"
-                text = _smart_truncate(text, max_chars)
                 result = json.dumps({
                     "url": url, "status": status_code, "fetcher": fetcher,
                     "extractor": extractor, "truncated": "[...truncated...]" in text,
@@ -1692,8 +1678,8 @@ class WebFetchTool(Tool):
                 text = content_bytes.decode("utf-8", errors="replace")
                 text = re.sub(r'<\?xml[^>]+\?>', '', text)
                 text = _normalize(_strip_tags(text))
+                text = _smart_truncate(text, max_chars)  # FORK: truncate content, keep the banner whole
                 text = f"{_UNTRUSTED_BANNER}\n\n{text}"
-                text = _smart_truncate(text, max_chars)
                 result = json.dumps({
                     "url": url, "status": status_code, "fetcher": fetcher,
                     "extractor": "xml", "truncated": "[...truncated...]" in text,
@@ -1704,8 +1690,8 @@ class WebFetchTool(Tool):
             # --- Raw fallback ---
             else:
                 text = content_bytes.decode("utf-8", errors="replace")
+                text = _smart_truncate(text, max_chars)  # FORK: truncate content, keep the banner whole
                 text = f"{_UNTRUSTED_BANNER}\n\n{text}"
-                text = _smart_truncate(text, max_chars)
                 result = json.dumps({
                     "url": url, "status": status_code, "fetcher": fetcher,
                     "extractor": "raw", "truncated": "[...truncated...]" in text,
@@ -1731,9 +1717,29 @@ class WebFetchTool(Tool):
             logger.warning("WebFetch error for {} ({})", _redact_url_for_log(url), type(e).__name__)
             return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
 
-    # --- UPSTREAM: Optional Jina Reader support ---
-    async def _fetch_jina(self, url: str, max_chars: int) -> str | None:
-        if _url_carries_credentials(url):
+    # --- UPSTREAM: Optional Jina Reader support (verified redirect chain only) ---
+    @asynccontextmanager
+    async def _open_page(
+        self, url: str, *, timeout: float,
+    ) -> AsyncGenerator[tuple[httpx.Response, tuple[str, ...]]]:
+        proxy = self.proxy or None
+        async with (
+            httpx.AsyncClient(
+                proxy=proxy,
+                timeout=timeout,
+                headers={"User-Agent": self.user_agent},
+                transport=None if proxy else PinnedDNSAsyncTransport(),
+                mounts=None if proxy else httpx_env_proxy_mounts(),
+            ) as client,
+            open_redirected_get(client, url, check_target=validate_url_target) as page,
+        ):
+            yield page
+
+    async def _fetch_jina(self, redirect_chain: tuple[str, ...], max_chars: int) -> str | None:
+        if not redirect_chain:
+            return None
+        url = redirect_chain[0]
+        if any(map(_url_carries_credentials, redirect_chain)):
             logger.debug(
                 "Skipping Jina Reader for {}: URL carries credential material",
                 _redact_url_for_log(url),
