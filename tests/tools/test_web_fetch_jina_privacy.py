@@ -189,7 +189,7 @@ async def test_execute_keeps_unverified_or_credentialed_urls_local(monkeypatch, 
         pytest.fail("No HTTP request to Jina is allowed for this chain")
 
     monkeypatch.setattr(httpx.AsyncClient, "get", unexpected_jina)
-    monkeypatch.setattr(web_module, "_html_to_text", lambda html, mode: ("ok", "readability"))
+    monkeypatch.setattr(web_module, "_html_to_text", lambda html, mode, *args, **kwargs: ("ok", "readability"))
     monkeypatch.setattr(web_module, "PinnedDNSAsyncTransport", lambda: httpx.MockTransport(handler))
     monkeypatch.setattr("nanobot.security.network.getproxies", lambda: {})
 

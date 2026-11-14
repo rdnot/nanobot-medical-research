@@ -318,7 +318,7 @@ async def test_web_fetch_can_skip_jina_and_use_custom_user_agent(monkeypatch):
         return httpx.Response(200, headers={"content-type": "text/html"}, stream=HTMLBody())
 
     monkeypatch.setattr(tool, "_fetch_jina", _fail_jina)
-    monkeypatch.setattr(web_module, "_html_to_text", lambda html, mode: ("Hello world", "readability"))
+    monkeypatch.setattr(web_module, "_html_to_text", lambda html, mode, *args, **kwargs: ("Hello world", "readability"))
     monkeypatch.setattr(web_module, "PinnedDNSAsyncTransport", lambda: httpx.MockTransport(handler))
 
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
