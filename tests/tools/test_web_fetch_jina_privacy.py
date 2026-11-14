@@ -23,12 +23,18 @@ def _fake_resolve_public(hostname, port, family=0, type_=0):
 @pytest.fixture(autouse=True)
 def _no_curl_cffi_tier(monkeypatch: pytest.MonkeyPatch) -> None:
     """FORK: force the httpx tier (pinned DNS + per-hop redirect checks) so these
-    upstream tests run unchanged; the curl_cffi tier is tested in test_web_fetch_fork.py."""
+    upstream tests run unchanged and never touch the network; the curl_cffi and browser tiers
+    are tested in test_web_fetch_fork.py / test_web_fetch_scrapling.py."""
 
     async def _unavailable(url, proxy, user_agent):
         return None
 
     monkeypatch.setattr(web_module, "_fetch_curl_cffi", _unavailable)
+    if hasattr(web_module, "_fetch_scrapling"):  # scrapling branch: skip the browser tier too
+        async def _no_browser(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(web_module, "_fetch_scrapling", _no_browser)
 
 
 class _RecordingJinaClient:
