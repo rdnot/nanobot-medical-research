@@ -6,7 +6,9 @@ import { AgentActivityCluster } from "@/components/thread/AgentActivityCluster";
 import { ComposerUsagePopover, type ComposerRoundUsage } from "@/components/thread/ComposerUsagePopover";
 import type { ContextSnapshot } from "@/lib/types";
 import { ContextCompactionNotice } from "@/components/thread/ContextCompactionNotice";
+import { GoalIsland } from "@/components/thread/GoalIsland";
 import { ModelFallbackNotice } from "@/components/thread/ModelFallbackNotice";
+import { SandboxNotice, type SandboxIssue } from "@/components/thread/SandboxNotice";
 import { ModelPresetBadge, type ModelPresetOption } from "@/components/thread/ModelPresetBadge";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
 import { RecoveryNotice } from "@/components/thread/RecoveryNotice";
@@ -85,6 +87,19 @@ function ComposerPreview() {
     <p role="status" className="text-sm text-muted-foreground">{sent?.kind === "stopped" ? t("previews.composer.stopped")
       : sent ? t("previews.composer.sent", { content: sent.content, attachments: sent.attachments ? t("previews.composer.attachments", { amount: sent.attachments }) : "" })
         : t("previews.composer.hint")}</p>
+  </div>;
+}
+
+function GoalPreview() {
+  const { t } = useGalleryTranslation();
+  const [status, setStatus] = useState<"active" | "blocked">("active");
+  const [cancelled, setCancelled] = useState(false);
+  return <div>
+    <StatePicker label={t("previews.goal.state")} value={status} options={["active", "blocked"]} onChange={(next) => { setStatus(next); setCancelled(false); }} />
+    <div className="thread-header-container relative h-56 overflow-hidden rounded-control border bg-background">
+      {!cancelled && <GoalIsland goal={{ active: status === "active", status, ui_summary: t("previews.goal.summary"), objective: t("previews.goal.objective"),
+        ...(status === "blocked" ? { recap: t("previews.goal.recap") } : {}) }} cancelDisabled={false} onCancel={async () => setCancelled(true)} />}
+    </div>
   </div>;
 }
 
@@ -238,6 +253,30 @@ function RecoveryPreview() {
   </div>;
 }
 
+function SandboxPreview() {
+  const { t } = useGalleryTranslation();
+  const [backend, setBackend] = useState<"bwrap" | "seatbelt" | null>("bwrap");
+  const gateway = backend === "bwrap" ? "Linux / fnOS" : backend === "seatbelt" ? "macOS" : t("previews.sandbox.unknownGateway");
+  const [issue, setIssue] = useState<SandboxIssue>("missing");
+  const [dismissed, setDismissed] = useState(false);
+  const [opened, setOpened] = useState(false);
+  return <div className="space-y-4">
+    <StatePicker label={t("previews.sandbox.gateway")} value={gateway} options={["Linux / fnOS", "macOS", t("previews.sandbox.unknownGateway")]}
+      onChange={(value) => setBackend(value === "Linux / fnOS" ? "bwrap" : value === "macOS" ? "seatbelt" : null)} />
+    <div className="flex flex-wrap gap-2">
+      {(["missing", "permissions", "startup"] as const).map((value) => <Button key={value}
+        variant={issue === value ? "secondary" : "outline"} size="sm" className="rounded-full"
+        onClick={() => { setIssue(value); setDismissed(false); setOpened(false); }}>{t(`previews.sandbox.${value}`)}</Button>)}
+    </div>
+    <div className="thread-composer-stack">
+      {!dismissed ? <SandboxNotice issue={issue} backend={backend} onDismiss={() => setDismissed(true)} onOpenSettings={() => setOpened(true)} /> : null}
+      <ThreadComposer workspaceControlsHidden onSend={() => false} onStop={() => {}} />
+    </div>
+    <Button variant="outline" size="sm" onClick={() => setDismissed(false)}>{t("previews.fallback.showAgain")}</Button>
+    <p role="status" className="text-caption text-muted-foreground">{t(`previews.sandbox.${opened ? "settingsAction" : "hint"}`)}</p>
+  </div>;
+}
+
 function FallbackPreview() {
   const { t } = useGalleryTranslation();
   const [mode, setMode] = useState<"fallback" | "reauth">("fallback");
@@ -318,6 +357,9 @@ function ResponseSourcesPreview() {
 
 const components = "webui/src/components/";
 export const conversationExamples: ComponentExample[] = [
+  { title: "previews.goal.title", files: ["thread/GoalIsland"], Preview: GoalPreview,
+    description: "previews.goal.description", options: "previews.goal.options",
+    code: '<GoalIsland goal={{ active: true, status: "active", ui_summary: summary, objective }} />' },
   { title: "previews.composer.title", files: ["thread/ThreadComposer"], Preview: ComposerPreview,
     description: "previews.composer.description", options: "previews.composer.options",
     code: '<ThreadComposer onSend={send} modelPresets={presets} onModelPresetChange={setPreset} slashCommands={commands} />' },
@@ -351,6 +393,9 @@ export const conversationExamples: ComponentExample[] = [
   { title: "previews.fallback.title", files: ["thread/ModelFallbackNotice"], Preview: FallbackPreview,
     description: "previews.fallback.description", options: "previews.fallback.options",
     code: '<ModelFallbackNotice model="gpt-4.1" onDismiss={dismiss} onOpenSettings={openModelSettings} />' },
+  { title: "previews.sandbox.title", files: ["thread/SandboxNotice"], Preview: SandboxPreview,
+    description: "previews.sandbox.description", options: "previews.sandbox.options",
+    code: '<SandboxNotice issue="missing" backend="bwrap" onDismiss={dismiss} onOpenSettings={openSandboxSettings} />' },
   { title: "previews.compaction.title", files: ["thread/ContextCompactionNotice"], Preview: CompactionPreview,
     description: "previews.compaction.description", options: "previews.compaction.options",
     code: '<ContextCompactionNotice compaction={{ id: "compaction-1", phase: "succeeded", announce: true }} />' },

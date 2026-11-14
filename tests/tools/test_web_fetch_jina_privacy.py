@@ -4,6 +4,7 @@ import json
 import socket
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from nanobot.agent.tools import web as web_module
@@ -12,10 +13,22 @@ from nanobot.agent.tools.web import (
     _redact_url_for_log,
     _url_carries_credentials,
 )
+from nanobot.agent.tools.web_config import WebFetchConfig
 
 
 def _fake_resolve_public(hostname, port, family=0, type_=0):
     return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("93.184.216.34", 0))]
+
+
+@pytest.fixture(autouse=True)
+def _no_curl_cffi_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """FORK: force the httpx tier (pinned DNS + per-hop redirect checks) so these
+    upstream tests run unchanged; the curl_cffi tier is tested in test_web_fetch_fork.py."""
+
+    async def _unavailable(url, proxy, user_agent):
+        return None
+
+    monkeypatch.setattr(web_module, "_fetch_curl_cffi", _unavailable)
 
 
 class _RecordingJinaClient:
@@ -98,24 +111,6 @@ def test_log_label_preserves_ipv6_origin_without_credentials() -> None:
     assert _redact_url_for_log(url) == "https://[2001:db8::1]:8443"
 
 
-async def test_jina_is_skipped_for_credential_urls(jina_client) -> None:
-    tool = WebFetchTool()
-    result = await tool._fetch_jina(
-        "https://example.com/download?token=abc123", max_chars=1000
-    )
-    assert result is None
-    assert jina_client.requested == []
-
-
-async def test_jina_is_skipped_for_userinfo_urls(jina_client) -> None:
-    tool = WebFetchTool()
-    result = await tool._fetch_jina(
-        "https://user:secret@example.com/report", max_chars=1000
-    )
-    assert result is None
-    assert jina_client.requested == []
-
-
 async def test_jina_skip_log_does_not_contain_url_credentials(
     jina_client, monkeypatch
 ) -> None:
@@ -123,7 +118,7 @@ async def test_jina_skip_log_does_not_contain_url_credentials(
     monkeypatch.setattr(web_module.logger, "debug", lambda *args: logged.append(args))
 
     result = await WebFetchTool()._fetch_jina(
-        "https://user:secret@example.com/private/webhook-token?token=abc",
+        ("https://user:secret@example.com/private/webhook-token?token=abc",),
         max_chars=1000,
     )
 
@@ -137,7 +132,7 @@ async def test_jina_skip_log_does_not_contain_url_credentials(
 
 async def test_jina_still_used_for_plain_urls(jina_client) -> None:
     tool = WebFetchTool()
-    result = await tool._fetch_jina("https://example.com/watch?v=abc123", max_chars=1000)
+    result = await tool._fetch_jina(("https://example.com/watch?v=abc123",), max_chars=1000)
     assert result is not None
     assert json.loads(result)["extractor"] == "jina"
     assert jina_client.requested == [
@@ -148,136 +143,53 @@ async def test_jina_still_used_for_plain_urls(jina_client) -> None:
 async def test_fragment_is_never_forwarded(jina_client) -> None:
     tool = WebFetchTool()
     result = await tool._fetch_jina(
-        "https://example.com/page?q=1#access_token=leaked", max_chars=1000
+        ("https://example.com/page?q=1#access_token=leaked",), max_chars=1000
     )
     assert result is not None
     assert jina_client.requested == ["https://r.jina.ai/https://example.com/page?q=1"]
 
 
-async def test_execute_fetches_credential_urls_locally(monkeypatch) -> None:
-    """The tool boundary: a credential URL must use the local extractor and
-    produce zero requests to the remote reader."""
-
-    tool = WebFetchTool()
-    requested: list[str] = []
-
-    class FakeStreamResponse:
-        status_code = 200
-        headers = {"content-type": "text/html"}
-        url = "https://example.com/download"
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    class FakeResponse:
-        status_code = 200
-        url = "https://example.com/download"
-        text = "<html><head><title>T</title></head><body><p>ok</p></body></html>"
-        headers = {"content-type": "text/html"}
-        is_redirect = False
-
-        def raise_for_status(self):
-            return None
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def stream(self, method, url, headers=None, **kwargs):
-            requested.append(str(url))
-            return FakeStreamResponse()
-
-        async def get(self, url, headers=None, **kwargs):
-            requested.append(str(url))
-            return FakeResponse()
-
-    # FORK: mock the tiered fetcher; credential URLs are blocked from Jina by
-    # _url_carries_credentials() before any fetch happens.
-    async def _fake_fetch_raw(url, proxy=None, user_agent=None):
-        return (b"<html><head><title>T</title></head><body><p>ok</p></body></html>",
-                {"content-type": "text/html"}, 200, "httpx")
-    monkeypatch.setattr(web_module, "_fetch_raw", _fake_fetch_raw)
-
-    with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
-        result = await tool.execute(url="https://example.com/download?token=abc123")
-
-    data = json.loads(result)
-    assert data["extractor"] == "readability"
-    assert all("r.jina.ai" not in url for url in requested)
-
-
-async def test_execute_does_not_send_redirected_credential_url_to_jina(monkeypatch) -> None:
-
-    tool = WebFetchTool()
+@pytest.mark.parametrize("scenario", ["direct", "userinfo", "final-hop", "middle-hop", "failed-preflight"])
+async def test_execute_keeps_unverified_or_credentialed_urls_local(monkeypatch, scenario: str) -> None:
+    # FORK: Jina is opt-in; enable it so the verified-redirect-chain gate is exercised.
+    tool = WebFetchTool(config=WebFetchConfig(use_jina_reader=True))
     requested: list[str] = []
     short_url = "https://example.com/short"
     signed_url = "https://cdn.example.com/file?token=secret"
+    public_url = "https://cdn.example.com/result"
+    chains = {
+        "direct": [signed_url],
+        "userinfo": ["https://user:secret@example.com/report"],
+        "final-hop": [short_url, signed_url],
+        "middle-hop": [short_url, signed_url, public_url],
+        "failed-preflight": [short_url, public_url],
+    }
+    chain = chains[scenario]
+    redirects = dict(zip(chain, chain[1:]))
 
-    class FakeStreamResponse:
-        def __init__(self, url: str):
-            self.url = url
-            self.status_code = 302 if url == short_url else 200
-            self.headers = (
-                {"location": signed_url}
-                if url == short_url
-                else {"content-type": "text/html"}
-            )
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        requested.append(url)
+        if scenario == "failed-preflight" and len(requested) == len(chain):
+            raise httpx.ReadError("preflight interrupted", request=request)
+        if url in redirects:
+            return httpx.Response(302, headers={"location": redirects[url]})
+        assert url == chain[-1]
+        return httpx.Response(
+            200, headers={"content-type": "text/html"}, text="<html><body>ok</body></html>",
+        )
 
-        async def __aenter__(self):
-            return self
+    async def unexpected_jina(*args, **kwargs):
+        pytest.fail("No HTTP request to Jina is allowed for this chain")
 
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    class FakeResponse:
-        status_code = 200
-        url = signed_url
-        text = "<html><head><title>T</title></head><body><p>ok</p></body></html>"
-        headers = {"content-type": "text/html"}
-        is_redirect = False
-
-        def raise_for_status(self):
-            return None
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        def stream(self, method, url, headers=None, **kwargs):
-            requested.append(str(url))
-            return FakeStreamResponse(str(url))
-
-        async def get(self, url, headers=None, **kwargs):
-            requested.append(str(url))
-            return FakeResponse()
-
-    # FORK: mock the tiered fetcher (redirect validation is covered in
-    # test_web_fetch_security.py); only the Jina gate matters here.
-    async def _fake_fetch_raw(url, proxy=None, user_agent=None):
-        return (b"<html><head><title>T</title></head><body><p>ok</p></body></html>",
-                {"content-type": "text/html"}, 200, "httpx")
-    monkeypatch.setattr(web_module, "_fetch_raw", _fake_fetch_raw)
+    monkeypatch.setattr(httpx.AsyncClient, "get", unexpected_jina)
+    monkeypatch.setattr(web_module, "_html_to_text", lambda html, mode: ("ok", "readability"))
+    monkeypatch.setattr(web_module, "PinnedDNSAsyncTransport", lambda: httpx.MockTransport(handler))
+    monkeypatch.setattr("nanobot.security.network.getproxies", lambda: {})
 
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
-        result = await tool.execute(url=short_url)
+        result = await tool.execute(url=chain[0])
 
     data = json.loads(result)
     assert data["extractor"] == "readability"
-    # FORK: signed_url redirect is followed internally by curl_cffi/httpx, not via
-    # upstream's pre-fetch scanner. Core security property: Jina never sees the URL.
-    assert all("r.jina.ai" not in url for url in requested)
+    assert requested == chain * 2

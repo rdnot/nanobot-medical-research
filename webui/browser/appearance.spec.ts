@@ -4,6 +4,13 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/**", (route) => route.abort());
 });
 
+test("appearance puts interface settings before activity display", async ({ page }) => {
+  await page.goto("/browser/fixture.html?case=appearance");
+  await expect(page.locator(".appearance-page > section > h2")).toHaveText([
+    "Theme", "Reading", "Interface", "Activity display",
+  ]);
+});
+
 test("system theme stays live, explicit choices persist, and tabs agree", async ({ page, context }) => {
   await page.emulateMedia({ colorScheme: "light" });
   await page.goto("/browser/fixture.html?case=appearance");
@@ -91,7 +98,7 @@ test("appearance explanations open on demand and follow the selected display mod
   const explanations = [
     ["Reading text size", "Adjust messages, code and the composer—not navigation."],
     ["Activity display", "Choose how much detail appears as nanobot works."],
-    ["Activity details", "Show progress while working; keep finished work compact."],
+    ["Activity details", "Keep details collapsed by default. Show the latest activity while working."],
     ["Edit preview", "Show changed files and line counts."],
   ];
   for (const [label, description] of explanations) {
@@ -102,12 +109,20 @@ test("appearance explanations open on demand and follow the selected display mod
     await expect(page.getByRole("tooltip")).toBeHidden();
   }
 
-  await page.getByRole("button", { name: "Expanded", exact: true }).click();
+  const collapsed = page.getByRole("button", { name: "Collapsed", exact: true });
+  const expanded = page.getByRole("button", { name: "Expanded", exact: true });
+  await expect(collapsed).toHaveAttribute("aria-pressed", "true");
+  await expanded.click();
+  await page.reload();
+  await expect(expanded).toHaveAttribute("aria-pressed", "true");
   const activity = page.getByRole("button", { name: "Activity details", exact: true });
   await activity.focus();
   await expect(page.getByRole("tooltip")).toHaveText("Keep activity details expanded by default.");
   await activity.press("Escape");
   await expect(page.getByRole("tooltip")).toBeHidden();
+  await collapsed.click();
+  await page.reload();
+  await expect(collapsed).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Diff", exact: true }).click();
   const edits = page.getByRole("button", { name: "Edit preview", exact: true });
   await edits.focus();
@@ -238,7 +253,10 @@ test("unfinished numeric input reports an error instead of acting like a cleared
     expect(await input.evaluate((element: HTMLInputElement) => element.validity.badInput)).toBe(true);
     await input.press("Enter");
     await expect(input).toHaveAttribute("aria-invalid", "true");
+    // The pointer can leave the editor while the user reads the validation hint.
+    await page.mouse.move(0, 0);
     await expect(page.getByRole("tooltip", { name: /Your text remains at 18 px\./ })).toBeVisible();
+    await expect(input).toBeFocused();
     await expect(paragraph).toHaveCSS("font-size", "18px");
     await input.click();
     await input.press("Escape");
