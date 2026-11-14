@@ -271,7 +271,7 @@ async def test_browser_tier_retries_pubmed_shell_then_falls_to_httpx(monkeypatch
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-type": "text/html"}, content=b"<html>fallback</html>", request=request)
 
-    monkeypatch.setattr(web_module, "_pinned_dns_transport", lambda: httpx.MockTransport(handler))
+    monkeypatch.setattr(web_module, "PinnedDNSAsyncTransport", lambda: httpx.MockTransport(handler))
     with patch("nanobot.security.network.socket.getaddrinfo", _fake_resolve_public):
         content, _headers, _status, fetcher = await web_module._fetch_raw("https://pubmed.ncbi.nlm.nih.gov/123/")
 
