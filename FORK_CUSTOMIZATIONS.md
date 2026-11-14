@@ -13,22 +13,28 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified November 7, 2026 — upstream `12c7d116a`, merge main `127a1493b`)
+## Customizations (verified November 14, 2026 — upstream `12a86eaa8`, merge main `e68a8a307`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
   `nanobot/agent/tools/web_config.py`, so the fork default lives there now; `DEFAULT_SEARXNG_URL` constant forces
   the SearXNG provider when set.
 - `_fetch_raw` → `_fetch_curl_cffi` (Chrome impersonation, manual redirect loop with per-hop
-  SSRF validation) → `_fetch_httpx` (upstream pinned-DNS transport + `_get_with_safe_redirects`).
+  SSRF validation) → `_fetch_httpx` (upstream `PinnedDNSAsyncTransport` + env proxy mounts +
+  `nanobot.execution.http.open_redirected_get`, every hop checked by `_validate_url_safe`, redirect
+  bodies closed unread).
   `RedirectBlockedError` is final and never retried by another tier. The configured
   `web.user_agent` is passed through both tiers.
 - `execute()`: HTTP status ≥ 400 → `ToolResult.error`; images detected via `_image_mime_for`
   (Content-Type first); PDFs via `_extract_pdf_text` (PyMuPDF, else bundled pypdf; raises on
   failure so the tool reports an error); JSON/HTML/XML/raw branches with `_smart_truncate`,
   `_extract_meta`, `_html_to_text` (trafilatura → readability → strip_tags).
-- Upstream's `_fetch_readability` path was removed (unreachable); `_get_with_safe_redirects`,
-  `_fetch_client_kwargs` and `_pinned_dns_transport` are reused by the httpx tier.
+- Upstream's `_fetch_readability`/`_extract_readable_html`/`_to_markdown` path is removed (the
+  tiers replace it). `_validate_url_safe` is the single URL check (`execute()` + httpx hops).
+- Jina Reader (opt-in) only receives a URL after upstream's local `_open_page` preflight verified
+  the whole redirect chain is credential-free (`_fetch_jina(redirect_chain, …)`); images skip Jina.
+- Content is truncated by `_smart_truncate` BEFORE the untrusted banner is prepended, so the banner
+  always survives truncation (upstream's contract).
 - `WebFetchTool.max_chars` default 500,000; `maxChars` is no longer in the tool schema.
 - Scrapling branch only: `AsyncStealthySession` tier between curl_cffi and httpx with
   Cloudflare/reCAPTCHA handling, `_is_content_sufficient`, BBC live-blog/Next.js extractors,
@@ -103,7 +109,9 @@ is marked `# UPSTREAM` where that helps during merges.
   intentionally unsandboxed); help text entries.
 
 ### `nanobot/agent/loop.py` — `_cancel_active_tasks`
-- Skips `asyncio.current_task()` when cancelling a session's tasks. `/c` and `/new`
+- Now upstream behavior (Nov 2026: upstream also keeps the worker's task/inbox registered while
+  it runs); the fork test stays as a regression guard. Original fork fix: skips
+  `asyncio.current_task()` when cancelling a session's tasks. `/c` and `/new`
   dispatched on an idle session run ON the session worker, and the worker delivers the
   command's own confirmation; cancelling it dropped the reply on every gateway channel
   (discord, whatsapp, websocket showed typing/turn_end but no text; CLI one-shot mode
@@ -159,12 +167,15 @@ is marked `# UPSTREAM` where that helps during merges.
   retry-count tests (`tests/providers/test_provider_retry.py`,
   `tests/agent/test_runner_fallback.py` — jitter bounds asserted against the fork ladder), WebUI settings tests (`use_jina_reader` default),
   outbound collectors that skip `_tools_summary` (`tests/cron/test_cron_reply_contract.py`,
-  `tests/webui/test_automation_chat_binding.py`), and the image media-type case test in
-  `test_web_fetch_security.py` (one request, no httpx image preflight; params dropped).
+  `tests/webui/test_automation_chat_binding.py`), and in `test_web_fetch_security.py` /
+  `test_web_fetch_jina_privacy.py` the asserts that counted upstream's preflight + readability double
+  fetch (one request chain on the fork), `finalUrl`, image MIME params (dropped) and the removed
+  `_extract_readable_html` (fork patches `_html_to_text`); Jina privacy tests enable
+  `use_jina_reader` to exercise the verified-chain gate. `test_web_fetch_accepts_json_integer_character_limit`
+  is skipped (fork keeps `maxChars` out of the schema).
 - Force-final notice adaptations: `tests/agent/test_loop_iteration_limit.py` (the scripted model
-  skips the hidden `_FORCE_FINAL_PROMPT` so it still reaches the iteration limit) and
-  `tests/test_openai_api_sessions.py::test_old_history_survives_route_fix_restart_and_rollback`
-  (compares the live tool prefix without the internal `_hidden_history` marker).
+  skips the hidden `_FORCE_FINAL_PROMPT` so it still reaches the iteration limit).
+  (`tests/test_openai_api_sessions.py` left with upstream's removal of the standalone API server.)
 - `tests/test_update_jobs.py::test_worker_survives_coordinator_loss_without_unlocking_live_pip`
   waits for the held pip on a 60 s wall-clock deadline instead of 200 × 25 ms (~5 s): the
   worker needs ~3 s to spawn the venv interpreter + pip, which exceeded 5 s on loaded Windows
