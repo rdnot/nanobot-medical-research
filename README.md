@@ -61,7 +61,7 @@ irm https://raw.githubusercontent.com/rdnot/nanobot-medical-research/main/script
 
 Browser-tier (`scrapling`) branch instead of `main`:
 ```bash
-NANOBOT_FORK_BRANCH=scrapling curl -fsSL https://raw.githubusercontent.com/rdnot/nanobot-medical-research/main/scripts/install-fork.sh | sh
+curl -fsSL https://raw.githubusercontent.com/rdnot/nanobot-medical-research/main/scripts/install-fork.sh | NANOBOT_FORK_BRANCH=scrapling sh
 ```
 ```powershell
 $env:NANOBOT_FORK_BRANCH = "scrapling"; irm https://raw.githubusercontent.com/rdnot/nanobot-medical-research/main/scripts/install-fork.ps1 | iex

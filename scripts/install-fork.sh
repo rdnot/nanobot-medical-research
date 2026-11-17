@@ -5,7 +5,8 @@
 # the regular nanobot installer via NANOBOT_INSTALL_TARGET. Re-run to update.
 #
 #   curl -fsSL https://raw.githubusercontent.com/rdnot/nanobot-medical-research/main/scripts/install-fork.sh | sh
-#   NANOBOT_FORK_BRANCH=scrapling curl -fsSL ... | sh      # browser-tier branch
+#   curl -fsSL ... | NANOBOT_FORK_BRANCH=scrapling sh      # browser-tier branch
+#   (the variable must prefix 'sh': before 'curl' it never reaches the script)
 set -eu
 
 repo="rdnot/nanobot-medical-research"
