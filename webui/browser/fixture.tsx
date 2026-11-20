@@ -3,8 +3,11 @@ import { createRoot } from "react-dom/client";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initializeI18n, setAppLanguage } from "@/i18n";
-import { normalizeLocale } from "@/i18n/config";
+import { LOCALE_STORAGE_KEY, normalizeLocale } from "@/i18n/config";
+import { installFocusModality } from "@/lib/focus-modality";
 import "../src/globals.css";
+
+installFocusModality();
 
 const parameters = new URLSearchParams(location.search);
 const fixtureCase = parameters.get("case");
@@ -22,6 +25,15 @@ async function withClient(fixture: ReactElement, webuiCapabilities?: string[]) {
 // Load and install only the selected scene's mocks before i18n and React mount.
 async function loadFixture() {
   switch (fixtureCase) {
+    case "model-options": {
+      const { ModelOptionsFixture, installModelOptionsPreviewApi } = await import("./model-options-fixture");
+      installModelOptionsPreviewApi();
+      return <ModelOptionsFixture />;
+    }
+    case "toast": {
+      const { ToastFixture } = await import("./toast-fixture");
+      return <ToastFixture parameters={parameters} />;
+    }
     case "session-transition": {
       const { installSessionTransitionPreviewApi, SessionTransitionFixture } = await import("./session-transition-fixture");
       if (parameters.has("preview")) installSessionTransitionPreviewApi();
@@ -62,7 +74,8 @@ async function loadFixture() {
       return withClient(<MobileChatLayoutFixture parameters={parameters} />);
     }
     case "composer-action": {
-      const { ComposerActionFixture } = await import("./composer-action-fixture");
+      const { ComposerActionFixture, installMissingMicrophonePreview } = await import("./composer-action-fixture");
+      if (parameters.get("voiceError") === "noDevice") installMissingMicrophonePreview();
       return <ComposerActionFixture parameters={parameters} />;
     }
     case "workspace-alignment": {
@@ -79,7 +92,7 @@ async function loadFixture() {
     }
     case "file-diff": {
       const { FileDiffFixture } = await import("./file-diff-fixture");
-      return <FileDiffFixture />;
+      return <FileDiffFixture shiki={parameters.has("shiki")} />;
     }
     case "file-edit-path": {
       const { FileEditPathFixture } = await import("./file-edit-path-fixture");
@@ -209,6 +222,12 @@ async function loadFixture() {
 const fixture = await loadFixture();
 await initializeI18n();
 if (fixtureCase === "activity-wheel") await setAppLanguage("zh-CN");
+if (fixtureCase === "toast" && parameters.has("lang")) {
+  const previous = localStorage.getItem(LOCALE_STORAGE_KEY);
+  await setAppLanguage(normalizeLocale(parameters.get("lang")));
+  if (previous === null) localStorage.removeItem(LOCALE_STORAGE_KEY);
+  else localStorage.setItem(LOCALE_STORAGE_KEY, previous);
+}
 if ((["appearance", "session-transition", "tools-catalog"].includes(fixtureCase ?? "") || historyPreview) && parameters.has("lang")) {
   await setAppLanguage(normalizeLocale(parameters.get("lang")));
 }

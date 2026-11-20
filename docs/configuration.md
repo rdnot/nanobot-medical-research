@@ -758,7 +758,9 @@ nanobot agent -m "Hello!"
 
 The WebUI model selector loads the models available to the signed-in account from Codex's online catalog. Context-window and reasoning-effort metadata come from that response; if discovery is unavailable, nanobot keeps a small built-in fallback instead of emptying the selector.
 
-Codex Fast mode can be enabled from the WebUI provider settings, or with:
+In **Settings → Models**, open a Codex preset and select the single lightning button for Fast or the double lightning button for Ultrafast where supported. Select the active button again to turn the speed boost off. The control shows the provider's current speed if the preset does not specify one. The config field is `modelPresets.<name>.codexFastMode` (`true`, `false`, or `"ultrafast"`); omit the field to use the provider default below. A topic's explicit speed choice overrides its preset.
+
+Set the connection-wide default in the WebUI provider settings or in `extraBody`:
 
 ```json
 {
@@ -772,7 +774,7 @@ Codex Fast mode can be enabled from the WebUI provider settings, or with:
 }
 ```
 
-The switch sends the Responses API `service_tier: "priority"` value. It only works for models and accounts that support Fast mode; turn the switch off to return to standard processing. Fast mode consumes Codex credits at a higher rate. See the [OpenAI Codex rate card](https://help.openai.com/en/articles/20001106) for current details.
+Fast sends `service_tier: "priority"`; Ultrafast sends `service_tier: "ultrafast"`; explicitly turning the speed boost off removes the tier from the request. Fast and Ultrafast consume Codex credits at higher rates, and Ultrafast also requires a supported model and an eligible account or workspace. See the [Codex speed options](https://learn.chatgpt.com/docs/agent-configuration/speed.md) for current availability.
 
 For proxy, remote/headless login, model-name, or config-key errors, see [`troubleshooting.md`](./troubleshooting.md#provider-and-model-problems).
 
@@ -1515,6 +1517,8 @@ OpenAI Codex, xAI Grok subscriptions, and Azure OpenAI use Responses; Anthropic 
 **Advanced options** opens in a separate dialog; closing it returns to the preset editor. Changing a preset's model or provider resets its API selection to Auto unless the same update supplies a new declaration. Each fallback preset keeps its own API settings. Existing `agents.defaults.api` and inline fallback `api` values are preserved when converting to named presets.
 
 Use the **Image input** switch in each preset to match the model's image capability. It is enabled by default; turn it off for text-only models. Requests containing images follow the configured primary and fallback order, using presets with **Image input** enabled. Text-only requests use the full configured order. If every candidate is text-only, nanobot returns an image-input error before sending the request.
+
+In WebUI, if **Image input** is off and no fallback accepts images, the composer keeps the draft. Select **View preset** in the toast to check the switch. Turning it on lets nanobot send images, but the model must support them. If the provider rejects a request containing images before any work is saved, the toast also takes you to the preset.
 
 For manual configuration, set `supportsImages` on a named preset, the implicit `agents.defaults` preset, or an inline fallback. Each defaults independently to `true`; use `false` for a text-only model. Transient retries preserve the original messages and images, and API validation errors are returned directly.
 

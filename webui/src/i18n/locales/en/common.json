@@ -331,13 +331,12 @@
       "local_file_not_found": "The SSH config or private key file couldn't be found on this machine.",
       "file_picker_unavailable": "The file chooser couldn't open. You can paste a local file path instead.",
       "runtime_user_denied": "SSH signed in, but cannot read as that service account without a password. Check the account with your server administrator.",
-      "python_unavailable": "The server needs python3 to locate its existing nanobot configuration.",
+      "python_unavailable": "SSH signed in, but couldn't start Python 3. Make python3 or python available to the SSH login on the server.",
       "config_not_found": "nanobot's config wasn't found. Set its server-side path in Connection options.",
       "config_permission": "This SSH user can't read nanobot's config. Set the nanobot service account in Connection options.",
-      "config_invalid": "Couldn't read the server's nanobot configuration.",
+      "config_invalid": "Couldn't read the server's nanobot configuration. Check that the selected file is valid UTF-8 JSON.",
       "webui_disabled": "The server's WebUI is disabled. Enable it on the server first.",
       "webui_auth_required": "The server needs a WebUI login secret in its config. No model key is needed here.",
-      "public_ws_unsupported": "This server uses a public WebSocket URL. This first version supports a loopback WebUI over SSH.",
       "remote_auth_failed": "The server rejected its saved WebUI credential. Check its running configuration.",
       "incompatible_gateway": "This endpoint isn't a compatible nanobot gateway. Update the server or check its configuration.",
       "webui_unavailable": "The gateway is running, but its WebUI isn't installed.",
@@ -454,10 +453,7 @@
       "ariaLabel": "Change language"
     },
     "apps": "Apps",
-    "automations": "Automations",
-    "skills": {
-      "title": "Skills"
-    }
+    "automations": "Automations"
   },
   "settings": {
     "timezoneNoMatches": "No matching timezones.",
@@ -881,7 +877,8 @@
       "maxTokens": "Max output tokens",
       "temperature": "Temperature",
       "imageInput": "Image input",
-      "imageInputHelp": "When off, requests containing images skip this preset.",
+      "imageInputHelp": "Turn on only if the model supports images. When off, requests containing images skip this preset.",
+      "viewPreset": "View preset",
       "reasoningEffort": "Reasoning effort",
       "convertTitle": "Convert setup",
       "convertHelp": "Convert primary and fallback models to presets.",
@@ -1402,7 +1399,7 @@
       "extraHeaders": "Headers",
       "extraBody": "Body parameters",
       "extraQuery": "Query parameters",
-      "capabilityFastMode": "Fast mode",
+      "capabilityFastMode": "Fast",
       "capabilityFastModeHelp": "Faster responses, increased usage.",
       "capabilityXSearch": "X Search",
       "capabilityXSearchHelp": "Supported Grok models can search X.\n\nAllow supported Grok models to use xAI-hosted X Search. Search activity appears in chat.",
@@ -1438,12 +1435,15 @@
       "enable": "Enable tracing"
     },
     "apps": {
+      "allTypes": "All",
+      "typeFilter": "Tool type",
+      "statusFilter": "Status",
       "description": "Manage CLI Apps, Agent Plugins, and MCP tools.",
       "cliLabel": "CLI App",
       "mcpLabel": "MCP",
       "channelLabel": "Channel",
       "featureLabel": "Feature",
-      "filterAll": "Ready",
+      "readyOnly": "Ready only",
       "filterPlugins": "Agent Plugins",
       "filterCli": "CLI Apps",
       "filterMcp": "MCP",
@@ -1452,17 +1452,15 @@
       "featured": "Tools",
       "mcpTools": "MCP tools",
       "loading": "Loading apps…",
-      "empty": "No tools match your search.",
-      "emptyApps": "No CLI Apps available.",
-      "emptyIntegrations": "No MCP tools available.",
-      "emptyReady": "No tools are ready yet.",
+      "empty": "No tools match your search",
+      "emptyApps": "No tools available",
+      "emptyIntegrations": "No MCP tools available",
+      "emptyReady": "No tools are ready yet",
       "clearSearch": "Clear search",
-      "browseApps": "Browse CLI Apps",
-      "browseIntegrations": "Browse MCP tools",
-      "emptyIntegrationsHint": "Add a custom MCP server below.",
+      "emptyIntegrationsHint": "Add a custom MCP server below",
       "restartRequired": "Restart nanobot to apply updated apps and MCP tools.",
-      "emptyPlugins": "No Agent Plugins installed.",
-      "emptyPluginsHint": "Add a plugin to the workspace plugins directory to enable it here.",
+      "emptyPlugins": "No Agent Plugins installed",
+      "emptyPluginsHint": "Add a plugin to the workspace plugins directory to enable it here",
       "pluginPermissions": "Declared permissions",
       "pluginServers": "MCP servers",
       "pluginTrustNotice": "Plugins run with nanobot’s operating-system permissions. Declared permissions do not sandbox them.",
@@ -1501,7 +1499,7 @@
       "configuredInstances": "{{count}} instances configured",
       "connectPreview": "Run the command below in your terminal to connect.",
       "copyCommand": "Copy command",
-      "filterAll": "All",
+      "enabledOnly": "Enabled only",
       "filterOff": "Not running",
       "filterOn": "Running",
       "helperCopied": "{{name}} copied.",
@@ -1807,7 +1805,7 @@
       "description": "Choose skills available in chat.",
       "views": "Skills views",
       "installedTab": "Installed",
-      "discoverTab": "Discover",
+      "discoverTab": "Marketplace",
       "customGroup": "Custom",
       "builtinGroup": "Built-in",
       "otherGroup": "Other",
@@ -1844,7 +1842,6 @@
       "marketplaceSearchFailed": "Could not search skill marketplaces.",
       "marketplaceInstallFailed": "Could not install this skill.",
       "marketplaceSearchPlaceholder": "Search skills",
-      "marketplaceSearchLabel": "Search skills",
       "marketplaceSearching": "Searching",
       "marketplaceProviderFilter": "Skill source",
       "marketplaceProviderAll": "All",
@@ -1950,32 +1947,6 @@
     "unarchiveTitleMany": "Unarchive {{count}} topics?",
     "description": "Conversations are kept. You can unarchive them at any time.",
     "unarchiveDescription": "These topics will return to the sidebar."
-  },
-  "deleteConfirm": {
-    "title": "Delete this topic?",
-    "titleMany": "Delete {{count}} conversations?",
-    "description": "This action cannot be undone.",
-    "descriptionMany": "This action cannot be undone.",
-    "cancel": "Cancel",
-    "confirm": "Delete",
-    "automationsDescription": "Deleting this topic also deletes its linked automations.",
-    "automationsDescriptionMany": "Linked automations will also be deleted.",
-    "moreAutomations": "+ {{count}} more",
-    "confirmWithAutomations": "Delete",
-    "schedule": {
-      "at": "{{time}}",
-      "every": "Every {{duration}}",
-      "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}} ({{tz}})",
-      "local": "Local trigger",
-      "unknown": "Custom schedule"
-    },
-    "next": {
-      "label": "Next: {{time}}",
-      "disabled": "Paused",
-      "local": "Waiting for trigger",
-      "none": "No next run"
-    }
   },
   "connection": {
     "idle": "Idle",
@@ -2139,6 +2110,8 @@
       "cancelGoal": "Cancel goal",
       "cancelGoalFailed": "Could not cancel goal. Try again.",
       "cancelGoalOffline": "Reconnect to cancel the goal.",
+      "expandDraft": "Expand editor",
+      "collapseDraft": "Collapse editor",
       "send": "Send message",
       "stop": "Stop response",
       "quotedContext": "Quoted context",
@@ -2150,6 +2123,13 @@
         "removeContext": "Remove attachments and quoted text before running a command."
       },
       "chooseAI": "Choose model",
+      "modelOptions": {
+        "title": "For this chat",
+        "on": "On",
+        "off": "Off",
+        "codexFast": "Fast",
+        "ultrafast": "Ultrafast"
+      },
       "switchModel": "Switch model",
       "manageModels": "Manage presets",
       "fallbackNotice": "This response used a fallback model: {{model}}.",
@@ -2218,7 +2198,7 @@
         "tooLong": "Recording is too long.",
         "tooShort": "Hold a little longer to record voice.",
         "noInput": "No microphone input detected.",
-        "noDevice": "No microphone was found. Connect a microphone and try again.",
+        "noDevice": "Connect a microphone to record.",
         "failed": "Could not transcribe audio."
       },
       "slash": {
@@ -2362,6 +2342,7 @@
     "actions": "Message actions",
     "streaming": "streaming",
     "delivery": {
+      "waiting": "Waiting to be processed",
       "sending": "Sending",
       "failed": "Not sent"
     },
@@ -2716,6 +2697,24 @@
       "main-stack": "Main and stack"
     }
   },
+  "toast": {
+    "undo": "Undo",
+    "pendingDeleteSingle": "Topic will be deleted",
+    "archivedSingle": "Topic archived",
+    "archiveFailed": "Could not change archive status.",
+    "unarchivedSingle": "Topic unarchived",
+    "deleteFailedSingle": "Could not delete the topic",
+    "pendingDelete": "{{count}} topics will be deleted",
+    "archived": "{{count}} topics archived",
+    "unarchived": "{{count}} topics unarchived",
+    "deleteFailed": "Could not delete {{count}} topics",
+    "confirmDeleteAutomationsSingle": "Delete topic and linked automations?",
+    "confirmDeleteAutomations": "Delete {{count}} topics and linked automations?",
+    "automationCountSingle": "1 automation",
+    "automationCount": "{{count}} automations",
+    "excludeSession": "Keep",
+    "excludeSessionAria": "Exclude {{title}} from deletion"
+  },
   "common": {
     "retry": "Retry",
     "dismiss": "Dismiss",
@@ -2745,6 +2744,9 @@
       "timeoutTitle": "Model provider request timed out",
       "rateLimitTitle": "Model provider rate limit reached",
       "serverTitle": "Model provider service error",
+      "imageInputTitle": "Image input is off for this preset",
+      "imageRequestRejectedTitle": "The model rejected the image request",
+      "imageInputBody": "This request includes images. Check the preset or use one that supports images.",
       "unknownTitle": "Model provider request failed",
       "bodyWithAttempt": "Stopped after {{attempts}} attempts. Try again later or choose another model.",
       "body": "Try again later or choose another model."

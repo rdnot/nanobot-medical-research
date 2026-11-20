@@ -1,3 +1,4 @@
+import type { ModelOptionsControlProps } from "@/components/thread/ModelOptionsControl";
 import { pastedFilePath, PastedPathRange, type LocalAttachment } from "../../../../packages/client-events/attachments";
 import {
   NewChatIcon,
@@ -27,6 +28,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -57,6 +59,8 @@ import { SlashCommandText } from "@/components/SlashCommandText";
 import {
   CornerDownRight,
   Loader2,
+  Maximize2,
+  Minimize2,
   Quote,
   Trash2,
   X,
@@ -65,6 +69,7 @@ import {
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 import { AttachmentCard, AttachmentTypeFace, attachmentCardActionClassName } from "@/components/AttachmentCard";
 import { ComposerActionIcon, type ComposerActionState } from "@/components/thread/ComposerActionIcon";
 import {
@@ -105,7 +110,7 @@ import { useComposerMentionInput } from "@/hooks/useComposerMentionInput";
 import { useLogoFallback } from "@/hooks/useLogoFallback";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import type { SendAttachment, SendOptions } from "@/hooks/useNanobotStream";
-import { useVoiceRecorder, type VoiceRecorderErrorKey } from "@/hooks/useVoiceRecorder";
+import { useComposerVoiceInput } from "@/hooks/useComposerVoiceInput";
 import type {
   CliAppInfo,
   ChatSummary,
@@ -139,6 +144,7 @@ import {
   readDraggedSession,
 } from "@/lib/session-drag";
 import { formatQuotedUserMessage } from "@/lib/user-message-quote";
+import { useOverlaySurfaceRef } from "@/lib/dom-overlays";
 import { cn } from "@/lib/utils";
 import type { ComposerDraft, ComposerDraftStore } from "@/lib/composer-draft";
 import { useLocalPreferences } from "@/hooks/useLocalPreferences";
@@ -150,12 +156,6 @@ import {
   type QueuedPromptContent,
 } from "@/components/thread/useQueuedPrompt";
 
-const VOICE_SHORTCUT_CODE = "KeyD";
-const VOICE_SHORTCUT_ARIA = "Control+Shift+D";
-const VOICE_ERROR_VISIBLE_MS = 3_500;
-const VOICE_ERROR_FADE_MS = 500;
-type VoiceShortcutPlatform = "apple" | "chromeos" | "linux" | "other" | "windows";
-
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KiB`;
@@ -164,54 +164,6 @@ function formatBytes(n: number): string {
 
 function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
-}
-
-function isVoiceShortcutDown(event: KeyboardEvent): boolean {
-  return (
-    event.code === VOICE_SHORTCUT_CODE
-    && event.ctrlKey
-    && event.shiftKey
-    && !event.altKey
-    && !event.metaKey
-  );
-}
-
-function isVoiceShortcutRelease(event: KeyboardEvent): boolean {
-  return (
-    event.code === VOICE_SHORTCUT_CODE
-    || event.key === "Control"
-    || event.key === "Shift"
-  );
-}
-
-function getVoiceShortcutPlatform(): VoiceShortcutPlatform {
-  if (typeof navigator === "undefined") return "other";
-  const userAgentData = (navigator as Navigator & { userAgentData?: { platform?: string } })
-    .userAgentData;
-  const platform = [
-    userAgentData?.platform,
-    navigator.platform,
-    navigator.userAgent,
-  ].filter(Boolean).join(" ").toLowerCase();
-  const isIpadPretendingToBeMac =
-    navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
-  if (isIpadPretendingToBeMac || /mac|iphone|ipad|ipod/.test(platform)) return "apple";
-  if (/win/.test(platform)) return "windows";
-  if (/cros/.test(platform)) return "chromeos";
-  if (/linux|x11|android/.test(platform)) return "linux";
-  return "other";
-}
-
-function getVoiceShortcutLabel(): string {
-  switch (getVoiceShortcutPlatform()) {
-    case "apple":
-      return "⌃⇧D";
-    case "chromeos":
-    case "linux":
-    case "windows":
-    case "other":
-      return "Ctrl ⇧ D";
-  }
 }
 
 interface ThreadComposerProps {
@@ -223,6 +175,7 @@ interface ThreadComposerProps {
   disabled?: boolean;
   placeholder?: string;
   inputAriaLabel?: string;
+  expandable?: boolean;
   compactWhenIdle?: boolean;
   isStreaming?: boolean;
   activeTurnId?: string | null;
@@ -231,7 +184,11 @@ interface ThreadComposerProps {
   modelDetail?: string | null;
   modelPreset?: string | null;
   modelPresets?: ModelPresetOption[];
+  modelOptionsControl?: ModelOptionsControlProps;
+  onModelMenuOpenChange?: (open: boolean) => void;
   onModelPresetChange?: (name: string) => void;
+  imageInputBlocked?: boolean;
+  onInspectImagePreset?: () => void;
   modelProvider?: string | null;
   modelProviderLabel?: string | null;
   modelNeedsSetup?: boolean;
@@ -535,12 +492,14 @@ function mcpPresetMentionPayload(preset: McpPresetInfo): OutboundMcpPresetMentio
 function autosizeTextarea(input: HTMLTextAreaElement) {
   const container = input.parentElement!;
   const previousMinHeight = container.style.minHeight;
+  const scrollTop = input.scrollTop;
   // Measuring the one-row textarea must not expand the sibling transcript and
   // clamp its native scroll offset, even temporarily before paint.
   container.style.minHeight = `${container.getBoundingClientRect().height}px`;
   try {
     input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 260)}px`;
+    input.style.height = `${input.scrollHeight}px`;
+    input.scrollTop = scrollTop;
   } finally {
     container.style.minHeight = previousMinHeight;
   }
@@ -551,6 +510,7 @@ export function ThreadComposer({
   disabled,
   placeholder,
   inputAriaLabel,
+  expandable = true,
   compactWhenIdle = false,
   isStreaming = false,
   activeTurnId = null,
@@ -559,7 +519,11 @@ export function ThreadComposer({
   modelDetail = null,
   modelPreset = null,
   modelPresets = [],
+  modelOptionsControl,
+  onModelMenuOpenChange,
   onModelPresetChange,
+  imageInputBlocked = false,
+  onInspectImagePreset,
   modelProvider = null,
   modelProviderLabel = null,
   modelNeedsSetup = false,
@@ -616,6 +580,7 @@ export function ThreadComposer({
     end: number;
   } | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(null);
+  const showToast = useToast();
   const [sendPending, setSendPending] = useState(false);
   const [pathInspection, setPathInspection] = useState<{
     generation: number; scope: string; range: PastedPathRange; attachment?: LocalAttachment;
@@ -627,6 +592,9 @@ export function ThreadComposer({
   useEffect(() => () => { pathCheckGeneration.current += 1; }, []);
   const [modelSetupAttentionRequest, setModelSetupAttentionRequest] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaId = useId();
+  const [draftExpanded, setDraftExpanded] = useState(false);
+  const [draftOverflows, setDraftOverflows] = useState(false);
   const focusTextarea = useCallback(() => {
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
@@ -689,6 +657,22 @@ export function ThreadComposer({
     return null;
   }, [formatRejection, formatUploadTooLarge, ingressLimits, maxAttachments, maxFileBytes, maxTextBytes, t, textTooLargeMessage]);
 
+  const validatePrompt = useCallback((prompt: QueuedPromptContent): boolean => {
+    if (imageInputBlocked && prompt.images?.some(({ kind }) => kind === "image")) {
+      showToast?.({
+        message: t("errors.modelRequestFailed.imageInputTitle"),
+        tone: "error",
+        action: onInspectImagePreset
+          ? { label: t("settings.models.viewPreset"), run: onInspectImagePreset }
+          : undefined,
+      });
+      return false;
+    }
+    const error = queuedPromptError(prompt);
+    if (error) setInlineError(error);
+    return error === null;
+  }, [imageInputBlocked, onInspectImagePreset, queuedPromptError, showToast, t]);
+
   const {
     snapshot: queueSnapshot,
     collect: collectQueuedPrompt,
@@ -699,8 +683,7 @@ export function ThreadComposer({
   } = useQueuedPrompt(pendingQueueKey, { isStreaming, activeTurnId, completedTurnIds }, {
     disabled: !!disabled || sendPending,
     onSend,
-    validate: queuedPromptError,
-    onValidationError: setInlineError,
+    validate: validatePrompt,
     onSendAttempt: focusTextarea,
   });
   const queuedPrompt = queueSnapshot.prompt;
@@ -708,7 +691,6 @@ export function ThreadComposer({
   useEffect(() => {
     if (queueSnapshot.error) setInlineError(queueSnapshot.error);
   }, [queueSnapshot.error]);
-  const [voiceErrorFading, setVoiceErrorFading] = useState(false);
   const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
   const [cliAppMenuDismissed, setCliAppMenuDismissed] = useState(false);
@@ -726,34 +708,44 @@ export function ThreadComposer({
   const formRef = useRef<HTMLFormElement>(null);
   const [compactControls, setCompactControls] = useState(false);
 
+  const measureDraft = useCallback(() => {
+    const input = textareaRef.current;
+    if (!input) return;
+    autosizeTextarea(input);
+    if (expandable) setDraftOverflows(input.scrollHeight > input.clientHeight);
+    if (mentionOverlayRef.current) mentionOverlayRef.current.scrollTop = input.scrollTop;
+  }, [expandable]);
+
   useLayoutEffect(() => {
     const form = formRef.current;
-    if (!form) return;
+    const input = textareaRef.current;
+    if (!form || !input) return;
     let previousWidth = 0;
     const update = () => {
       const width = form.getBoundingClientRect().width;
-      if (width <= 0 || width === previousWidth) return;
-      previousWidth = width;
-      setCompactControls(width <= 512);
-      const input = textareaRef.current;
-      if (input) autosizeTextarea(input);
+      if (width <= 0) return;
+      if (width !== previousWidth) {
+        previousWidth = width;
+        setCompactControls(width <= 512);
+        measureDraft();
+      } else if (expandable) {
+        setDraftOverflows(input.scrollHeight > input.clientHeight);
+      }
     };
     update();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
     observer?.observe(form);
+    if (expandable) observer?.observe(input);
     window.addEventListener("resize", update);
     return () => {
       observer?.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, []);
+  }, [expandable, measureDraft]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chipRefs = useRef(new Map<string, HTMLButtonElement>());
   const previousPendingQueueKeyRef = useRef(pendingQueueKey);
-  const voiceShortcutDownRef = useRef(false);
-  const voiceErrorFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isHero = variant === "hero";
-  const voiceShortcutLabel = useMemo(getVoiceShortcutLabel, []);
   const projectPickerAvailable =
     !workspaceProjectLocked
     && !!workspaceDefaultScope
@@ -813,6 +805,10 @@ export function ThreadComposer({
       const { rejected } = enqueue(files);
       if (rejected.length > 0) {
         const { reason, file } = rejected[0];
+        if (reason === "empty_file" || reason === "unsupported_type") {
+          showToast?.({ message: formatRejection(reason), tone: "error", dedupeKey: `attachment:${reason}` });
+          return;
+        }
         setInlineError(reason === "too_large"
           ? formatUploadTooLarge(file.size, acceptedAttachmentKind(file) === "video" ? MAX_VIDEO_BYTES : maxFileBytes)
           : formatRejection(reason));
@@ -820,7 +816,7 @@ export function ThreadComposer({
         setInlineError(null);
       }
     },
-    [enqueue, formatRejection, formatUploadTooLarge, interactionDisabled, maxFileBytes],
+    [enqueue, formatRejection, formatUploadTooLarge, interactionDisabled, maxFileBytes, showToast],
   );
 
   const {
@@ -1368,29 +1364,15 @@ export function ThreadComposer({
   }, [filteredMentionCandidates.length, filteredSlashCommands.length, showAnyPalette]);
 
   useLayoutEffect(() => {
-    const el = textareaRef.current;
-    if (!el || mentionInput.isComposing) return;
-    autosizeTextarea(el);
-    if (mentionOverlayRef.current) mentionOverlayRef.current.scrollTop = el.scrollTop;
-  }, [compactControls, mentionInput.isComposing, mentionInput.value]);
+    if (mentionInput.isComposing) return;
+    if (!mentionInput.value) setDraftExpanded(false);
+    measureDraft();
+  }, [compactControls, measureDraft, mentionInput.isComposing, mentionInput.value]);
 
   useEffect(() => {
     // The parent projects typography tokens in its layout effect; measure after it.
-    const input = textareaRef.current;
-    if (input) autosizeTextarea(input);
-  }, [readingTextSize, customReadingTextSize]);
-
-  // Runs before paint so switching sessions never flashes stale draft text.
-  useLayoutEffect(() => {
-    if (previousPendingQueueKeyRef.current === pendingQueueKey) return;
-    previousPendingQueueKeyRef.current = pendingQueueKey;
-    setValue("");
-    setInlineError(null);
-    setSlashMenuDismissed(false);
-    setCliAppMenuDismissed(false);
-    setCursorPosition(0);
-    clear();
-  }, [clear, pendingQueueKey]);
+    measureDraft();
+  }, [readingTextSize, customReadingTextSize, measureDraft]);
 
   const appendTranscription = useCallback((text: string) => {
     const transcript = text.trim();
@@ -1402,75 +1384,29 @@ export function ThreadComposer({
     });
     setSlashMenuDismissed(false);
     setCliAppMenuDismissed(false);
-    setInlineError(null);
     focusTextarea();
   }, [focusTextarea]);
 
-  const clearVoiceErrorTimers = useCallback(() => {
-    if (voiceErrorFadeTimerRef.current !== null) clearTimeout(voiceErrorFadeTimerRef.current);
-    voiceErrorFadeTimerRef.current = null;
-  }, []);
-  const clearInlineError = useCallback(() => {
-    clearVoiceErrorTimers();
-    setVoiceErrorFading(false);
-    setInlineError(null);
-  }, [clearVoiceErrorTimers]);
-  const setVoiceError = useCallback((key: VoiceRecorderErrorKey) => {
-    clearVoiceErrorTimers();
-    setVoiceErrorFading(false);
-    setInlineError(t(`thread.composer.voiceErrors.${key}`));
-    voiceErrorFadeTimerRef.current = setTimeout(() => {
-      setVoiceErrorFading(true);
-      voiceErrorFadeTimerRef.current = setTimeout(() => {
-        setInlineError(null);
-        setVoiceErrorFading(false);
-        voiceErrorFadeTimerRef.current = null;
-      }, VOICE_ERROR_FADE_MS);
-    }, VOICE_ERROR_VISIBLE_MS);
-  }, [clearVoiceErrorTimers, t]);
-  const voiceRecorder = useVoiceRecorder({
-    disabled: interactionDisabled,
-    onClearError: clearInlineError,
-    onError: setVoiceError,
-    onTranscript: appendTranscription,
-    onTranscribeAudio,
+  const {
+    recorder: voiceRecorder, setupError: voiceSetupError, clearSetupError,
+    shortcutLabel: voiceShortcutLabel, shortcutAria, canSendQueuedPrompt,
+  } = useComposerVoiceInput({
+    disabled: interactionDisabled, onTranscribeAudio, onTranscript: appendTranscription,
     wantsWav: transcriptionProvider === "xiaomi_mimo",
   });
 
-  useEffect(() => () => clearVoiceErrorTimers(), [clearVoiceErrorTimers]);
-
-  useEffect(() => {
-    if (!onTranscribeAudio) return;
-
-    function onKeyDown(event: KeyboardEvent): void {
-      if (!isVoiceShortcutDown(event) || event.repeat || voiceShortcutDownRef.current) return;
-      event.preventDefault();
-      voiceShortcutDownRef.current = true;
-      voiceRecorder.beginShortcutHold();
-    }
-
-    function onKeyUp(event: KeyboardEvent): void {
-      if (!voiceShortcutDownRef.current || !isVoiceShortcutRelease(event)) return;
-      event.preventDefault();
-      voiceShortcutDownRef.current = false;
-      voiceRecorder.endShortcutHold();
-    }
-
-    function onWindowBlur(): void {
-      if (!voiceShortcutDownRef.current) return;
-      voiceShortcutDownRef.current = false;
-      voiceRecorder.endShortcutHold();
-    }
-
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("keyup", onKeyUp);
-    window.addEventListener("blur", onWindowBlur);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("keyup", onKeyUp);
-      window.removeEventListener("blur", onWindowBlur);
-    };
-  }, [onTranscribeAudio, voiceRecorder.beginShortcutHold, voiceRecorder.endShortcutHold]);
+  // Runs before paint so switching sessions never flashes stale draft text.
+  useLayoutEffect(() => {
+    if (previousPendingQueueKeyRef.current === pendingQueueKey) return;
+    previousPendingQueueKeyRef.current = pendingQueueKey;
+    setValue("");
+    setInlineError(null);
+    clearSetupError();
+    setSlashMenuDismissed(false);
+    setCliAppMenuDismissed(false);
+    setCursorPosition(0);
+    clear();
+  }, [clear, clearSetupError, pendingQueueKey]);
 
   const handleStop = useCallback(() => {
     pauseQueue();
@@ -1697,11 +1633,7 @@ export function ThreadComposer({
       slashLifecycle === "finalize_active_turn";
     if (!isUserShell && !slashLifecycle) {
       const prompt = collectGuidancePrompt();
-      const error = queuedPromptError(prompt);
-      if (error) {
-        setInlineError(error);
-        return;
-      }
+      if (!validatePrompt(prompt)) return;
       if (queuedPrompt) {
         sendQueuedPrompt(prompt, options);
         if (draftKey) draftStore?.delete(draftKey);
@@ -1760,7 +1692,7 @@ export function ThreadComposer({
     clearComposerText,
     collectGuidancePrompt,
     queuedPrompt,
-    queuedPromptError,
+    validatePrompt,
     sendQueuedPrompt,
     clearQueuedPrompt,
     hasTouchPrimaryPointer,
@@ -1861,7 +1793,7 @@ export function ThreadComposer({
         && !e.ctrlKey
         && !e.metaKey
       ) {
-        if (!e.repeat && voiceRecorder.state === "idle" && !voiceShortcutDownRef.current) {
+        if (!e.repeat && canSendQueuedPrompt()) {
           sendQueuedPrompt(queuedPrompt);
         }
         return;
@@ -1935,7 +1867,7 @@ export function ThreadComposer({
     : showStopButton ? "stop" : requiresModelSetup ? "setup" : canSend || !isStreaming ? "send" : "busy";
   const relaxedHeroInput = isHero && images.length === 0 && !isStreaming;
   const compactIdle = compactWhenIdle && !compactControls && !isHero && !composerFocused
-    && value.length === 0 && images.length === 0 && !inlineError
+    && value.length === 0 && images.length === 0 && !inlineError && !(onTranscribeAudio && voiceSetupError)
     && !normalizedQuotedContext && !queuedPrompt
     && !isDragging && !sessionDragPreview && !voiceRecorder.isRecording && !showProjectPicker;
   useLayoutEffect(() => {
@@ -1988,6 +1920,8 @@ export function ThreadComposer({
       modelDetail={modelDetail}
       modelPreset={modelPreset}
       modelPresets={modelPresets}
+      modelOptionsControl={modelOptionsControl}
+      onMenuOpenChange={onModelMenuOpenChange}
       onPresetChange={onModelPresetChange}
       onManageModels={onManageModels}
       onRequestComposerFocus={() => textareaRef.current?.focus()}
@@ -2003,8 +1937,8 @@ export function ThreadComposer({
   const usageControl = !voiceRecorder.isRecording
     ? renderContextUsage?.({ showLabel: usageInMeta, compactLabel: mobileWorkspaceControls }) : null;
   const inputTextClasses = cn(
-    // Keep the overlay's CJK/Latin spacing aligned with the native textarea caret.
-    "w-full resize-none bg-transparent text-composer [text-autospace:no-autospace]",
+    // The native input and its reference overlay must wrap and space text alike.
+    "inset-scrollbar w-full resize-none bg-transparent text-composer [scrollbar-gutter:stable] [text-autospace:no-autospace]",
     compactControls
       ? "min-h-[52px] px-4 pb-2 pt-3"
       : isHero
@@ -2015,6 +1949,16 @@ export function ThreadComposer({
         : "min-h-[50px] px-3.5 pb-1.5 pt-3 sm:px-4",
   );
   const paletteBeside = showAnyPalette && slashPaletteLayout.placement === "beside";
+  const draftResizeLabel = t(draftExpanded ? "thread.composer.collapseDraft" : "thread.composer.expandDraft");
+  const toggleDraftSize = () => {
+    const input = textareaRef.current;
+    if (!input) return;
+    const followCaret = draftExpanded && input.selectionStart === input.value.length
+      && input.scrollHeight - input.clientHeight - input.scrollTop <= 1;
+    setDraftExpanded(!draftExpanded);
+    input.focus({ preventScroll: true });
+    if (followCaret) requestAnimationFrame(() => { input.scrollTop = input.scrollHeight; });
+  };
 
   return (
     <form
@@ -2169,7 +2113,12 @@ export function ThreadComposer({
             </button>
           </div>
         ) : null}
-        <div className="thread-composer-input relative min-w-0">
+        <div
+          className="thread-composer-input relative min-w-0"
+          data-expandable={expandable || undefined}
+          data-expanded={draftExpanded || undefined}
+          data-overflowing={draftOverflows || undefined}
+        >
           {placeholder === undefined ? (
             <span className="pointer-events-none invisible absolute h-0 w-0 overflow-hidden">
               <span ref={placeholderMeasureRef} aria-hidden className="inline-block whitespace-pre text-composer [text-autospace:no-autospace]">{resolvedPlaceholder}</span>
@@ -2189,6 +2138,7 @@ export function ThreadComposer({
             />
           ) : null}
           <textarea
+            id={textareaId}
             ref={textareaRef}
             value={mentionInput.value}
             onFocus={() => {
@@ -2222,16 +2172,9 @@ export function ThreadComposer({
             )}
           />
         </div>
-        {inlineError ? (
-          <div
-            role="alert"
-            className={cn(
-              "mx-3 mb-1 max-h-24 overflow-hidden rounded-md border border-destructive/40 bg-destructive/8 px-2.5 py-1",
-              "text-[11.5px] font-medium text-destructive transition-[max-height,margin,padding,opacity] [transition-duration:220ms] ease-out motion-reduce:transition-none",
-              voiceErrorFading && "mb-0 max-h-0 border-transparent py-0 opacity-0",
-            )}
-          >
-            {inlineError}
+        {inlineError || (onTranscribeAudio && voiceSetupError) ? (
+          <div role="alert" className="mx-3 mb-1 break-words rounded-md border border-destructive/40 bg-destructive/8 px-2.5 py-1 text-[11.5px] font-medium text-destructive">
+            {inlineError ?? t(`thread.composer.voiceErrors.${voiceSetupError}`)}
           </div>
         ) : null}
         <div
@@ -2290,6 +2233,29 @@ export function ThreadComposer({
               isHero ? "gap-1.5" : "gap-2",
             )}
           >
+            {expandable && (draftExpanded || draftOverflows) ? (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="icon"
+                      disabled={interactionDisabled}
+                      aria-label={draftResizeLabel}
+                      aria-expanded={draftExpanded}
+                      aria-controls={textareaId}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={toggleDraftSize}
+                      className="thread-composer-action thread-composer-round-action touch-target h-[var(--composer-action-size)] w-[var(--composer-action-size)] shrink-0 rounded-xl text-muted-foreground hover:text-foreground"
+                    >
+                      {draftExpanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{draftResizeLabel}</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : null}
             {modelControl}
             {!usageInMeta ? usageControl : null}
             <TooltipProvider>
@@ -2308,7 +2274,7 @@ export function ThreadComposer({
                             ? t("thread.composer.configureModel", { defaultValue: "Configure model" })
                             : isUserShell ? t("thread.composer.shell.run") : t("thread.composer.send")
                     }
-                    aria-keyshortcuts={showVoiceButton ? VOICE_SHORTCUT_ARIA : undefined}
+                    aria-keyshortcuts={showVoiceButton ? shortcutAria : undefined}
                     onPointerDown={showVoiceButton ? voiceRecorder.beginPress : undefined}
                     onPointerUp={showVoiceButton ? voiceRecorder.endPress : undefined}
                     onPointerCancel={showVoiceButton ? voiceRecorder.endPress : undefined}
@@ -2590,6 +2556,7 @@ function CliAppMentionPalette({
     layout.maxHeight - SLASH_PALETTE_CHROME_PX,
   );
   const listRef = useSelectedOptionScroll(selectedIndex);
+  const surfaceRef = useOverlaySurfaceRef<HTMLDivElement>("overlay");
   const groupedCandidates = (["session", "cli", "mcp"] as const)
     .map((kind) => ({
       kind,
@@ -2605,6 +2572,7 @@ function CliAppMentionPalette({
     .filter((group) => group.items.length > 0);
   return (
     <div
+      ref={surfaceRef}
       role="listbox"
       aria-label={t("thread.composer.mentions.ariaLabel")}
       style={{ maxHeight: layout.maxHeight }}
@@ -2754,8 +2722,10 @@ function SlashCommandPalette({
     layout.maxHeight - SLASH_PALETTE_CHROME_PX,
   );
   const listRef = useSelectedOptionScroll(selectedIndex);
+  const surfaceRef = useOverlaySurfaceRef<HTMLDivElement>("overlay");
   return (
     <div
+      ref={surfaceRef}
       role="listbox"
       aria-label={t("thread.composer.slash.ariaLabel")}
       style={{ maxHeight: layout.maxHeight }}

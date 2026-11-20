@@ -331,13 +331,12 @@
       "local_file_not_found": "The SSH config or private key file couldn't be found on this machine.",
       "file_picker_unavailable": "Không thể mở hộp thoại chọn tệp. Bạn có thể dán đường dẫn tệp cục bộ.",
       "runtime_user_denied": "SSH signed in, but cannot read as that service account without a password. Check the account with your server administrator.",
-      "python_unavailable": "The server needs python3 to locate its existing nanobot configuration.",
+      "python_unavailable": "SSH signed in, but couldn't start Python 3. Make python3 or python available to the SSH login on the server.",
       "config_not_found": "nanobot's config wasn't found. Set its server-side path in Connection options.",
       "config_permission": "This SSH user can't read nanobot's config. Set the nanobot service account in Connection options.",
-      "config_invalid": "Couldn't read the server's nanobot configuration.",
+      "config_invalid": "Couldn't read the server's nanobot configuration. Check that the selected file is valid UTF-8 JSON.",
       "webui_disabled": "The server's WebUI is disabled. Enable it on the server first.",
       "webui_auth_required": "The server needs a WebUI login secret in its config. No model key is needed here.",
-      "public_ws_unsupported": "This server uses a public WebSocket URL. This first version supports a loopback WebUI over SSH.",
       "remote_auth_failed": "The server rejected its saved WebUI credential. Check its running configuration.",
       "incompatible_gateway": "This endpoint isn't a compatible nanobot gateway. Update the server or check its configuration.",
       "webui_unavailable": "The gateway is running, but its WebUI isn't installed.",
@@ -454,10 +453,7 @@
       "ariaLabel": "Đổi ngôn ngữ"
     },
     "apps": "Ứng dụng",
-    "automations": "Tự động hóa",
-    "skills": {
-      "title": "Kỹ năng"
-    }
+    "automations": "Tự động hóa"
   },
   "settings": {
     "timezoneNoMatches": "Không tìm thấy múi giờ phù hợp.",
@@ -1012,7 +1008,7 @@
       "extraHeaders": "Header",
       "extraBody": "Tham số body",
       "extraQuery": "Tham số truy vấn",
-      "capabilityFastMode": "Chế độ nhanh",
+      "capabilityFastMode": "Fast",
       "capabilityFastModeHelp": "Phản hồi nhanh hơn, mức sử dụng cao hơn.",
       "capabilityXSearch": "Tìm kiếm X",
       "capabilityXSearchHelp": "Mô hình Grok được hỗ trợ có thể tìm kiếm X.\n\nCho phép các mô hình Grok được hỗ trợ dùng X Search do xAI lưu trữ. Hoạt động tìm kiếm được hiển thị trong cuộc trò chuyện.",
@@ -1071,7 +1067,8 @@
       "maxTokens": "Token đầu ra tối đa",
       "temperature": "Nhiệt độ",
       "imageInput": "Đầu vào hình ảnh",
-      "imageInputHelp": "Khi tắt, yêu cầu chứa hình ảnh sẽ bỏ qua cấu hình này.",
+      "imageInputHelp": "Chỉ bật nếu mô hình hỗ trợ hình ảnh. Khi tắt, yêu cầu chứa hình ảnh sẽ bỏ qua cấu hình này.",
+      "viewPreset": "Xem cấu hình",
       "reasoningEffort": "Mức suy luận",
       "convertTitle": "Chuyển thiết lập",
       "convertHelp": "Chuyển mô hình chính và dự phòng thành bộ thiết lập.",
@@ -1256,12 +1253,15 @@
       "thirdPartyBrands": "Tên sản phẩm, logo và thương hiệu thuộc về chủ sở hữu tương ứng. Việc sử dụng chỉ nhằm nhận diện và không ngụ ý được xác nhận."
     },
     "apps": {
+      "allTypes": "Tất cả",
+      "typeFilter": "Loại công cụ",
+      "statusFilter": "Trạng thái",
       "description": "Quản lý CLI Apps, Agent Plugins và công cụ MCP.",
       "cliLabel": "CLI App",
       "mcpLabel": "MCP",
       "channelLabel": "Kênh",
       "featureLabel": "Tính năng",
-      "filterAll": "Sẵn sàng",
+      "readyOnly": "Chỉ mục sẵn sàng",
       "filterPlugins": "Agent Plugins",
       "filterCli": "CLI Apps",
       "filterMcp": "MCP",
@@ -1270,17 +1270,15 @@
       "featured": "Công cụ",
       "mcpTools": "Công cụ MCP",
       "loading": "Đang tải ứng dụng...",
-      "empty": "Không có công cụ phù hợp với tìm kiếm của bạn.",
-      "emptyApps": "Không có CLI App nào.",
-      "emptyIntegrations": "Không có công cụ MCP nào.",
-      "emptyReady": "Chưa có công cụ nào sẵn sàng.",
+      "empty": "Không có công cụ phù hợp với tìm kiếm của bạn",
+      "emptyApps": "Không có công cụ nào",
+      "emptyIntegrations": "Không có công cụ MCP nào",
+      "emptyReady": "Chưa có công cụ nào sẵn sàng",
       "clearSearch": "Xóa tìm kiếm",
-      "browseApps": "Xem CLI Apps",
-      "browseIntegrations": "Xem công cụ MCP",
-      "emptyIntegrationsHint": "Thêm máy chủ MCP tùy chỉnh ở bên dưới.",
+      "emptyIntegrationsHint": "Thêm máy chủ MCP tùy chỉnh ở bên dưới",
       "restartRequired": "Khởi động lại nanobot để áp dụng ứng dụng và công cụ MCP đã cập nhật.",
-      "emptyPlugins": "Chưa cài đặt Agent Plugin nào.",
-      "emptyPluginsHint": "Thêm plugin vào thư mục plugins của không gian làm việc để bật tại đây.",
+      "emptyPlugins": "Chưa cài đặt Agent Plugin nào",
+      "emptyPluginsHint": "Thêm plugin vào thư mục plugins của không gian làm việc để bật tại đây",
       "pluginPermissions": "Quyền đã khai báo",
       "pluginServers": "Máy chủ MCP",
       "pluginTrustNotice": "Plugin chạy với quyền hệ điều hành của nanobot. Các quyền đã khai báo không cô lập plugin.",
@@ -1321,7 +1319,7 @@
       "configuredInstances": "Đã thiết lập {{count}} cấu hình kênh",
       "connectPreview": "Bước tiếp theo là kết nối trong trình duyệt. Hiện tại, hãy chạy lệnh bên dưới.",
       "copyCommand": "Sao chép lệnh",
-      "filterAll": "Tất cả",
+      "enabledOnly": "Chỉ mục đã bật",
       "filterOff": "Đã dừng",
       "filterOn": "Đang chạy",
       "helperCopied": "Đã sao chép {{name}}.",
@@ -1625,7 +1623,7 @@
       "description": "Chọn kỹ năng có thể dùng trong trò chuyện.",
       "views": "Chế độ xem kỹ năng",
       "installedTab": "Đã cài đặt",
-      "discoverTab": "Khám phá",
+      "discoverTab": "Chợ kỹ năng",
       "customGroup": "Tùy chỉnh",
       "builtinGroup": "Tích hợp sẵn",
       "otherGroup": "Khác",
@@ -1662,7 +1660,6 @@
       "marketplaceSearchFailed": "Không thể tìm kiếm trong các kho kỹ năng.",
       "marketplaceInstallFailed": "Không thể cài đặt kỹ năng này.",
       "marketplaceSearchPlaceholder": "Tìm kiếm kỹ năng",
-      "marketplaceSearchLabel": "Tìm kiếm kỹ năng",
       "marketplaceSearching": "Đang tìm kiếm",
       "marketplaceProviderFilter": "Nguồn kỹ năng",
       "marketplaceProviderAll": "Tất cả",
@@ -1768,32 +1765,6 @@
     "unarchiveTitleMany": "Bỏ lưu trữ {{count}} chủ đề?",
     "description": "Lịch sử trò chuyện vẫn được giữ lại. Bạn có thể bỏ lưu trữ bất cứ lúc nào.",
     "unarchiveDescription": "Các chủ đề này sẽ xuất hiện lại trên thanh bên."
-  },
-  "deleteConfirm": {
-    "title": "Xóa cuộc trò chuyện này?",
-    "titleMany": "Xóa {{count}} cuộc trò chuyện?",
-    "description": "Không thể hoàn tác thao tác này.",
-    "descriptionMany": "Không thể hoàn tác thao tác này.",
-    "cancel": "Hủy",
-    "confirm": "Xóa",
-    "automationsDescription": "Xóa chủ đề này cũng xóa các tác vụ tự động liên quan.",
-    "automationsDescriptionMany": "Các tự động hóa liên kết cũng sẽ bị xóa.",
-    "moreAutomations": "+ {{count}} mục nữa",
-    "confirmWithAutomations": "Xóa",
-    "schedule": {
-      "at": "{{time}}",
-      "every": "Mỗi {{duration}}",
-      "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}} ({{tz}})",
-      "local": "Trình kích hoạt cục bộ",
-      "unknown": "Lịch tùy chỉnh"
-    },
-    "next": {
-      "label": "Tiếp theo: {{time}}",
-      "disabled": "Đã tạm dừng",
-      "local": "Đang chờ kích hoạt",
-      "none": "Không có lần chạy tiếp theo"
-    }
   },
   "connection": {
     "idle": "Rảnh",
@@ -1957,6 +1928,8 @@
       "cancelGoal": "Hủy mục tiêu",
       "cancelGoalFailed": "Không thể hủy mục tiêu. Hãy thử lại.",
       "cancelGoalOffline": "Kết nối lại để hủy mục tiêu.",
+      "expandDraft": "Mở rộng ô soạn thảo",
+      "collapseDraft": "Thu gọn ô soạn thảo",
       "send": "Gửi tin nhắn",
       "stop": "Dừng phản hồi",
       "quotedContext": "Ngữ cảnh được trích dẫn",
@@ -1968,6 +1941,13 @@
         "removeContext": "Xóa tệp đính kèm và văn bản trích dẫn trước khi chạy lệnh."
       },
       "chooseAI": "Chọn mô hình",
+      "modelOptions": {
+        "title": "Cho cuộc trò chuyện này",
+        "on": "Bật",
+        "off": "Tắt",
+        "codexFast": "Fast",
+        "ultrafast": "Siêu nhanh"
+      },
       "switchModel": "Đổi mô hình",
       "manageModels": "Quản lý bộ thiết lập",
       "fallbackNotice": "Phản hồi này đã sử dụng mô hình dự phòng: {{model}}.",
@@ -2036,7 +2016,7 @@
         "tooLong": "Bản ghi âm quá dài.",
         "tooShort": "Giữ lâu hơn một chút để ghi âm giọng nói.",
         "noInput": "Không phát hiện đầu vào micrô.",
-        "noDevice": "Không tìm thấy micrô. Hãy kết nối rồi thử lại.",
+        "noDevice": "Kết nối micrô để ghi âm.",
         "failed": "Không thể chép lời âm thanh."
       },
       "slash": {
@@ -2180,6 +2160,7 @@
     "actions": "Thao tác tin nhắn",
     "streaming": "đang truyền",
     "delivery": {
+      "waiting": "Đang chờ xử lý",
       "sending": "Đang gửi",
       "failed": "Chưa gửi"
     },
@@ -2534,6 +2515,24 @@
       "main-stack": "Chính và phụ"
     }
   },
+  "toast": {
+    "undo": "Hoàn tác",
+    "pendingDeleteSingle": "Sắp xóa cuộc trò chuyện",
+    "archivedSingle": "Đã lưu trữ cuộc trò chuyện",
+    "archiveFailed": "Không thể thay đổi trạng thái lưu trữ.",
+    "unarchivedSingle": "Đã bỏ lưu trữ cuộc trò chuyện",
+    "deleteFailedSingle": "Không thể xóa cuộc trò chuyện",
+    "pendingDelete": "Sắp xóa {{count}} cuộc trò chuyện",
+    "archived": "Đã lưu trữ {{count}} cuộc trò chuyện",
+    "unarchived": "Đã bỏ lưu trữ {{count}} cuộc trò chuyện",
+    "deleteFailed": "Không thể xóa {{count}} cuộc trò chuyện",
+    "confirmDeleteAutomationsSingle": "Xóa cuộc trò chuyện và các tác vụ tự động?",
+    "confirmDeleteAutomations": "Xóa {{count}} cuộc trò chuyện và các tác vụ tự động?",
+    "automationCountSingle": "1 tác vụ",
+    "automationCount": "{{count}} tác vụ",
+    "excludeSession": "Giữ lại",
+    "excludeSessionAria": "Bỏ {{title}} khỏi lần xóa này"
+  },
   "common": {
     "retry": "Thử lại",
     "dismiss": "Đóng",
@@ -2563,6 +2562,9 @@
       "timeoutTitle": "Yêu cầu tới nhà cung cấp mô hình đã hết thời gian chờ",
       "rateLimitTitle": "Đã đạt giới hạn yêu cầu của nhà cung cấp mô hình",
       "serverTitle": "Lỗi dịch vụ nhà cung cấp mô hình",
+      "imageInputTitle": "Đầu vào hình ảnh đã tắt cho cấu hình này",
+      "imageRequestRejectedTitle": "Mô hình đã từ chối yêu cầu có hình ảnh",
+      "imageInputBody": "Yêu cầu này có hình ảnh. Hãy kiểm tra cấu hình hoặc dùng cấu hình hỗ trợ hình ảnh.",
       "unknownTitle": "Yêu cầu tới nhà cung cấp mô hình không thành công",
       "bodyWithAttempt": "Đã dừng sau {{attempts}} lần thử. Hãy thử lại sau hoặc chọn mô hình khác.",
       "body": "Hãy thử lại sau hoặc chọn mô hình khác."

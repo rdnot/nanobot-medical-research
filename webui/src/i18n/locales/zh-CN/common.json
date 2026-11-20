@@ -331,13 +331,12 @@
       "local_file_not_found": "本机找不到指定的 SSH 配置文件或私钥。",
       "file_picker_unavailable": "无法打开文件选择窗口，也可以直接填写本机文件路径。",
       "runtime_user_denied": "SSH 已登录，但不能免密切换到这个运行账号，请与服务器管理员确认。",
-      "python_unavailable": "服务器需要 python3 来读取已有的 nanobot 配置。",
+      "python_unavailable": "SSH 已登录，但找不到 Python 3。请确认服务器上的 SSH 登录账号能运行 python3 或 python。",
       "config_not_found": "找不到 nanobot 配置，请在「连接选项」中填写它在服务器上的路径。",
       "config_permission": "SSH 账号无权读取 nanobot 配置，请在「连接选项」中填写 nanobot 的运行账号。",
-      "config_invalid": "无法读取服务器上的 nanobot 配置。",
+      "config_invalid": "无法读取服务器上的 nanobot 配置。请确认所选文件是有效的 UTF-8 JSON。",
       "webui_disabled": "服务器的 WebUI 尚未启用，请先在服务器上开启。",
       "webui_auth_required": "服务器需要在配置中设置 WebUI 登录密钥。这里不需要模型 Key。",
-      "public_ws_unsupported": "这台服务器设置了公网 WebSocket 地址。首版支持通过 SSH 连接回环地址上的 WebUI。",
       "remote_auth_failed": "服务器拒绝了 WebUI 登录凭据，请检查它实际运行的配置。",
       "incompatible_gateway": "该地址不是兼容的 nanobot gateway，请检查配置或更新服务器版本。",
       "webui_unavailable": "Gateway 在运行，但没有安装 WebUI。",
@@ -454,10 +453,7 @@
       "ariaLabel": "切换语言"
     },
     "apps": "应用",
-    "automations": "自动任务",
-    "skills": {
-      "title": "技能"
-    }
+    "automations": "任务"
   },
   "settings": {
     "timezoneNoMatches": "没有匹配的时区。",
@@ -822,7 +818,7 @@
       "runtime": "系统",
       "advanced": "高级",
       "apps": "应用",
-      "automations": "自动任务",
+      "automations": "任务",
       "skills": "技能",
       "memory": "记忆"
     },
@@ -881,7 +877,8 @@
       "maxTokens": "输出 Token 上限",
       "temperature": "温度",
       "imageInput": "图像输入",
-      "imageInputHelp": "关闭后，含图片的请求会跳过此预设。",
+      "imageInputHelp": "仅当模型支持图片时开启。关闭后，含图片的请求会跳过此预设。",
+      "viewPreset": "查看预设",
       "reasoningEffort": "推理强度",
       "convertTitle": "转换设置",
       "convertHelp": "将主模型和备用模型转为预设",
@@ -1402,7 +1399,7 @@
       "extraHeaders": "请求头",
       "extraBody": "请求体参数",
       "extraQuery": "查询参数",
-      "capabilityFastMode": "快速模式",
+      "capabilityFastMode": "Fast",
       "capabilityFastModeHelp": "更快响应，用量更高",
       "capabilityXSearch": "X 搜索",
       "capabilityXSearchHelp": "支持的 Grok 模型可搜索 X\n\n允许受支持的 Grok 模型使用 xAI 托管的 X Search，并在对话中展示搜索过程。",
@@ -1438,12 +1435,15 @@
       "enable": "启用追踪"
     },
     "apps": {
+      "allTypes": "全部",
+      "typeFilter": "工具类型",
+      "statusFilter": "状态",
       "description": "管理 CLI Apps、Agent Plugins 和 MCP 工具。",
       "cliLabel": "CLI App",
       "mcpLabel": "MCP",
       "channelLabel": "聊天平台",
       "featureLabel": "功能",
-      "filterAll": "已就绪",
+      "readyOnly": "仅显示就绪",
       "filterPlugins": "Agent 插件",
       "filterCli": "CLI Apps",
       "filterMcp": "MCP",
@@ -1452,17 +1452,15 @@
       "featured": "工具",
       "mcpTools": "MCP 工具",
       "loading": "正在加载应用...",
-      "empty": "没有与搜索条件匹配的工具。",
-      "emptyApps": "暂无可用的 CLI App。",
-      "emptyIntegrations": "暂无可用 MCP 工具。",
-      "emptyReady": "还没有就绪的工具。",
+      "empty": "没有与搜索条件匹配的工具",
+      "emptyApps": "暂无可用的工具",
+      "emptyIntegrations": "暂无可用 MCP 工具",
+      "emptyReady": "还没有就绪的工具",
       "clearSearch": "清除搜索",
-      "browseApps": "浏览 CLI Apps",
-      "browseIntegrations": "浏览 MCP 工具",
-      "emptyIntegrationsHint": "可在下方添加自定义 MCP 服务器。",
+      "emptyIntegrationsHint": "可在下方添加自定义 MCP 服务器",
       "restartRequired": "重启 nanobot 以应用更新后的应用和 MCP 工具。",
-      "emptyPlugins": "尚未安装 Agent 插件。",
-      "emptyPluginsHint": "将插件添加到工作区的 plugins 目录，即可在此启用。",
+      "emptyPlugins": "尚未安装 Agent 插件",
+      "emptyPluginsHint": "将插件添加到工作区的 plugins 目录，即可在此启用",
       "pluginPermissions": "声明的权限",
       "pluginServers": "MCP 服务器",
       "pluginTrustNotice": "插件以 nanobot 的操作系统权限运行；声明的权限不会隔离插件。",
@@ -1503,7 +1501,7 @@
       "configuredInstances": "已配置 {{count}} 个实例",
       "connectPreview": "请先在终端运行下方命令，完成连接。",
       "copyCommand": "复制命令",
-      "filterAll": "全部",
+      "enabledOnly": "仅显示已启用",
       "filterOff": "未运行",
       "filterOn": "运行中",
       "helperCopied": "已复制 {{name}}。",
@@ -1807,7 +1805,7 @@
       "description": "选择对话中可用的技能",
       "views": "技能视图",
       "installedTab": "已安装",
-      "discoverTab": "发现",
+      "discoverTab": "技能市场",
       "customGroup": "自定义",
       "builtinGroup": "内置",
       "otherGroup": "其他",
@@ -1844,7 +1842,6 @@
       "marketplaceSearchFailed": "暂时无法搜索技能市场。",
       "marketplaceInstallFailed": "无法安装此技能。",
       "marketplaceSearchPlaceholder": "搜索技能",
-      "marketplaceSearchLabel": "搜索技能",
       "marketplaceSearching": "正在搜索",
       "marketplaceProviderFilter": "技能来源",
       "marketplaceProviderAll": "全部",
@@ -1950,32 +1947,6 @@
     "unarchiveTitleMany": "取消归档 {{count}} 个话题？",
     "description": "聊天记录会保留，可随时取消归档。",
     "unarchiveDescription": "这些话题将重新显示在侧栏中。"
-  },
-  "deleteConfirm": {
-    "title": "删除这个话题？",
-    "titleMany": "删除这 {{count}} 个对话？",
-    "description": "此操作无法撤销。",
-    "descriptionMany": "此操作无法撤销。",
-    "cancel": "取消",
-    "confirm": "删除",
-    "automationsDescription": "删除话题也会删除关联的自动任务",
-    "automationsDescriptionMany": "关联的自动任务也会一并删除。",
-    "moreAutomations": "另有 {{count}} 个",
-    "confirmWithAutomations": "删除",
-    "schedule": {
-      "at": "{{time}}",
-      "every": "每 {{duration}}",
-      "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}}（{{tz}}）",
-      "local": "本地触发器",
-      "unknown": "自定义计划"
-    },
-    "next": {
-      "label": "下次：{{time}}",
-      "disabled": "已暂停",
-      "local": "等待触发",
-      "none": "没有下次运行"
-    }
   },
   "connection": {
     "idle": "空闲",
@@ -2139,6 +2110,8 @@
       "cancelGoal": "取消目标",
       "cancelGoalFailed": "取消失败，请重试。",
       "cancelGoalOffline": "请重新连接后取消目标。",
+      "expandDraft": "展开编辑",
+      "collapseDraft": "收起编辑",
       "send": "发送消息",
       "stop": "停止响应",
       "quotedContext": "引用内容",
@@ -2150,6 +2123,13 @@
         "removeContext": "执行命令前，请移除附件和引用文本。"
       },
       "chooseAI": "选择模型",
+      "modelOptions": {
+        "title": "当前会话",
+        "on": "开启",
+        "off": "关闭",
+        "codexFast": "Fast",
+        "ultrafast": "极速"
+      },
       "switchModel": "切换模型",
       "manageModels": "管理预设",
       "fallbackNotice": "本次已使用备用模型：{{model}}。",
@@ -2218,7 +2198,7 @@
         "tooLong": "录音时间太长。",
         "tooShort": "请稍微多录一会儿。",
         "noInput": "没有检测到麦克风输入。",
-        "noDevice": "没有找到可用的麦克风。请连接麦克风后重试。",
+        "noDevice": "未找到麦克风，请连接后重试。",
         "failed": "语音转写失败。"
       },
       "slash": {
@@ -2362,6 +2342,7 @@
     "actions": "消息操作",
     "streaming": "流式输出中",
     "delivery": {
+      "waiting": "等待处理",
       "sending": "发送中",
       "failed": "未发送"
     },
@@ -2716,6 +2697,24 @@
       "main-stack": "主次排列"
     }
   },
+  "toast": {
+    "undo": "撤销",
+    "pendingDeleteSingle": "即将删除会话",
+    "archivedSingle": "已归档会话",
+    "archiveFailed": "无法更改归档状态。",
+    "unarchivedSingle": "已取消归档",
+    "deleteFailedSingle": "删除会话失败",
+    "pendingDelete": "即将删除 {{count}} 个会话",
+    "archived": "已归档 {{count}} 个会话",
+    "unarchived": "已取消归档 {{count}} 个会话",
+    "deleteFailed": "{{count}} 个会话删除失败",
+    "confirmDeleteAutomationsSingle": "删除会话及关联自动任务？",
+    "confirmDeleteAutomations": "删除 {{count}} 个会话及关联自动任务？",
+    "automationCountSingle": "1 个任务",
+    "automationCount": "{{count}} 个任务",
+    "excludeSession": "保留",
+    "excludeSessionAria": "从本次删除中移除「{{title}}」"
+  },
   "common": {
     "retry": "重试",
     "dismiss": "关闭",
@@ -2745,6 +2744,9 @@
       "timeoutTitle": "模型提供商请求超时",
       "rateLimitTitle": "模型提供商请求受限",
       "serverTitle": "模型提供商服务异常",
+      "imageInputTitle": "此预设的图像输入已关闭",
+      "imageRequestRejectedTitle": "含图请求被模型拒绝",
+      "imageInputBody": "这次请求包含图片。请检查此预设，或使用支持图片的预设。",
       "unknownTitle": "模型提供商请求失败",
       "bodyWithAttempt": "已尝试 {{attempts}} 次，仍未成功。可稍后继续或切换模型。",
       "body": "可稍后继续或切换模型。"

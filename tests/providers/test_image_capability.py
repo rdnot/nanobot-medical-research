@@ -12,6 +12,7 @@ from nanobot.providers.base import (
 )
 from nanobot.providers.factory import make_provider, provider_signature
 from nanobot.providers.fallback_provider import FallbackProvider
+from nanobot.providers.image_input import REPLAYED_IMAGE_META
 
 _IMAGE = {"type": "image_url", "image_url": {"url": "data:image/png;base64,c3ludGhldGlj"}}
 
@@ -53,6 +54,39 @@ async def test_text_only_preset_rejects_images_before_request(stream, native):
     assert len(provider.calls) == 1
 
 
+async def test_text_only_preset_omits_history_but_still_rejects_fresh_images():
+    provider = ImageProvider(False)
+    history = {**_IMAGE, "_meta": {REPLAYED_IMAGE_META: True}}
+    prompt = {"type": "text", "text": "Continue"}
+    messages = [{"role": "user", "content": [history, prompt]}]
+
+    response = await provider.chat_with_retry(messages=messages)
+    assert response.content == "accepted"
+    forwarded = provider.calls[0]["messages"][0]["content"]
+    assert forwarded == [
+        {"type": "text", "text": "[Previous image omitted: model does not support images]"},
+        prompt,
+    ]
+    assert messages[0]["content"] == [history, prompt]
+
+    response = await provider.chat_with_retry(messages=[{"role": "user", "content": [history, _IMAGE]}])
+    assert response.error_code == "unsupported_image"
+    assert len(provider.calls) == 1
+
+
+async def test_text_fallback_accepts_history_after_vision_provider_fails():
+    vision = ImageProvider(True, LLMResponse("unavailable", finish_reason="error", error_status_code=503))
+    text = ImageProvider(False)
+    chain = FallbackProvider(vision, [ModelPresetConfig(model="text", supports_images=False)], lambda _: text)
+    messages = [{"role": "user", "content": [{**_IMAGE, "_meta": {REPLAYED_IMAGE_META: True}}]}]
+
+    assert (await chain.chat(messages=messages)).content == "accepted"
+    assert vision.calls[0]["messages"] == messages
+    assert text.calls[0]["messages"][0]["content"] == [
+        {"type": "text", "text": "[Previous image omitted: model does not support images]"},
+    ]
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("primary_supports", [False, True])
 async def test_image_fallback_skips_text_only_candidates_without_counting_capability_as_outage(stream, primary_supports):
@@ -89,8 +123,20 @@ async def test_no_image_capable_candidate_fails_without_sending_or_stripping(str
     call = chain.chat_stream_with_retry if stream else chain.chat_with_retry
     response = await call(messages=[{"role": "user", "content": [_IMAGE]}])
     assert response.error_code == "unsupported_image"
+    assert LLMProvider.public_error_kind(response) == "unsupported_image"
     assert response.error_should_retry is False
     assert primary.calls == created == []
+
+
+async def test_image_capable_fallback_reports_its_own_failure():
+    primary = ImageProvider(False)
+    fallback = ImageProvider(response=LLMResponse(
+        "upstream rejection", finish_reason="error", error_status_code=401, error_code="unsupported_image",
+    ))
+    chain = FallbackProvider(primary, [ModelPresetConfig(model="vision")], lambda _: fallback)
+    response = await chain.chat_with_retry(messages=[{"role": "user", "content": [_IMAGE]}])
+    assert not primary.calls and len(fallback.calls) == 1
+    assert LLMProvider.public_error_kind(response) == "authentication"
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -105,9 +151,19 @@ async def test_declared_vision_does_not_hide_actual_upstream_rejection(stream):
     response = await call(messages=messages)
     assert response.content == upstream.content
     assert response.error_status_code == 400
+    assert LLMProvider.public_error_kind(response) == "image_request_rejected"
+    assert LLMProvider.public_error_kind(upstream) == "unknown"
     assert len(primary.calls) == 1
     assert created == []
     assert messages == before
+
+
+async def test_text_request_rejected_with_400_keeps_generic_diagnosis():
+    provider = ImageProvider(response=LLMResponse(
+        "invalid request", finish_reason="error", error_status_code=400,
+    ))
+    response = await provider.chat_with_retry(messages=[{"role": "user", "content": "hi"}])
+    assert LLMProvider.public_error_kind(response) == "unknown"
 
 
 def test_factory_resolves_independent_capabilities_and_refresh_signature():

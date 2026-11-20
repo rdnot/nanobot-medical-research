@@ -34,6 +34,8 @@ from nanobot.providers.compaction import (
     provider_compaction_scope,
 )
 from nanobot.providers.generation import GenerationSettings as GenerationSettings
+from nanobot.providers.image_input import replace_replayed_images
+from nanobot.providers.model_options import ModelOptions
 from nanobot.utils.cancellation import shield_and_drain
 from nanobot.utils.helpers import sanitize_surrogates_deep
 
@@ -282,6 +284,7 @@ class ProviderCallContext:
     # None opts out (auxiliary calls); an empty name denotes an unnamed preset.
     response_preset: str | None = None
     response_is_fallback: bool = False
+    model_options: ModelOptions = ModelOptions()
     # A pre-request compactor must fit this budget before sending the pending input.
     compaction_input_budget: int | None = None
     # Owned by one retry chain, shared only by its provider attempts.
@@ -1041,7 +1044,7 @@ class LLMProvider(ABC):
             return None
         return LLMResponse(
             content="This model preset does not support image input. Select an image-capable preset in model settings.",
-            finish_reason="error", error_kind="invalid_request", error_code="unsupported_image",
+            finish_reason="error", error_kind="unsupported_image", error_code="unsupported_image",
             error_should_retry=False,
         )
 
@@ -1382,6 +1385,8 @@ class LLMProvider(ABC):
         should_retry_guard: Callable[[], bool] | None = None,
         on_stream_recover: Callable[[], Awaitable[None]] | None = None,
     ) -> LLMResponse:
+        if not self.supports_images:
+            kw = {**kw, "messages": replace_replayed_images(kw["messages"])}
         if error := self._image_input_error(kw["messages"], kw.get("provider_context")):
             return error
         call = self._safe_chat_stream if stream else self._safe_chat
@@ -1431,7 +1436,7 @@ class LLMProvider(ABC):
         ) as compaction:
             if isinstance(context, ProviderCallContext):
                 kw["provider_context"] = replace(context, compaction=compaction)
-            return await self._run_with_retry(
+            response = await self._run_with_retry(
                 attributed_call,
                 kw,
                 retry_mode=retry_mode,
@@ -1441,6 +1446,16 @@ class LLMProvider(ABC):
                 should_retry_guard=should_retry_guard,
                 on_stream_recover=on_stream_recover,
             )
+        # A generic 400 rejects the request, but does not establish why the image
+        # request failed or whether the model supports images at all.
+        if (
+            response.finish_reason == "error"
+            and response.error_status_code == 400
+            and self.public_error_kind(response) == "unknown"
+            and self._request_contains_images(kw["messages"], context)
+        ):
+            return replace(response, error_kind="image_request_rejected")
+        return response
 
     @classmethod
     def _extract_retry_after(cls, content: str | None) -> float | None:
@@ -1566,6 +1581,8 @@ class LLMProvider(ABC):
     @classmethod
     def public_error_kind(cls, response: LLMResponse) -> str:
         """Return a stable public category without exposing provider details."""
+        if response.error_kind == "unsupported_image":
+            return "unsupported_image"
         if response.primary_error_kind is not None:
             return response.primary_error_kind
         if cls.is_arrearage_response(response):
@@ -1574,7 +1591,7 @@ class LLMProvider(ABC):
         # A plain 403 can be a policy or permission rejection, not bad credentials.
         if kind in {"authentication", "oauth_auth_required"} or response.error_status_code == 401:
             return "authentication"
-        if kind in {"connection", "timeout"}:
+        if kind in {"connection", "timeout", "image_request_rejected"}:
             return kind
         if response.error_status_code == 429:
             return "rate_limit"
