@@ -26,7 +26,11 @@ def loop_for(store, process):
 
 
 @pytest.mark.asyncio
-async def test_one_dream_reads_full_pages_and_defers_new_history(tmp_path):
+async def test_one_dream_reads_full_pages_and_defers_new_history(tmp_path, monkeypatch):
+    # FORK: the page split below is sized for upstream's 128K read_file cap; the fork
+    # raises it to 768K (all 26 records fit one page). Dream paging is cap-independent.
+    from nanobot.agent.tools.filesystem import ReadFileTool
+    monkeypatch.setattr(ReadFileTool, "_MAX_CHARS", 128_000)
     from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.base import GenerationSettings, LLMResponse, ToolCallRequest
