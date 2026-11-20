@@ -9,6 +9,7 @@ import type {
   OutboundMcpPresetMention,
   OutboundMedia,
   SessionMention,
+  SessionModelOptions,
   SidebarStatePayload,
   GoalStateWsPayload,
   WorkspaceScopePayload,
@@ -32,29 +33,40 @@ function createDefaultSocket(url: string): WebSocket {
   return new WebSocket(url);
 }
 
+const WS_DEBUG_CACHE_TTL_MS = 1_000;
+let wsDebugCache: { checkedAt: number; enabled: boolean } | null = null;
+
 /** Inbound WebSocket ``console.log`` / parse-failure ``console.warn``.
  *
  * - **Dev** (non-production bundle): **on by default** — messages appear at default log level.
  * - **Production**: off unless ``localStorage.setItem('nanobot_debug_ws','1')`` (or ``true``).
  * - **Silence anywhere**: ``localStorage.setItem('nanobot_debug_ws','0')`` (or ``false`` / ``off``).
- * Values are read on every frame; no reload needed.
+ * Values are cached briefly so toggling takes effect without reload while avoiding
+ * synchronous ``localStorage`` reads on every streamed delta frame.
  */
 function wsInboundDebugEnabled(): boolean {
   if (typeof globalThis === "undefined") return false;
+  if (import.meta.env.MODE === "test") return false;
+  const now = Date.now();
+  if (wsDebugCache && now - wsDebugCache.checkedAt < WS_DEBUG_CACHE_TTL_MS) {
+    return wsDebugCache.enabled;
+  }
+  let enabled: boolean;
   try {
-    if (import.meta.env.MODE === "test") return false;
     const ls = (globalThis as unknown as { localStorage?: Storage }).localStorage;
     const raw = ls?.getItem("nanobot_debug_ws")?.trim().toLowerCase() ?? "";
     if (raw === "0" || raw === "false" || raw === "off" || raw === "no") {
-      return false;
+      enabled = false;
+    } else if (raw === "1" || raw === "true" || raw === "on" || raw === "yes") {
+      enabled = true;
+    } else {
+      enabled = !import.meta.env.PROD;
     }
-    if (raw === "1" || raw === "true" || raw === "on" || raw === "yes") {
-      return true;
-    }
-    return !import.meta.env.PROD;
   } catch {
-    return !import.meta.env.PROD;
+    enabled = !import.meta.env.PROD;
   }
+  wsDebugCache = { checkedAt: now, enabled };
+  return enabled;
 }
 
 function summarizeInboundWsPayload(ev: InboundEvent): unknown {
@@ -246,6 +258,7 @@ export class NanobotClient {
   /** Inbound frames received while the transcript owner is absent, regardless of observers. */
   private pendingInboundByChat = new Map<string, InboundEvent[]>();
   private static readonly PENDING_INBOUND_MAX = 2000;
+  private static readonly PENDING_TEMP_INBOUND_MAX = 20_000;
   private knownChats = new Set<string>();
   /** Temporary chats are connection-owned and intentionally not reattached. */
   private temporaryChatIds = new Set<string>();
@@ -286,6 +299,12 @@ export class NanobotClient {
 
   get defaultChatId(): string | null {
     return this.readyChatId;
+  }
+
+  /** Stable browser preference namespace without authentication or query parameters. */
+  get preferenceScope(): string {
+    const url = new URL(this.currentUrl, window.location.href);
+    return `${url.protocol}//${url.host}${url.pathname}`;
   }
 
   /** Swap the URL (e.g. after fetching a fresh token) then reconnect. */
@@ -819,6 +838,7 @@ export class NanobotClient {
       quotedContext?: string;
       intent?: "create_automation";
       userShell?: boolean;
+      modelOptions?: SessionModelOptions;
       workspaceScope?: WorkspaceScopePayload | null;
       turnId?: string;
       /** False for side-channel or injected messages that do not own a lifecycle. */
@@ -841,6 +861,8 @@ export class NanobotClient {
       ...(options?.quotedContext?.trim() ? { quoted_context: options.quotedContext.trim() } : {}),
       ...(options?.intent === "create_automation" ? { intent: options.intent } : {}),
       ...(options?.userShell ? { user_shell: true } : {}),
+      ...(!temporary && !options?.userShell && options?.modelOptions
+        ? { model_options: options.modelOptions } : {}),
       ...(options?.workspaceScope ? { workspace_scope: options.workspaceScope } : {}),
       ...(options?.turnId ? { turn_id: options.turnId } : {}),
       webui: true,
@@ -1059,6 +1081,10 @@ export class NanobotClient {
       } else {
         this.knownChats.add(parsed.chat_id);
       }
+      const live = parsed.live_turn_ids;
+      if (Array.isArray(live) && live.every((id) => typeof id === "string" && id.length > 0)) {
+        this.applyRunEffects(this.runs.transition({ kind: "reattach", chatId: parsed.chat_id, liveTurnIds: live }));
+      }
       this.dispatch(parsed.chat_id, parsed);
       return;
     }
@@ -1157,11 +1183,13 @@ export class NanobotClient {
         this.pendingInboundByChat.set(chatId, pending);
       }
       pending.push(ev);
-      // Temporary chats have no canonical history to recover evicted events from.
-      if (!this.temporaryChatIds.has(chatId)) {
-        const over = pending.length - NanobotClient.PENDING_INBOUND_MAX;
-        if (over > 0) pending.splice(0, over);
-      }
+      // Temporary chats have no canonical history to recover evicted events from,
+      // but still keep a generous upper bound so an unmounted chat cannot OOM the tab.
+      const maxPending = this.temporaryChatIds.has(chatId)
+        ? NanobotClient.PENDING_TEMP_INBOUND_MAX
+        : NanobotClient.PENDING_INBOUND_MAX;
+      const over = pending.length - maxPending;
+      if (over > 0) pending.splice(0, over);
     }
     for (const handler of this.chatHandlers.get(chatId) ?? []) handler(ev);
   }

@@ -331,13 +331,12 @@
       "local_file_not_found": "The SSH config or private key file couldn't be found on this machine.",
       "file_picker_unavailable": "파일 선택 창을 열 수 없습니다. 로컬 파일 경로를 직접 입력할 수 있습니다.",
       "runtime_user_denied": "SSH signed in, but cannot read as that service account without a password. Check the account with your server administrator.",
-      "python_unavailable": "The server needs python3 to locate its existing nanobot configuration.",
+      "python_unavailable": "SSH signed in, but couldn't start Python 3. Make python3 or python available to the SSH login on the server.",
       "config_not_found": "nanobot's config wasn't found. Set its server-side path in Connection options.",
       "config_permission": "This SSH user can't read nanobot's config. Set the nanobot service account in Connection options.",
-      "config_invalid": "Couldn't read the server's nanobot configuration.",
+      "config_invalid": "Couldn't read the server's nanobot configuration. Check that the selected file is valid UTF-8 JSON.",
       "webui_disabled": "The server's WebUI is disabled. Enable it on the server first.",
       "webui_auth_required": "The server needs a WebUI login secret in its config. No model key is needed here.",
-      "public_ws_unsupported": "This server uses a public WebSocket URL. This first version supports a loopback WebUI over SSH.",
       "remote_auth_failed": "The server rejected its saved WebUI credential. Check its running configuration.",
       "incompatible_gateway": "This endpoint isn't a compatible nanobot gateway. Update the server or check its configuration.",
       "webui_unavailable": "The gateway is running, but its WebUI isn't installed.",
@@ -454,10 +453,7 @@
       "ariaLabel": "언어 변경"
     },
     "apps": "앱",
-    "automations": "자동화",
-    "skills": {
-      "title": "스킬"
-    }
+    "automations": "자동화"
   },
   "settings": {
     "timezoneNoMatches": "일치하는 시간대가 없습니다.",
@@ -1012,7 +1008,7 @@
       "extraHeaders": "헤더",
       "extraBody": "본문 매개변수",
       "extraQuery": "쿼리 매개변수",
-      "capabilityFastMode": "고속 모드",
+      "capabilityFastMode": "Fast",
       "capabilityFastModeHelp": "응답이 빨라지고 사용량이 늘어납니다.",
       "capabilityXSearch": "X 검색",
       "capabilityXSearchHelp": "지원되는 Grok 모델은 X를 검색할 수 있습니다.\n\n지원되는 Grok 모델이 xAI 호스팅 X Search를 사용하도록 허용합니다. 검색 활동은 채팅에 표시됩니다.",
@@ -1071,7 +1067,8 @@
       "maxTokens": "최대 출력 토큰",
       "temperature": "온도",
       "imageInput": "이미지 입력",
-      "imageInputHelp": "끄면 이미지가 포함된 요청에서 이 프리셋을 건너뜁니다.",
+      "imageInputHelp": "모델이 이미지를 지원할 때만 켜세요. 끄면 이미지가 포함된 요청에서 이 프리셋을 건너뜁니다.",
+      "viewPreset": "프리셋 보기",
       "reasoningEffort": "추론 강도",
       "convertTitle": "설정 변환",
       "convertHelp": "주 모델과 대체 모델을 프리셋으로 변환하세요.",
@@ -1256,12 +1253,15 @@
       "thirdPartyBrands": "제품 이름, 로고 및 브랜드는 각 소유자의 자산입니다. 사용은 식별 목적일 뿐 보증이나 제휴를 의미하지 않습니다."
     },
     "apps": {
+      "allTypes": "전체",
+      "typeFilter": "도구 유형",
+      "statusFilter": "상태",
       "description": "CLI Apps, Agent Plugins 및 MCP 도구를 관리합니다.",
       "cliLabel": "CLI App",
       "mcpLabel": "MCP",
       "channelLabel": "채널",
       "featureLabel": "기능",
-      "filterAll": "사용 가능",
+      "readyOnly": "사용 가능만",
       "filterPlugins": "Agent 플러그인",
       "filterCli": "CLI Apps",
       "filterMcp": "MCP",
@@ -1270,17 +1270,15 @@
       "featured": "도구",
       "mcpTools": "MCP 도구",
       "loading": "앱을 불러오는 중...",
-      "empty": "검색과 일치하는 도구가 없습니다.",
-      "emptyApps": "사용 가능한 CLI App이 없습니다.",
-      "emptyIntegrations": "사용 가능한 MCP 도구가 없습니다.",
-      "emptyReady": "아직 준비된 도구가 없습니다.",
+      "empty": "검색과 일치하는 도구가 없습니다",
+      "emptyApps": "사용 가능한 도구가 없습니다",
+      "emptyIntegrations": "사용 가능한 MCP 도구가 없습니다",
+      "emptyReady": "아직 준비된 도구가 없습니다",
       "clearSearch": "검색 지우기",
-      "browseApps": "CLI Apps 둘러보기",
-      "browseIntegrations": "MCP 도구 둘러보기",
-      "emptyIntegrationsHint": "아래에서 사용자 지정 MCP 서버를 추가하세요.",
+      "emptyIntegrationsHint": "아래에서 사용자 지정 MCP 서버를 추가하세요",
       "restartRequired": "업데이트된 앱과 MCP 도구를 적용하려면 nanobot을 다시 시작하세요.",
-      "emptyPlugins": "설치된 Agent 플러그인이 없습니다.",
-      "emptyPluginsHint": "워크스페이스의 plugins 디렉터리에 플러그인을 추가하면 여기에서 활성화할 수 있습니다.",
+      "emptyPlugins": "설치된 Agent 플러그인이 없습니다",
+      "emptyPluginsHint": "워크스페이스의 plugins 디렉터리에 플러그인을 추가하면 여기에서 활성화할 수 있습니다",
       "pluginPermissions": "선언된 권한",
       "pluginServers": "MCP 서버",
       "pluginTrustNotice": "플러그인은 nanobot의 운영체제 권한으로 실행됩니다. 선언된 권한은 플러그인을 격리하지 않습니다.",
@@ -1321,7 +1319,7 @@
       "configuredInstances": "인스턴스 {{count}}개 설정됨",
       "connectPreview": "다음 단계에서 브라우저 내 연결을 진행합니다. 지금은 아래 명령을 실행하세요.",
       "copyCommand": "명령 복사",
-      "filterAll": "전체",
+      "enabledOnly": "활성화된 항목만",
       "filterOff": "중지됨",
       "filterOn": "실행 중",
       "helperCopied": "{{name}}을(를) 복사했습니다.",
@@ -1625,7 +1623,7 @@
       "description": "채팅에서 사용할 스킬을 선택하세요.",
       "views": "스킬 보기",
       "installedTab": "설치됨",
-      "discoverTab": "탐색",
+      "discoverTab": "스킬 마켓",
       "customGroup": "사용자 지정",
       "builtinGroup": "기본 제공",
       "otherGroup": "기타",
@@ -1662,7 +1660,6 @@
       "marketplaceSearchFailed": "스킬 마켓을 검색할 수 없습니다.",
       "marketplaceInstallFailed": "이 스킬을 설치할 수 없습니다.",
       "marketplaceSearchPlaceholder": "스킬 검색",
-      "marketplaceSearchLabel": "스킬 검색",
       "marketplaceSearching": "검색 중",
       "marketplaceProviderFilter": "스킬 출처",
       "marketplaceProviderAll": "전체",
@@ -1768,32 +1765,6 @@
     "unarchiveTitleMany": "주제 {{count}}개의 보관을 해제할까요?",
     "description": "대화 기록은 유지되며 언제든지 보관을 해제할 수 있습니다.",
     "unarchiveDescription": "이 주제들이 사이드바에 다시 표시됩니다."
-  },
-  "deleteConfirm": {
-    "title": "이 채팅을 삭제할까요?",
-    "titleMany": "대화 {{count}}개를 삭제할까요?",
-    "description": "이 작업은 되돌릴 수 없습니다.",
-    "descriptionMany": "이 작업은 되돌릴 수 없습니다.",
-    "cancel": "취소",
-    "confirm": "삭제",
-    "automationsDescription": "이 주제를 삭제하면 연결된 자동 작업도 삭제됩니다.",
-    "automationsDescriptionMany": "연결된 자동화도 함께 삭제됩니다.",
-    "moreAutomations": "+ {{count}}개 더",
-    "confirmWithAutomations": "삭제",
-    "schedule": {
-      "at": "{{time}}",
-      "every": "{{duration}}마다",
-      "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}} ({{tz}})",
-      "local": "로컬 트리거",
-      "unknown": "사용자 지정 일정"
-    },
-    "next": {
-      "label": "다음: {{time}}",
-      "disabled": "일시 중지됨",
-      "local": "트리거 대기 중",
-      "none": "다음 실행 없음"
-    }
   },
   "connection": {
     "idle": "대기 중",
@@ -1957,6 +1928,8 @@
       "cancelGoal": "목표 취소",
       "cancelGoalFailed": "목표를 취소하지 못했습니다. 다시 시도하세요.",
       "cancelGoalOffline": "다시 연결한 후 목표를 취소하세요.",
+      "expandDraft": "입력창 펼치기",
+      "collapseDraft": "입력창 접기",
       "send": "메시지 보내기",
       "stop": "응답 중지",
       "quotedContext": "인용한 문맥",
@@ -1968,6 +1941,13 @@
         "removeContext": "명령을 실행하기 전에 첨부 파일과 인용문을 제거하세요."
       },
       "chooseAI": "모델 선택",
+      "modelOptions": {
+        "title": "현재 채팅",
+        "on": "켜기",
+        "off": "끄기",
+        "codexFast": "Fast",
+        "ultrafast": "초고속"
+      },
       "switchModel": "모델 전환",
       "manageModels": "프리셋 관리",
       "fallbackNotice": "이 응답은 대체 모델을 사용했습니다: {{model}}.",
@@ -2036,7 +2016,7 @@
         "tooLong": "녹음 시간이 너무 깁니다.",
         "tooShort": "음성을 녹음하려면 조금 더 길게 눌러 주세요.",
         "noInput": "마이크 입력이 감지되지 않았습니다.",
-        "noDevice": "마이크를 찾을 수 없습니다. 연결 후 다시 시도하세요.",
+        "noDevice": "녹음하려면 마이크를 연결하세요.",
         "failed": "오디오를 변환하지 못했습니다."
       },
       "slash": {
@@ -2180,6 +2160,7 @@
     "actions": "메시지 작업",
     "streaming": "생성 중",
     "delivery": {
+      "waiting": "처리 대기 중",
       "sending": "전송 중",
       "failed": "전송되지 않음"
     },
@@ -2534,6 +2515,24 @@
       "main-stack": "주 창과 보조 창"
     }
   },
+  "toast": {
+    "undo": "실행 취소",
+    "pendingDeleteSingle": "대화가 곧 삭제됩니다",
+    "archivedSingle": "대화를 보관했습니다",
+    "archiveFailed": "보관 상태를 변경하지 못했습니다.",
+    "unarchivedSingle": "대화 보관을 해제했습니다",
+    "deleteFailedSingle": "대화를 삭제하지 못했습니다",
+    "pendingDelete": "대화 {{count}}개가 곧 삭제됩니다",
+    "archived": "대화 {{count}}개를 보관했습니다",
+    "unarchived": "대화 {{count}}개의 보관을 해제했습니다",
+    "deleteFailed": "대화 {{count}}개를 삭제하지 못했습니다",
+    "confirmDeleteAutomationsSingle": "대화와 연결된 자동 작업을 삭제할까요?",
+    "confirmDeleteAutomations": "대화 {{count}}개와 연결된 자동 작업을 삭제할까요?",
+    "automationCountSingle": "작업 1개",
+    "automationCount": "작업 {{count}}개",
+    "excludeSession": "유지",
+    "excludeSessionAria": "{{title}}을(를) 삭제 대상에서 제외"
+  },
   "common": {
     "retry": "다시 시도",
     "dismiss": "닫기",
@@ -2563,6 +2562,9 @@
       "timeoutTitle": "모델 제공업체 요청 시간 초과",
       "rateLimitTitle": "모델 제공업체 요청 한도 초과",
       "serverTitle": "모델 제공업체 서비스 오류",
+      "imageInputTitle": "이 프리셋의 이미지 입력이 꺼져 있습니다",
+      "imageRequestRejectedTitle": "모델이 이미지가 포함된 요청을 거부했습니다",
+      "imageInputBody": "이 요청에 이미지가 포함되어 있습니다. 프리셋을 확인하거나 이미지를 지원하는 프리셋을 사용하세요.",
       "unknownTitle": "모델 제공업체 요청 실패",
       "bodyWithAttempt": "{{attempts}}회 시도 후 중지했습니다. 나중에 다시 시도하거나 다른 모델을 선택하세요.",
       "body": "나중에 다시 시도하거나 다른 모델을 선택하세요."

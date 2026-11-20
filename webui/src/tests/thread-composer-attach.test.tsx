@@ -11,6 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
+import { ToastProvider } from "@/components/ui/toast";
 import { ComposerDraftStore } from "@/lib/composer-draft";
 import type { EncodeResponse } from "@/lib/imageEncode";
 import type { WebUIIngressLimits } from "@/lib/types";
@@ -87,6 +88,56 @@ beforeEach(() => {
 });
 
 describe("ThreadComposer — attachments", () => {
+  it.each([false, true])("keeps a blocked image draft and opens the preset (active turn: %s)", async (isStreaming) => {
+    const file = pngFile("screenshot.png");
+    encodeImage.mockResolvedValueOnce(resolveReady(file));
+    const onSend = vi.fn();
+    const onInspectImagePreset = vi.fn();
+    const renderComposer = (imageInputBlocked: boolean, active = false) => (
+      <ThreadComposer isStreaming={active} {...{ onSend, imageInputBlocked, onInspectImagePreset }} />
+    );
+    const { rerender } = render(renderComposer(true, isStreaming), { wrapper: ToastProvider });
+    const textarea = screen.getByLabelText(/message input/i);
+    const input = textarea.closest("form")!.querySelector('input[type="file"]')!;
+    await act(async () => fireEvent.change(input, { target: { files: [file] } }));
+    fireEvent.change(textarea, { target: { value: "Please describe this" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Image input is off for this preset");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea).toHaveValue("Please describe this");
+    expect(screen.getByTestId("composer-chip")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "View preset" }));
+    expect(onInspectImagePreset).toHaveBeenCalledOnce();
+
+    rerender(renderComposer(false));
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith("Please describe this", [expect.objectContaining({
+      preview: expect.objectContaining({ name: file.name, kind: "image" }),
+    })], undefined);
+  });
+
+  it("pauses an already queued image when the next preset cannot process it", async () => {
+    const file = pngFile("queued.png");
+    encodeImage.mockResolvedValueOnce(resolveReady(file));
+    const onSend = vi.fn();
+    const { rerender } = render(<ThreadComposer isStreaming onSend={onSend} />, { wrapper: ToastProvider });
+    const textarea = screen.getByLabelText(/message input/i);
+    const input = textarea.closest("form")!.querySelector('input[type="file"]')!;
+    await act(async () => fireEvent.change(input, { target: { files: [file] } }));
+    fireEvent.change(textarea, { target: { value: "Queued with image" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    const queue = screen.getByRole("group", { name: "Waiting to send" });
+    expect(queue).toHaveTextContent("Queued with image");
+
+    rerender(<ThreadComposer imageInputBlocked onSend={onSend} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Image input is off for this preset");
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.click(within(queue).getByRole("button", { name: "Edit message" }));
+    expect(textarea).toHaveValue("Queued with image");
+    expect(screen.getByTestId("composer-chip")).toBeVisible();
+  });
+
   it("previews a picked image with size details on hover and includes its data url on send", async () => {
     const user = userEvent.setup();
     const file = pngFile("a.png", 100);
@@ -149,11 +200,11 @@ describe("ThreadComposer — attachments", () => {
     expect(onSend.mock.calls[0][1].map((attachment: { media: { name: string } }) => attachment.media.name)).toEqual([first.name]);
   });
 
-  it("attaches a picked PDF and includes its data url on send", async () => {
+  it("attaches and sends a PDF even when the preset does not accept images", async () => {
     const file = pdfFile();
     const onSend = vi.fn();
 
-    render(<ThreadComposer onSend={onSend} />);
+    render(<ThreadComposer onSend={onSend} imageInputBlocked />);
 
     const input = screen
       .getByLabelText(/message input/i)
@@ -216,7 +267,7 @@ describe("ThreadComposer — attachments", () => {
     const file = new File([], "empty.csv", { type: "application/vnd.ms-excel" });
     const onSend = vi.fn();
 
-    render(<ThreadComposer onSend={onSend} />);
+    render(<ThreadComposer onSend={onSend} />, { wrapper: ToastProvider });
 
     const input = screen
       .getByLabelText(/message input/i)
@@ -227,7 +278,9 @@ describe("ThreadComposer — attachments", () => {
       fireEvent.change(input, { target: { files: [file] } });
     });
 
-    expect(screen.getByText("Empty files cannot be attached")).toBeInTheDocument();
+    const alert = screen.getByRole("alert");
+    expect(alert.closest("[data-toast-tone=error]")).not.toBeNull();
+    expect(alert).toHaveTextContent("Empty files cannot be attached");
     expect(screen.queryByTestId("composer-chip")).not.toBeInTheDocument();
     expect(encodeImage).not.toHaveBeenCalled();
     expect(onSend).not.toHaveBeenCalled();

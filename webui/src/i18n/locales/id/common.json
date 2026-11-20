@@ -331,13 +331,12 @@
       "local_file_not_found": "The SSH config or private key file couldn't be found on this machine.",
       "file_picker_unavailable": "Pemilih file tidak dapat dibuka. Tempel jalur file lokal sebagai gantinya.",
       "runtime_user_denied": "SSH signed in, but cannot read as that service account without a password. Check the account with your server administrator.",
-      "python_unavailable": "The server needs python3 to locate its existing nanobot configuration.",
+      "python_unavailable": "SSH signed in, but couldn't start Python 3. Make python3 or python available to the SSH login on the server.",
       "config_not_found": "nanobot's config wasn't found. Set its server-side path in Connection options.",
       "config_permission": "This SSH user can't read nanobot's config. Set the nanobot service account in Connection options.",
-      "config_invalid": "Couldn't read the server's nanobot configuration.",
+      "config_invalid": "Couldn't read the server's nanobot configuration. Check that the selected file is valid UTF-8 JSON.",
       "webui_disabled": "The server's WebUI is disabled. Enable it on the server first.",
       "webui_auth_required": "The server needs a WebUI login secret in its config. No model key is needed here.",
-      "public_ws_unsupported": "This server uses a public WebSocket URL. This first version supports a loopback WebUI over SSH.",
       "remote_auth_failed": "The server rejected its saved WebUI credential. Check its running configuration.",
       "incompatible_gateway": "This endpoint isn't a compatible nanobot gateway. Update the server or check its configuration.",
       "webui_unavailable": "The gateway is running, but its WebUI isn't installed.",
@@ -454,10 +453,7 @@
       "ariaLabel": "Ganti bahasa"
     },
     "apps": "Aplikasi",
-    "automations": "Otomasi",
-    "skills": {
-      "title": "Keterampilan"
-    }
+    "automations": "Otomasi"
   },
   "settings": {
     "timezoneNoMatches": "Tidak ada zona waktu yang cocok.",
@@ -1012,7 +1008,7 @@
       "extraHeaders": "Header",
       "extraBody": "Parameter body",
       "extraQuery": "Parameter kueri",
-      "capabilityFastMode": "Mode cepat",
+      "capabilityFastMode": "Fast",
       "capabilityFastModeHelp": "Respons lebih cepat, penggunaan meningkat.",
       "capabilityXSearch": "Pencarian X",
       "capabilityXSearchHelp": "Model Grok yang didukung dapat mencari di X.\n\nIzinkan model Grok yang didukung menggunakan X Search yang dihosting xAI. Aktivitas pencarian ditampilkan di chat.",
@@ -1071,7 +1067,8 @@
       "maxTokens": "Maks. token keluaran",
       "temperature": "Temperatur",
       "imageInput": "Input gambar",
-      "imageInputHelp": "Jika dinonaktifkan, permintaan berisi gambar akan melewati preset ini.",
+      "imageInputHelp": "Aktifkan hanya jika model mendukung gambar. Jika dinonaktifkan, permintaan berisi gambar akan melewati preset ini.",
+      "viewPreset": "Lihat preset",
       "reasoningEffort": "Upaya penalaran",
       "convertTitle": "Konversi pengaturan",
       "convertHelp": "Ubah model utama dan cadangan menjadi preset.",
@@ -1256,12 +1253,15 @@
       "thirdPartyBrands": "Nama produk, logo, dan merek adalah milik pemiliknya masing-masing. Penggunaan hanya untuk identifikasi dan tidak menyiratkan dukungan."
     },
     "apps": {
+      "allTypes": "Semua",
+      "typeFilter": "Jenis alat",
+      "statusFilter": "Status",
       "description": "Kelola CLI Apps, Agent Plugins, dan alat MCP.",
       "cliLabel": "CLI App",
       "mcpLabel": "MCP",
       "channelLabel": "Kanal",
       "featureLabel": "Fitur",
-      "filterAll": "Siap",
+      "readyOnly": "Hanya yang siap",
       "filterPlugins": "Agent Plugins",
       "filterCli": "CLI Apps",
       "filterMcp": "MCP",
@@ -1270,17 +1270,15 @@
       "featured": "Alat",
       "mcpTools": "Alat MCP",
       "loading": "Memuat aplikasi...",
-      "empty": "Tidak ada alat yang cocok dengan pencarian Anda.",
-      "emptyApps": "Tidak ada CLI App yang tersedia.",
-      "emptyIntegrations": "Tidak ada alat MCP yang tersedia.",
-      "emptyReady": "Belum ada alat yang siap.",
+      "empty": "Tidak ada alat yang cocok dengan pencarian Anda",
+      "emptyApps": "Tidak ada alat yang tersedia",
+      "emptyIntegrations": "Tidak ada alat MCP yang tersedia",
+      "emptyReady": "Belum ada alat yang siap",
       "clearSearch": "Hapus pencarian",
-      "browseApps": "Jelajahi CLI Apps",
-      "browseIntegrations": "Jelajahi alat MCP",
-      "emptyIntegrationsHint": "Tambahkan server MCP khusus di bawah.",
+      "emptyIntegrationsHint": "Tambahkan server MCP khusus di bawah",
       "restartRequired": "Mulai ulang nanobot untuk menerapkan aplikasi dan alat MCP yang diperbarui.",
-      "emptyPlugins": "Belum ada Agent Plugin yang terpasang.",
-      "emptyPluginsHint": "Tambahkan plugin ke direktori plugins ruang kerja untuk mengaktifkannya di sini.",
+      "emptyPlugins": "Belum ada Agent Plugin yang terpasang",
+      "emptyPluginsHint": "Tambahkan plugin ke direktori plugins ruang kerja untuk mengaktifkannya di sini",
       "pluginPermissions": "Izin yang dinyatakan",
       "pluginServers": "Server MCP",
       "pluginTrustNotice": "Plugin berjalan dengan izin sistem operasi nanobot. Izin yang dinyatakan tidak mengisolasinya.",
@@ -1321,7 +1319,7 @@
       "configuredInstances": "{{count}} instans dikonfigurasi",
       "connectPreview": "Langkah berikutnya adalah koneksi di browser. Untuk saat ini, jalankan perintah di bawah.",
       "copyCommand": "Salin perintah",
-      "filterAll": "Semua",
+      "enabledOnly": "Hanya yang aktif",
       "filterOff": "Berhenti",
       "filterOn": "Berjalan",
       "helperCopied": "{{name}} disalin.",
@@ -1625,7 +1623,7 @@
       "description": "Pilih skill yang tersedia di chat.",
       "views": "Tampilan keterampilan",
       "installedTab": "Terpasang",
-      "discoverTab": "Temukan",
+      "discoverTab": "Pasar keterampilan",
       "customGroup": "Kustom",
       "builtinGroup": "Bawaan",
       "otherGroup": "Lainnya",
@@ -1662,7 +1660,6 @@
       "marketplaceSearchFailed": "Tidak dapat mencari marketplace keterampilan.",
       "marketplaceInstallFailed": "Tidak dapat memasang keterampilan ini.",
       "marketplaceSearchPlaceholder": "Cari keterampilan",
-      "marketplaceSearchLabel": "Cari keterampilan",
       "marketplaceSearching": "Mencari",
       "marketplaceProviderFilter": "Sumber keterampilan",
       "marketplaceProviderAll": "Semua",
@@ -1768,32 +1765,6 @@
     "unarchiveTitleMany": "Batalkan arsip {{count}} topik?",
     "description": "Percakapan tetap tersimpan. Anda dapat membatalkan arsipnya kapan saja.",
     "unarchiveDescription": "Topik ini akan kembali muncul di bilah samping."
-  },
-  "deleteConfirm": {
-    "title": "Hapus obrolan ini?",
-    "titleMany": "Hapus {{count}} percakapan?",
-    "description": "Tindakan ini tidak dapat dibatalkan.",
-    "descriptionMany": "Tindakan ini tidak dapat dibatalkan.",
-    "cancel": "Batal",
-    "confirm": "Hapus",
-    "automationsDescription": "Menghapus topik ini juga menghapus tugas otomatis terkait.",
-    "automationsDescriptionMany": "Automasi terkait juga akan dihapus.",
-    "moreAutomations": "+ {{count}} lagi",
-    "confirmWithAutomations": "Hapus",
-    "schedule": {
-      "at": "{{time}}",
-      "every": "Setiap {{duration}}",
-      "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}} ({{tz}})",
-      "local": "Pemicu lokal",
-      "unknown": "Jadwal khusus"
-    },
-    "next": {
-      "label": "Berikutnya: {{time}}",
-      "disabled": "Dijeda",
-      "local": "Menunggu pemicu",
-      "none": "Tidak ada jadwal berikutnya"
-    }
   },
   "connection": {
     "idle": "Tidak aktif",
@@ -1957,6 +1928,8 @@
       "cancelGoal": "Batalkan tujuan",
       "cancelGoalFailed": "Tujuan gagal dibatalkan. Coba lagi.",
       "cancelGoalOffline": "Hubungkan kembali untuk membatalkan tujuan.",
+      "expandDraft": "Perluas kotak pesan",
+      "collapseDraft": "Perkecil kotak pesan",
       "send": "Kirim pesan",
       "stop": "Hentikan respons",
       "quotedContext": "Konteks kutipan",
@@ -1968,6 +1941,13 @@
         "removeContext": "Hapus lampiran dan teks kutipan sebelum menjalankan perintah."
       },
       "chooseAI": "Pilih model",
+      "modelOptions": {
+        "title": "Untuk chat ini",
+        "on": "Aktif",
+        "off": "Nonaktif",
+        "codexFast": "Fast",
+        "ultrafast": "Ultracepat"
+      },
       "switchModel": "Ganti model",
       "manageModels": "Kelola preset",
       "fallbackNotice": "Respons ini menggunakan model cadangan: {{model}}.",
@@ -2036,7 +2016,7 @@
         "tooLong": "Rekaman terlalu panjang.",
         "tooShort": "Tahan sedikit lebih lama untuk merekam suara.",
         "noInput": "Tidak ada input mikrofon yang terdeteksi.",
-        "noDevice": "Mikrofon tidak ditemukan. Hubungkan mikrofon lalu coba lagi.",
+        "noDevice": "Hubungkan mikrofon untuk merekam.",
         "failed": "Tidak dapat mentranskripsi audio."
       },
       "slash": {
@@ -2180,6 +2160,7 @@
     "actions": "Tindakan pesan",
     "streaming": "sedang mengalir",
     "delivery": {
+      "waiting": "Menunggu diproses",
       "sending": "Mengirim",
       "failed": "Belum terkirim"
     },
@@ -2534,6 +2515,24 @@
       "main-stack": "Utama dan tumpukan"
     }
   },
+  "toast": {
+    "undo": "Urungkan",
+    "pendingDeleteSingle": "Percakapan akan dihapus",
+    "archivedSingle": "Percakapan diarsipkan",
+    "archiveFailed": "Tidak dapat mengubah status arsip.",
+    "unarchivedSingle": "Percakapan dikeluarkan dari arsip",
+    "deleteFailedSingle": "Gagal menghapus percakapan",
+    "pendingDelete": "{{count}} percakapan akan dihapus",
+    "archived": "{{count}} percakapan diarsipkan",
+    "unarchived": "{{count}} percakapan dikeluarkan dari arsip",
+    "deleteFailed": "Gagal menghapus {{count}} percakapan",
+    "confirmDeleteAutomationsSingle": "Hapus percakapan dan otomatisasi terkait?",
+    "confirmDeleteAutomations": "Hapus {{count}} percakapan dan otomatisasi terkait?",
+    "automationCountSingle": "1 otomatisasi",
+    "automationCount": "{{count}} otomatisasi",
+    "excludeSession": "Simpan",
+    "excludeSessionAria": "Keluarkan {{title}} dari penghapusan ini"
+  },
   "common": {
     "retry": "Coba lagi",
     "dismiss": "Tutup",
@@ -2563,6 +2562,9 @@
       "timeoutTitle": "Permintaan ke penyedia model kehabisan waktu",
       "rateLimitTitle": "Batas permintaan penyedia model tercapai",
       "serverTitle": "Kesalahan layanan penyedia model",
+      "imageInputTitle": "Input gambar dinonaktifkan untuk preset ini",
+      "imageRequestRejectedTitle": "Model menolak permintaan yang berisi gambar",
+      "imageInputBody": "Permintaan ini berisi gambar. Periksa preset ini atau gunakan preset yang mendukung gambar.",
       "unknownTitle": "Permintaan ke penyedia model gagal",
       "bodyWithAttempt": "Dihentikan setelah {{attempts}} percobaan. Coba lagi nanti atau pilih model lain.",
       "body": "Coba lagi nanti atau pilih model lain."

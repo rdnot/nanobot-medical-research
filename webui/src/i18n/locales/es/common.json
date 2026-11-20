@@ -331,13 +331,12 @@
       "local_file_not_found": "The SSH config or private key file couldn't be found on this machine.",
       "file_picker_unavailable": "No se pudo abrir el selector. Puedes pegar la ruta de un archivo local.",
       "runtime_user_denied": "SSH signed in, but cannot read as that service account without a password. Check the account with your server administrator.",
-      "python_unavailable": "The server needs python3 to locate its existing nanobot configuration.",
+      "python_unavailable": "SSH signed in, but couldn't start Python 3. Make python3 or python available to the SSH login on the server.",
       "config_not_found": "nanobot's config wasn't found. Set its server-side path in Connection options.",
       "config_permission": "This SSH user can't read nanobot's config. Set the nanobot service account in Connection options.",
-      "config_invalid": "Couldn't read the server's nanobot configuration.",
+      "config_invalid": "Couldn't read the server's nanobot configuration. Check that the selected file is valid UTF-8 JSON.",
       "webui_disabled": "The server's WebUI is disabled. Enable it on the server first.",
       "webui_auth_required": "The server needs a WebUI login secret in its config. No model key is needed here.",
-      "public_ws_unsupported": "This server uses a public WebSocket URL. This first version supports a loopback WebUI over SSH.",
       "remote_auth_failed": "The server rejected its saved WebUI credential. Check its running configuration.",
       "incompatible_gateway": "This endpoint isn't a compatible nanobot gateway. Update the server or check its configuration.",
       "webui_unavailable": "The gateway is running, but its WebUI isn't installed.",
@@ -454,10 +453,7 @@
       "ariaLabel": "Cambiar idioma"
     },
     "apps": "Aplicaciones",
-    "automations": "Automatizaciones",
-    "skills": {
-      "title": "Habilidades"
-    }
+    "automations": "Automatizaciones"
   },
   "settings": {
     "timezoneNoMatches": "No hay zonas horarias que coincidan.",
@@ -1012,7 +1008,7 @@
       "extraHeaders": "Cabeceras",
       "extraBody": "Parámetros del cuerpo",
       "extraQuery": "Parámetros de consulta",
-      "capabilityFastMode": "Modo rápido",
+      "capabilityFastMode": "Fast",
       "capabilityFastModeHelp": "Respuestas más rápidas, mayor consumo.",
       "capabilityXSearch": "Búsqueda en X",
       "capabilityXSearchHelp": "Los modelos Grok compatibles pueden buscar en X.\n\nPermite que los modelos Grok compatibles usen X Search alojado por xAI. La actividad de búsqueda aparece en el chat.",
@@ -1071,7 +1067,8 @@
       "maxTokens": "Máx. tokens de salida",
       "temperature": "Temperatura",
       "imageInput": "Entrada de imágenes",
-      "imageInputHelp": "Al desactivarla, las solicitudes con imágenes omiten este preajuste.",
+      "imageInputHelp": "Actívala solo si el modelo admite imágenes. Al desactivarla, las solicitudes con imágenes omiten este preajuste.",
+      "viewPreset": "Ver preajuste",
       "reasoningEffort": "Esfuerzo de razonamiento",
       "convertTitle": "Convertir ajustes",
       "convertHelp": "Convierte los modelos principal y de respaldo en preajustes.",
@@ -1256,12 +1253,15 @@
       "thirdPartyBrands": "Los nombres, logotipos y marcas de productos pertenecen a sus respectivos propietarios. Su uso es solo identificativo y no implica respaldo."
     },
     "apps": {
+      "allTypes": "Todos",
+      "typeFilter": "Tipo de herramienta",
+      "statusFilter": "Estado",
       "description": "Gestiona aplicaciones CLI, Agent Plugins y herramientas MCP.",
       "cliLabel": "CLI App",
       "mcpLabel": "MCP",
       "channelLabel": "Canal",
       "featureLabel": "Función",
-      "filterAll": "Disponibles",
+      "readyOnly": "Solo disponibles",
       "filterPlugins": "Agent Plugins",
       "filterCli": "CLI Apps",
       "filterMcp": "MCP",
@@ -1270,17 +1270,15 @@
       "featured": "Herramientas",
       "mcpTools": "Herramientas MCP",
       "loading": "Cargando aplicaciones...",
-      "empty": "Ninguna herramienta coincide con tu búsqueda.",
-      "emptyApps": "No hay aplicaciones CLI disponibles.",
-      "emptyIntegrations": "No hay herramientas MCP disponibles.",
-      "emptyReady": "Todavía no hay herramientas listas.",
+      "empty": "Ninguna herramienta coincide con tu búsqueda",
+      "emptyApps": "No hay herramientas disponibles",
+      "emptyIntegrations": "No hay herramientas MCP disponibles",
+      "emptyReady": "Todavía no hay herramientas listas",
       "clearSearch": "Borrar búsqueda",
-      "browseApps": "Explorar aplicaciones CLI",
-      "browseIntegrations": "Explorar herramientas MCP",
-      "emptyIntegrationsHint": "Añade un servidor MCP personalizado abajo.",
+      "emptyIntegrationsHint": "Añade un servidor MCP personalizado abajo",
       "restartRequired": "Reinicia nanobot para aplicar las aplicaciones y herramientas MCP actualizadas.",
-      "emptyPlugins": "No hay Agent Plugins instalados.",
-      "emptyPluginsHint": "Añade un plugin al directorio plugins del espacio de trabajo para activarlo aquí.",
+      "emptyPlugins": "No hay Agent Plugins instalados",
+      "emptyPluginsHint": "Añade un plugin al directorio plugins del espacio de trabajo para activarlo aquí",
       "pluginPermissions": "Permisos declarados",
       "pluginServers": "Servidores MCP",
       "pluginTrustNotice": "Los plugins se ejecutan con los permisos del sistema de nanobot. Los permisos declarados no los aíslan.",
@@ -1321,7 +1319,7 @@
       "configuredInstances": "{{count}} instancias configuradas",
       "connectPreview": "El siguiente paso es la conexión en el navegador. Por ahora, ejecuta el comando siguiente.",
       "copyCommand": "Copiar comando",
-      "filterAll": "Todos",
+      "enabledOnly": "Solo activados",
       "filterOff": "Detenidos",
       "filterOn": "En ejecución",
       "helperCopied": "{{name}} copiado.",
@@ -1625,7 +1623,7 @@
       "description": "Elige las habilidades disponibles en el chat.",
       "views": "Vistas de habilidades",
       "installedTab": "Instaladas",
-      "discoverTab": "Descubrir",
+      "discoverTab": "Mercado de habilidades",
       "customGroup": "Personalizadas",
       "builtinGroup": "Integradas",
       "otherGroup": "Otras",
@@ -1662,7 +1660,6 @@
       "marketplaceSearchFailed": "No se pudo buscar en los catálogos de habilidades.",
       "marketplaceInstallFailed": "No se pudo instalar esta habilidad.",
       "marketplaceSearchPlaceholder": "Buscar habilidades",
-      "marketplaceSearchLabel": "Buscar habilidades",
       "marketplaceSearching": "Buscando",
       "marketplaceProviderFilter": "Origen de la habilidad",
       "marketplaceProviderAll": "Todos",
@@ -1768,32 +1765,6 @@
     "unarchiveTitleMany": "¿Desarchivar {{count}} temas?",
     "description": "Las conversaciones se conservan. Puedes desarchivarlas en cualquier momento.",
     "unarchiveDescription": "Estos temas volverán a la barra lateral."
-  },
-  "deleteConfirm": {
-    "title": "¿Eliminar este chat?",
-    "titleMany": "¿Eliminar {{count}} conversaciones?",
-    "description": "Esta acción no se puede deshacer.",
-    "descriptionMany": "Esta acción no se puede deshacer.",
-    "cancel": "Cancelar",
-    "confirm": "Eliminar",
-    "automationsDescription": "Eliminar este tema también elimina sus tareas automáticas vinculadas.",
-    "automationsDescriptionMany": "También se eliminarán las automatizaciones vinculadas.",
-    "moreAutomations": "+ {{count}} más",
-    "confirmWithAutomations": "Eliminar",
-    "schedule": {
-      "at": "{{time}}",
-      "every": "Cada {{duration}}",
-      "cron": "Cron {{expr}}",
-      "cronWithTz": "Cron {{expr}} ({{tz}})",
-      "local": "Activador local",
-      "unknown": "Programación personalizada"
-    },
-    "next": {
-      "label": "Siguiente: {{time}}",
-      "disabled": "Pausada",
-      "local": "Esperando activador",
-      "none": "Sin próxima ejecución"
-    }
   },
   "connection": {
     "idle": "Inactivo",
@@ -1957,6 +1928,8 @@
       "cancelGoal": "Cancelar objetivo",
       "cancelGoalFailed": "No se pudo cancelar. Inténtalo de nuevo.",
       "cancelGoalOffline": "Vuelve a conectarte para cancelar el objetivo.",
+      "expandDraft": "Ampliar el área de escritura",
+      "collapseDraft": "Reducir el área de escritura",
       "send": "Enviar mensaje",
       "stop": "Detener respuesta",
       "quotedContext": "Contexto citado",
@@ -1968,6 +1941,13 @@
         "removeContext": "Elimina los archivos adjuntos y el texto citado antes de ejecutar un comando."
       },
       "chooseAI": "Elegir modelo",
+      "modelOptions": {
+        "title": "Para este chat",
+        "on": "Activado",
+        "off": "Desactivado",
+        "codexFast": "Fast",
+        "ultrafast": "Ultrarrápido"
+      },
       "switchModel": "Cambiar modelo",
       "manageModels": "Gestionar preajustes",
       "fallbackNotice": "Esta respuesta usó un modelo alternativo: {{model}}.",
@@ -2036,7 +2016,7 @@
         "tooLong": "La grabación es demasiado larga.",
         "tooShort": "Mantén pulsado un poco más para grabar voz.",
         "noInput": "No se detectó entrada del micrófono.",
-        "noDevice": "No se encontró ningún micrófono. Conéctalo y vuelve a intentarlo.",
+        "noDevice": "Conecta un micrófono para grabar.",
         "failed": "No se pudo transcribir el audio."
       },
       "slash": {
@@ -2180,6 +2160,7 @@
     "actions": "Acciones del mensaje",
     "streaming": "transmitiendo",
     "delivery": {
+      "waiting": "Pendiente de procesar",
       "sending": "Enviando",
       "failed": "No enviado"
     },
@@ -2534,6 +2515,24 @@
       "main-stack": "Principal y pila"
     }
   },
+  "toast": {
+    "undo": "Deshacer",
+    "pendingDeleteSingle": "La conversación se eliminará",
+    "archivedSingle": "Conversación archivada",
+    "archiveFailed": "No se pudo cambiar el estado de archivado.",
+    "unarchivedSingle": "Conversación desarchivada",
+    "deleteFailedSingle": "No se pudo eliminar la conversación",
+    "pendingDelete": "Se eliminarán {{count}} conversaciones",
+    "archived": "{{count}} conversaciones archivadas",
+    "unarchived": "{{count}} conversaciones desarchivadas",
+    "deleteFailed": "No se pudieron eliminar {{count}} conversaciones",
+    "confirmDeleteAutomationsSingle": "¿Eliminar la conversación y sus automatizaciones?",
+    "confirmDeleteAutomations": "¿Eliminar {{count}} conversaciones y sus automatizaciones?",
+    "automationCountSingle": "1 automatización",
+    "automationCount": "{{count}} automatizaciones",
+    "excludeSession": "Conservar",
+    "excludeSessionAria": "Quitar {{title}} de esta eliminación"
+  },
   "common": {
     "retry": "Reintentar",
     "dismiss": "Cerrar",
@@ -2563,6 +2562,9 @@
       "timeoutTitle": "La solicitud al proveedor del modelo agotó el tiempo de espera",
       "rateLimitTitle": "Se alcanzó el límite de solicitudes del proveedor del modelo",
       "serverTitle": "Error del servicio del proveedor del modelo",
+      "imageInputTitle": "La entrada de imágenes está desactivada en este preajuste",
+      "imageRequestRejectedTitle": "El modelo rechazó la solicitud con imagen",
+      "imageInputBody": "Esta solicitud incluye imágenes. Revisa este preajuste o usa uno compatible con imágenes.",
       "unknownTitle": "La solicitud al proveedor del modelo falló",
       "bodyWithAttempt": "Se detuvo tras {{attempts}} intentos. Inténtalo más tarde o elige otro modelo.",
       "body": "Inténtalo más tarde o elige otro modelo."

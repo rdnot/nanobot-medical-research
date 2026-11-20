@@ -29,6 +29,8 @@ Every channel registration has a preview. Channels with shared configuration for
 
 Channel fixture fields, defaults, and requirements come from the Python channel setup contracts. Regenerate `src/dev/gallery/channel-fixtures.ts` with `python webui/src/dev/gallery/generate_channel_fixtures.py` from the repository root after changing those contracts; add `--check` to verify the snapshot. This developer command loads channel descriptors without starting a gateway. Running the gallery uses the committed snapshot and requires no Python process.
 
+Bundled channel marks in `public/brand/channels/` use the SVG paths and brand colors from [Simple Icons v16.38.0](https://github.com/simple-icons/simple-icons/tree/16.38.0) ([CC0](https://github.com/simple-icons/simple-icons/blob/16.38.0/LICENSE.md); trademarks belong to their respective owners). Channel packages select a bundled mark or keep their built-in icon or initials. Channel branding does not fetch remote favicons; account avatars supplied by a connected service are separate.
+
 ## Where components belong
 
 | Location | Ownership | Examples |
@@ -60,7 +62,7 @@ Prompt navigation keeps a three-page raw window. Fragmented turns also retain th
 
 The application theme remains the single owner for paired day/night artwork. The Sidebar keeps the original daytime mark and uses a sleeping-cap variant in dark mode; the Star invitation pairs matching day/night illustrations. Both layers reserve the same geometry. `.theme-art` blends opacity for System changes and browsers without native snapshots; a native root View Transition owns the whole-frame fade instead. Reduced motion switches artwork directly. Entry and conversation surfaces keep their normal theme colors without decorative ambient glow.
 
-Dropdowns and popovers use Radix's resolved transform origin and side, so motion stays attached to the trigger after collision handling. Radix owns their presence and focus. `SidebarPanel` retains its content until the slot and surface finish their actual exit animations, ignores descendant activity, and cancels teardown when reopened. Closing content is inert and hidden from assistive navigation; callers still own focus restoration. Disclosures keep their existing in-flow height transition and draft retention.
+Dropdowns, popovers, and tooltips use Radix's resolved transform origin so scaling stays on the trigger-facing edge after collision handling. The file context menu uses the pointer location or the focused file as its anchor. Surfaces with slide motion use the resolved side. Radix owns their presence and focus. `SidebarPanel` retains its content until the slot and surface finish their actual exit animations, ignores descendant activity, and cancels teardown when reopened. Closing content is inert and hidden from assistive navigation; callers still own focus restoration. Disclosures keep their existing in-flow height transition and draft retention.
 
 ## Typography
 
