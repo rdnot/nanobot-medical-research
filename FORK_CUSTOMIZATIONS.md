@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified November 17, 2026 — upstream `53a556585`, merge main `b4568e4c3`)
+## Customizations (verified November 20, 2026 — upstream `3e9024ea0`, merge main `5e1ec0fdf`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
@@ -175,6 +175,8 @@ is marked `# UPSTREAM` where that helps during merges.
   is skipped (fork keeps `maxChars` out of the schema).
 - Force-final notice adaptations: `tests/agent/test_loop_iteration_limit.py` (the scripted model
   skips the hidden `_FORCE_FINAL_PROMPT` so it still reaches the iteration limit).
+- Read-cap adaptation: `tests/agent/test_dream_run.py::test_one_dream_reads_full_pages_and_defers_new_history`
+  pins `ReadFileTool._MAX_CHARS` to upstream's 128K (its page split assumes it; fork reads 768K).
   (`tests/test_openai_api_sessions.py` left with upstream's removal of the standalone API server.)
 - `tests/test_update_jobs.py::test_worker_survives_coordinator_loss_without_unlocking_live_pip`
   waits for the held pip on a 60 s wall-clock deadline instead of 200 × 25 ms (~5 s): the
