@@ -1131,6 +1131,8 @@ def _client_projection_event(
         content = text if isinstance(text, str) else ""
         render_as_text = record.get("render_as") == "text"
         projected = {"event": "message", **common, "text": content}
+        if record.get("side_channel") is True:
+            projected["side_channel"] = True
         if render_as_text:
             projected["render_as"] = "text"
         kind = record.get("kind")
