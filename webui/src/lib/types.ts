@@ -122,6 +122,7 @@ export interface UIMessage {
   content: string;
   /** Literal output bypasses Markdown and content-based reply recognition. */
   renderAs?: "text";
+  commandResult?: unknown;
   /** Invocation-time snapshots, never resolved from today's model presets. */
   responseSources?: ResponseSource[];
   /** Stable input identity, independent of its arrival or execution turn. */
@@ -147,8 +148,6 @@ export interface UIMessage {
   activityKind?: "model";
   /** Context-compaction lifecycle rendered as a standalone channel notice. */
   compaction?: UIContextCompaction;
-  /** Display-only localization marker for fixed /compact command replies. */
-  compactReply?: "empty" | "failed";
   /** User turn: optimistic blob URLs for preview. Replay: placeholder chips. */
   images?: UIImage[];
   media?: UIMediaAttachment[];
@@ -191,6 +190,7 @@ export interface UIMessage {
   /** Live UI hint; not part of the persisted transcript. */
   processingStatus?: InputProcessingStatus;
   deliveryErrorKind?: MessageDeliveryErrorKind;
+  deliveryErrorDetail?: string;
 }
 
 /** Turn-owned telemetry, not a transcript row or body-history source. */
@@ -1605,6 +1605,7 @@ export type InboundEvent =
       chat_id: string;
       text: string;
       side_channel?: true;
+      command_result?: unknown;
       render_as?: "text";
       reply_to?: string;
       media?: string[];
@@ -1915,6 +1916,7 @@ export type Outbound =
       type: "message";
       chat_id: string;
       content: string;
+      locale?: string;
       media?: import("../../../packages/client-events/attachments").AttachmentReference[];
       cli_apps?: OutboundCliAppMention[];
       mcp_presets?: OutboundMcpPresetMention[];

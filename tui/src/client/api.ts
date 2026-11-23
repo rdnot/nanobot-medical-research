@@ -233,6 +233,9 @@ export async function fetchHistory(
           // kind-less branch below) would let it overwrite the just-decoded
           // answer row instead of appearing as its own row.
           messages.push({ role: "activity", content: event.text })
+        } else if (event.side_channel === true) {
+          messages.push({ role: "assistant", content: event.text, forkIndex: userIndex,
+            ...(event.render_as === "text" ? { renderAs: event.render_as } : {}) })
         } else {
           // A final message can repeat the answer already saved by stream_end.
           if (stream && stream.turnId === event.turn_id) {
