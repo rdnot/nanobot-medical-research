@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified November 21, 2026 — upstream `0dc8679ed` (v0.4.2), merge main `cd9ffb307`)
+## Customizations (verified November 23, 2026 — upstream `44fcf6439`, merge main `9cbbf5040`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
@@ -61,8 +61,9 @@ is marked `# UPSTREAM` where that helps during merges.
   `ToolContext.max_output_tokens` for the write/edit size limits.
 - `_build_tools_summary` puts search queries, URLs and file paths in inline code (backticks
   inside a value are replaced) so the WebUI never auto-links a URL into a text-less link.
-- `_dispatch_command` skips persisting the command turn for `/c` as it does for `/new`
-  (both reset the session; persisting into the reset session would conflict).
+- The `/c` command turn is not persisted, same as `/new`: upstream now gates persistence on
+  `cmd_ctx.record_exchange`, and `cmd_clear` sets it to `False` like `cmd_new` (both reset the
+  session; persisting into the reset session would conflict).
 
 ### `nanobot/webui/outbound_delivery.py`, WebUI and TUI (`tools_summary` kind)
 - `WebUIOutboundDelivery._send_message` (upstream moved WebSocket message serialization out of
@@ -106,7 +107,9 @@ is marked `# UPSTREAM` where that helps during merges.
 - `/s` alias for `/status`; `/c` (`cmd_clear`: cancels the active turn, drops file state,
   resets through `sessions.state.reset()` without consolidation — the synchronous
   `SessionManager.save()` refuses once the async session owner runs); `/rerun` (`cmd_rerun`: runs `workspace/rerun.bat`,
-  intentionally unsandboxed); help text entries.
+  intentionally unsandboxed); help text entries (appended as literal lines in `_help_parts`).
+- `/c` and `/rerun` reply via upstream's `command_reply()` (a side-channel `CommandResultEvent`
+  that keeps the active answer and is rendered per channel), never a plain `OutboundMessage`.
 
 ### `nanobot/agent/loop.py` — `_cancel_active_tasks`
 - Now upstream behavior (Nov 2026: upstream also keeps the worker's task/inbox registered while
