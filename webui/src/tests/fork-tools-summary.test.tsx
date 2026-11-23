@@ -51,27 +51,29 @@ interface RowReport {
   expandedLabels: string[];
 }
 
-/** Render the thread, open every row's block menu, and record the activity toggle. */
+/** Render the thread and record each row's activity toggle (and what it expands to). */
 function inspectRows(events: ThreadProjectionEvent[]): { rows: RowReport[]; messages: ReturnType<typeof projectThreadEvents> } {
   const messages = projectThreadEvents(events);
   const { container } = render(<ThreadMessages messages={messages} isStreaming={false} />);
   const rows: RowReport[] = [];
   for (const unit of Array.from(container.querySelectorAll<HTMLElement>("[data-thread-display-unit]"))) {
-    const trigger = unit.querySelector<HTMLElement>("[data-message-block-menu-trigger]");
     const report: RowReport = { text: unit.textContent ?? "", toggle: null, expanded: null, expandedLabels: [] };
-    if (trigger) {
-      fireEvent.click(trigger);
-      const action = document.querySelector<HTMLElement>("[data-message-block-activity-action]");
-      if (action) {
-        report.toggle = action.textContent;
-        fireEvent.click(action);
-        const content = document.querySelector("[data-testid='agent-activity-content']");
-        report.expanded = content?.textContent ?? null;
-        report.expandedLabels = Array.from(content?.querySelectorAll("[aria-label]") ?? [])
-          .map((el) => el.getAttribute("aria-label") ?? "");
-      }
-      fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    // Desktop: message actions sit in the row's side gutter (icon buttons labelled via
+    // aria-label). Mobile: they open from the block menu trigger as a sheet.
+    const trigger = unit.querySelector<HTMLElement>("[data-message-block-menu-trigger]");
+    if (trigger) fireEvent.click(trigger);
+    const action = (trigger ? document : unit)
+      .querySelector<HTMLElement>("[data-message-block-activity-action]");
+    if (action) {
+      report.toggle = action.getAttribute("aria-label") || action.textContent;
+      fireEvent.click(action);
+      const content = unit.querySelector("[data-testid='agent-activity-content']")
+        ?? document.querySelector("[data-testid='agent-activity-content']");
+      report.expanded = content?.textContent ?? null;
+      report.expandedLabels = Array.from(content?.querySelectorAll("[aria-label]") ?? [])
+        .map((el) => el.getAttribute("aria-label") ?? "");
     }
+    if (trigger) fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     rows.push(report);
   }
   return { rows, messages };
