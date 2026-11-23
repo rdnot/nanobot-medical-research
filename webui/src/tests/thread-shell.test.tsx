@@ -28,11 +28,12 @@ import type {
 import { canonicalThreadPayload } from "./thread-test-payload";
 import { createStreamClient } from "./stream-client";
 
-async function openMessageActions(text: string): Promise<HTMLElement> {
+async function findSideActions(text: string): Promise<HTMLElement> {
   const message = await screen.findByText(text);
   const block = message.closest<HTMLElement>("[data-thread-display-unit]")!;
-  fireEvent.click(within(block).getByRole("button", { name: "Message actions" }));
-  return screen.findByRole("dialog", { name: "Message actions" });
+  const actions = block.querySelector<HTMLElement>("[data-message-side-actions]");
+  expect(actions).not.toBeNull();
+  return actions!;
 }
 
 function makeClient() {
@@ -920,8 +921,8 @@ describe("ThreadShell", () => {
       ? Promise.resolve(httpJson({ schemaVersion: 3, projection: "events", events }))
       : Promise.resolve({ ok: false, status: 404, json: async () => ({}) })));
     render(wrap(client, <ThreadShell session={session("command-history")} title="Command history" onToggleSidebar={() => {}} />));
-    const menu = await openMessageActions("Command answer");
-    fireEvent.click(within(menu).getByRole("button", { name: /Worked/ }));
+    const actions = await findSideActions("Command answer");
+    fireEvent.click(within(actions).getByRole("button", { name: /Worked/ }));
     await waitFor(() => expect(document.body).toHaveTextContent("Command completed bun run test --token ••••"));
     expect(document.body).not.toHaveTextContent(id);
     expect(document.body).not.toHaveTextContent("secret-value");
@@ -983,8 +984,8 @@ describe("ThreadShell", () => {
       />,
     ));
 
-    const menu = await openMessageActions("done");
-    const activity = within(menu).getByRole("button", { name: /Worked/ });
+    const actions = await findSideActions("done");
+    const activity = within(actions).getByRole("button", { name: /Worked/ });
     fireEvent.click(activity);
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Full activity details could not be loaded.",
@@ -997,8 +998,7 @@ describe("ThreadShell", () => {
     await waitFor(() => expect(document.body).toHaveTextContent("echo full"));
 
     fireEvent.click(screen.getByRole("button", { name: /Collapse activity details/ }));
-    const reopenedMenu = await openMessageActions("done");
-    fireEvent.click(within(reopenedMenu).getByRole("button", { name: /Worked/ }));
+    fireEvent.click(activity);
     await act(async () => Promise.resolve());
     expect(detailCalls).toBe(2);
   });
@@ -1049,8 +1049,8 @@ describe("ThreadShell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Message navigation" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Jump to message: Old question" }));
     await screen.findByText("old answer");
-    const menu = await openMessageActions("old answer");
-    fireEvent.click(within(menu).getByRole("button", { name: /Worked/ }));
+    const actions = await findSideActions("old answer");
+    fireEvent.click(within(actions).getByRole("button", { name: /Worked/ }));
     await waitFor(() => expect(document.body).toHaveTextContent("Command completed echo historical"));
     expect(detailCalls).toBe(1);
     expect(document.body).not.toHaveTextContent(id);
@@ -1081,12 +1081,12 @@ describe("ThreadShell", () => {
     const view = (chatId: string) => wrap(client,
       <ThreadShell session={session(chatId)} title="Detail return" onToggleSidebar={() => {}} />);
     const { rerender } = render(view("detail-return-a"));
-    fireEvent.click(within(await openMessageActions("answer-a")).getByRole("button", { name: /Worked/ }));
+    fireEvent.click(within(await findSideActions("answer-a")).getByRole("button", { name: /Worked/ }));
     await waitFor(() => expect(detailCalls).toBe(1));
     rerender(view("detail-return-b"));
     await screen.findByText("answer-b");
     rerender(view("detail-return-a"));
-    fireEvent.click(within(await openMessageActions("answer-a")).getByRole("button", { name: /Worked/ }));
+    fireEvent.click(within(await findSideActions("answer-a")).getByRole("button", { name: /Worked/ }));
     await waitFor(() => expect(detailCalls).toBe(2));
     await waitFor(() => expect(document.body).toHaveTextContent("echo fresh"));
     await act(async () => resolveOld(httpJson({ message_id: "history-aaaaaaaaaaaaaaaaaaaa", events: [{
@@ -1129,7 +1129,7 @@ describe("ThreadShell", () => {
       />,
     );
     const { rerender } = render(view("trace-failure-a"));
-    fireEvent.click(within(await openMessageActions("done-a")).getByRole("button", { name: /Worked/ }));
+    fireEvent.click(within(await findSideActions("done-a")).getByRole("button", { name: /Worked/ }));
 
     rerender(view("trace-failure-b"));
     await screen.findByText("done-b");
@@ -1169,7 +1169,7 @@ describe("ThreadShell", () => {
       />,
     );
     const { rerender } = render(view("visible-failure-a"));
-    fireEvent.click(within(await openMessageActions("failed-a")).getByRole("button", { name: /Worked/ }));
+    fireEvent.click(within(await findSideActions("failed-a")).getByRole("button", { name: /Worked/ }));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
 
     rerender(view("visible-failure-b"));
@@ -1605,8 +1605,8 @@ describe("ThreadShell", () => {
       />,
     ));
 
-    const oldMenu = await openMessageActions("old automation");
-    expect(within(oldMenu).getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    const oldActions = await findSideActions("old automation");
+    expect(within(oldActions).getByRole("button", { name: "Copy" })).toBeInTheDocument();
     const turnId = "turn-automation";
     const startedAt = Date.now() / 1000;
     act(() => client._emitChat("assistant-only-actions", {
@@ -1616,7 +1616,7 @@ describe("ThreadShell", () => {
       started_at: startedAt,
       turn_id: turnId,
     }));
-    expect(screen.getAllByRole("button", { name: "Message actions" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
 
     act(() => client._emitChat("assistant-only-actions", {
       event: "message",
@@ -1625,7 +1625,7 @@ describe("ThreadShell", () => {
       turn_id: turnId,
     }));
     await waitFor(() => expect(screen.getByText("new automation")).toBeInTheDocument());
-    expect(screen.getAllByRole("button", { name: "Message actions" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(1);
     expect(screen.getByText("new automation").closest("[data-thread-display-unit]"))
       .not.toHaveAttribute("data-message-context-block");
 
@@ -1634,9 +1634,9 @@ describe("ThreadShell", () => {
       chat_id: "assistant-only-actions",
       turn_id: turnId,
     }));
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Message actions" })).toHaveLength(2));
-    const newMenu = await openMessageActions("new automation");
-    expect(within(newMenu).getByRole("button", { name: "Copy" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(2));
+    const newActions = await findSideActions("new automation");
+    expect(within(newActions).getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
 
   it("does not navigate away when clicking the chat title", async () => {
@@ -1935,7 +1935,8 @@ describe("ThreadShell", () => {
       ).not.toHaveAttribute("data-fallback");
     });
     expect(screen.getByText("Default")).toBeInTheDocument();
-    await openMessageActions("Reply from the actual provider");
+    const actions = await findSideActions("Reply from the actual provider");
+    fireEvent.click(actions.querySelector("time[data-message-hover-time]")!);
     expect(await screen.findByText("backup")).toBeInTheDocument();
   });
 
@@ -2721,7 +2722,7 @@ describe("ThreadShell", () => {
     expect(screen.getByTestId("thread-composer-motion").closest("[data-layout]")).toHaveAttribute("data-layout", "thread");
   });
 
-  it("hides a live first /model turn when the initial history snapshot is stale", async () => {
+  it("keeps an explicit /model result visible when the initial history snapshot is stale", async () => {
     const client = makeClient();
     const onCreateChat = vi.fn().mockResolvedValue("chat-new");
     let resolveThread:
@@ -2781,11 +2782,15 @@ describe("ThreadShell", () => {
       expectSendMessageWithTurn(client, "chat-new", "/model"),
     );
 
+    const turnId = client.sendMessage.mock.calls.at(-1)?.[3]?.turnId;
     await act(async () => {
       client._emitChat("chat-new", {
         event: "message",
-        chat_id: "chat-new",
-        text: "## Model\n- Current model: `Ring-2.6-1T`",
+        chat_id: "chat-new", turn_id: turnId, turn_seq: 2,
+        text: "- Current model: `Ring-2.6-1T`",
+        side_channel: true,
+        render_as: "text",
+        command_result: { command: "/model", parts: [{ key: "model.current", values: { model: "Ring-2.6-1T" } }] },
       });
       client._emitChat("chat-new", {
         event: "message",
@@ -2793,19 +2798,20 @@ describe("ThreadShell", () => {
         text: "This unrelated reply stays visible.",
       });
     });
-    expect(screen.queryByText("/model")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Current model/)).not.toBeInTheDocument();
+    const modelResult = "- Current model: `Ring-2.6-1T`";
+    expect(screen.getByText("/model")).toBeInTheDocument();
+    expect(screen.getByText(modelResult)).toBeInTheDocument();
     expect(screen.getByText("This unrelated reply stays visible.")).toBeInTheDocument();
 
     await act(async () => {
       resolveThread?.(
-        httpJson(transcriptFromSimpleMessages([{ role: "user", content: "/model" }])),
+        httpJson(transcriptFromSimpleMessages([{ role: "user", content: "/model", turnId }])),
       );
     });
 
     await waitFor(() => {
-      expect(screen.queryByText("/model")).not.toBeInTheDocument();
-      expect(screen.queryByText(/Current model/)).not.toBeInTheDocument();
+      expect(screen.getByText("/model")).toBeInTheDocument();
+      expect(screen.getByText(modelResult)).toBeInTheDocument();
       expect(screen.getByText("This unrelated reply stays visible.")).toBeInTheDocument();
     });
   });
@@ -2934,8 +2940,8 @@ describe("ThreadShell", () => {
       ),
     );
 
-    const menu = await openMessageActions("answer 100");
-    fireEvent.click(within(menu).getByRole("button", { name: "New chat from here" }));
+    const actions = await findSideActions("answer 100");
+    fireEvent.click(within(actions).getByRole("button", { name: "New chat from here" }));
 
     await waitFor(() =>
       expect(onForkChat).toHaveBeenCalledWith("long-chat", 101),
@@ -5622,7 +5628,7 @@ describe("ThreadShell", () => {
     expect(client.sendSystemCommand).toHaveBeenCalledTimes(2);
   });
 
-  it("sends /cancel_goal directly while streaming without a transcript entry, /stop, or offline replay", async () => {
+  it("shows typed /cancel_goal and its result without interrupting a stream or replaying an offline request", async () => {
     const client = makeClient();
     const chatId = "cancel-slash";
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).endsWith("/api/commands")
@@ -5631,7 +5637,6 @@ describe("ThreadShell", () => {
     render(wrap(client, <ThreadShell session={session(chatId)} title="Goal" onToggleSidebar={() => {}} />));
     await act(async () => {});
     act(() => {
-      client._emitChat(chatId, { event: "goal_state", chat_id: chatId, goal_state: { active: false, status: "blocked", objective: "Ship the release" } });
       client._emitChat(chatId, { event: "goal_status", chat_id: chatId, turn_id: "unrelated", status: "running", started_at: 100 });
       client._emitChat(chatId, { event: "delta", chat_id: chatId, turn_id: "unrelated", stream_id: "live", text: "Unrelated reply" });
       client._emitStatus("closed");
@@ -5646,16 +5651,19 @@ describe("ThreadShell", () => {
     expect(input).toHaveValue("/cancel_goal");
     act(() => client._emitStatus("open"));
     expect(client.sendSystemCommand).not.toHaveBeenCalled();
-    client.sendSystemCommand.mockImplementationOnce(async () => {
-      client._emitChat(chatId, { event: "goal_state", chat_id: chatId, goal_state: { active: false } });
-    });
+    expect(client.sendMessage).not.toHaveBeenCalled();
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(input).toHaveValue(""));
-    expect(client.sendSystemCommand).toHaveBeenCalledTimes(1);
-    expect(client.sendSystemCommand).toHaveBeenCalledWith(chatId, "/cancel_goal");
-    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(client.sendSystemCommand).not.toHaveBeenCalled();
+    expectSendMessageWithTurn(client, chatId, "/cancel_goal");
+    const region = within(screen.getByTestId("thread-message-region"));
+    expect(region.getByTestId("message-slash-command")).toHaveTextContent("/cancel_goal");
+    act(() => client._emitChat(chatId, {
+      event: "message", chat_id: chatId, turn_id: client.sendMessage.mock.calls[0][3]?.turnId,
+      side_channel: true, text: "No goal to cancel.",
+    }));
+    expect(await region.findByText("No goal to cancel.")).toBeVisible();
     expect(client.finishRunLocally).not.toHaveBeenCalled();
-    expect(within(screen.getByTestId("thread-message-region")).queryByText("/cancel_goal")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop response" })).toBeVisible();
   });
 
@@ -5871,6 +5879,20 @@ describe("ThreadShell", () => {
       event: "turn_end", chat_id: "chat-model-failure", turn_id: nextTurnId,
     }));
     expect(screen.queryByRole("button", { name: "停止响应" })).not.toBeInTheDocument();
+  });
+
+  it("explains which commands can be used when a temporary chat rejects a typed command", async () => {
+    const client = makeClient();
+    const chatId = "temp-help";
+    render(wrap(client, <ThreadShell session={session(chatId)} temporary title="Temporary chat" onToggleSidebar={() => {}} />));
+    fireEvent.change(screen.getByLabelText("Message input"), { target: { value: "/help" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expectSendMessageWithTurn(client, chatId, "/help");
+    act(() => client._emitChat(chatId, {
+      event: "error", chat_id: chatId, turn_id: client.sendMessage.mock.calls[0][3]?.turnId,
+      detail: "temporary_chat_command_rejected",
+    }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Temporary chats support only /model and /stop. Use a regular chat for other commands.");
   });
 
   it("moves a correlated delivery error from the banner into the failed message tooltip", async () => {

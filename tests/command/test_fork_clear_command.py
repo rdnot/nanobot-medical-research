@@ -9,6 +9,7 @@ import pytest
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.command.results import message_text
 from nanobot.providers.base import GenerationSettings, LLMResponse
 
 
@@ -47,7 +48,8 @@ async def test_clear_command_resets_live_session_without_archiving(tmp_path: Pat
     )
 
     assert response is not None
-    assert "session cleared" in response.content.lower()
+    # Command replies are structured CommandResultEvents; text channels render message_text().
+    assert "session cleared" in message_text(response).lower()
     assert (await loop.sessions.state.get("cli:test")).messages == []
     archive.assert_not_called()
     await loop.aclose()
@@ -93,7 +95,7 @@ async def test_session_command_reply_survives_own_worker(
     assert not any(isinstance(r, BaseException) for r in results), results
 
     assert any(
-        needle in (m.content or "").lower() for m in replies
-    ), [m.content for m in replies]
+        needle in message_text(m).lower() for m in replies
+    ), [message_text(m) for m in replies]
     assert (await loop.sessions.state.get(key)).messages == []
     await loop.aclose()
