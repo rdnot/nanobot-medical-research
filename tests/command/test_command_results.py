@@ -47,7 +47,13 @@ async def test_goal_usage_can_be_read_in_different_languages():
     assert message_text(reply) == "用法：/goal <長期工作說明>"
     assert render(reply.event.parts, "en") == "Usage: /goal <long-running task description>"
     help_lines = build_help_text(locale="zh-TW").splitlines()
-    assert len(help_lines) == 1 + len(BUILTIN_COMMAND_SPECS)
+    # FORK: /help appends 3 literal lines for the fork's /s, /c and /rerun commands.
+    assert len(help_lines) == 1 + len(BUILTIN_COMMAND_SPECS) + 3
+    assert help_lines[-3:] == [
+        "/s — Show bot status (alias)",
+        "/c — Clear session instantly (no memory saved)",
+        "/rerun — Run rerun.bat in workspace",
+    ]
     assert any(row.startswith("/model [preset] — 檢視") for row in help_lines)
 
 
