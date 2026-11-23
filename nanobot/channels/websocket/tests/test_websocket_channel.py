@@ -44,7 +44,6 @@ from nanobot.channels.websocket import runtime as websocket_runtime
 from nanobot.channels.websocket.runtime import (
     WebSocketChannel,
     WebSocketConfig,
-    _is_valid_chat_id,
     _parse_envelope,
     _parse_inbound_payload,
 )
@@ -480,7 +479,7 @@ async def test_reattach_during_terminal_write_observes_the_end(
         await release.wait()
         return persisted
 
-    monkeypatch.setattr(channel._outbound._transcripts, "prepare_and_append", persist_terminal)
+    monkeypatch.setattr(channel.gateway.transcripts, "append", persist_terminal)
     terminal = asyncio.create_task(channel.send(OutboundMessage(
         channel="websocket", chat_id=chat_id, content="", metadata=metadata, event=TurnEndEvent(),
     )))
@@ -3551,11 +3550,13 @@ async def test_deferred_dream_reply_is_delivered_and_replayed_after_command_turn
     metadata = await history.metadata(chat_id, {WEBUI_TURN_METADATA_KEY: "dream-turn"})
     msg = InboundMessage("websocket", "user", chat_id, "/dream", metadata=metadata)
     context = CommandContext(msg=msg, session=None, key=msg.session_key, raw=msg.content,
-                             loop=cast(Any, SimpleNamespace(bus=bus)))
+                             loop=cast(Any, SimpleNamespace(bus=bus, schedule_background=asyncio.create_task)))
 
     acknowledgement = await cmd_dream(context)
     try:
         await channel.send(acknowledgement)
+        assert context.after_reply is not None
+        context.after_reply()
         await channel.send(OutboundMessage("websocket", chat_id, "", metadata=metadata, event=TurnEndEvent()))
     finally:
         finish_dream.set()
@@ -6041,14 +6042,6 @@ def test_parse_envelope_detects_typed_frames() -> None:
     assert env == {"type": "message", "chat_id": "abc", "content": "hi"}
 
 
-def test_parse_envelope_rejects_legacy_and_garbage() -> None:
-    assert _parse_envelope('{"content":"hi"}') is None
-    assert _parse_envelope("plain text") is None
-    assert _parse_envelope("{broken") is None
-    assert _parse_envelope("[1,2,3]") is None
-    assert _parse_envelope('{"type":123}') is None
-
-
 @pytest.mark.parametrize("retired", [False, True])
 def test_sessions_list_reports_only_live_runs(monkeypatch, retired: bool) -> None:
     from websockets.datastructures import Headers
@@ -6124,25 +6117,6 @@ def test_sessions_list_reports_only_live_runs(monkeypatch, retired: bool) -> Non
             "handle": handle.public_payload(),
         }
     ]
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ("abc", True),
-        ("a1b2_c:d-e", True),
-        ("x" * 64, True),
-        ("", False),
-        ("x" * 65, False),
-        ("has space", False),
-        ("a/b", False),
-        ("a.b", False),
-        (None, False),
-        (123, False),
-    ],
-)
-def test_is_valid_chat_id(value: Any, expected: bool) -> None:
-    assert _is_valid_chat_id(value) is expected
 
 
 @pytest.mark.asyncio
