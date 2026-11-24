@@ -21,10 +21,11 @@ for (const theme of ["light", "dark"] as const) {
       const menu = row.getByRole("button", { name: "Message actions" });
       if (width >= 768) {
         await pane.evaluate(node => { node.style.maxWidth = "550px"; });
-        await expect(row).toHaveCSS("padding-left", "16px");
+        await page.evaluate(() => { document.documentElement.style.fontSize = "20px"; });
         await menu.click();
         const sheet = page.getByRole("dialog", { name: "Message actions" });
         await expect(sheet).toBeVisible();
+        await page.evaluate(() => document.documentElement.style.removeProperty("font-size"));
         await pane.evaluate(node => { node.style.maxWidth = "none"; });
         await expect(sheet).toBeHidden();
       }
@@ -93,6 +94,11 @@ for (const theme of ["light", "dark"] as const) {
           expect(Math.abs(firstLineOffset)).toBeLessThan(1);
           expect(Math.abs(timestampIndent)).toBeLessThan(1);
         }
+        const time = side.getByRole("time");
+        await time.hover();
+        await expect(page.getByRole("tooltip")).toBeVisible();
+        await time.click();
+        await expect(page.getByRole("dialog")).toHaveCount(0);
         await copy.hover();
       }
       await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
@@ -105,3 +111,40 @@ for (const theme of ["light", "dark"] as const) {
     });
   }
 }
+
+test("triggered replies keep the ordinary reply column with and without side actions visible", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/browser/fixture.html?case=session-messages");
+  const pane = page.getByRole("main", { name: "Session messages" });
+  await pane.evaluate(node => { node.style.maxWidth = "1000px"; });
+  const replies = pane.getByRole("paragraph");
+  const ordinary = replies.filter({ hasText: "Thanks, I will keep those details." });
+  const triggered = replies.filter({ hasText: "The scheduled update is ready." });
+  const side = pane.locator("[data-message-side-actions]").filter({ has: page.locator("[data-automation-trigger]") });
+  await expect(side).toHaveCSS("opacity", "0");
+  const left = (await ordinary.boundingBox())!.x;
+  expect((await triggered.boundingBox())!.x).toBeCloseTo(left, 0);
+  await triggered.hover();
+  await expect(side).toHaveCSS("opacity", "1");
+  const buttons = side.getByRole("button");
+  await expect(buttons).toHaveCount(4);
+  await expect(buttons.nth(0)).toHaveAccessibleName("Copy");
+  await expect(buttons.nth(1)).toHaveAccessibleName(/Release fallback model/);
+  await expect(buttons.nth(2)).toHaveAccessibleName("New chat from here");
+  await expect(buttons.nth(3)).toHaveAttribute("data-message-block-activity-action", "true");
+  const [copy, source, fork, activity] = await buttons.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON()));
+  expect(source.top).toBeCloseTo(copy.top, 0);
+  expect(copy.right).toBeLessThanOrEqual(source.left);
+  expect(source.right).toBeLessThanOrEqual(fork.left);
+  expect(fork.right).toBeLessThanOrEqual(activity.left);
+  expect(fork.top).toBeCloseTo(copy.top, 0);
+  expect(activity.top).toBeCloseTo(copy.top, 0);
+  const rail = (await side.boundingBox())!;
+  expect(rail.x).toBeGreaterThanOrEqual((await pane.boundingBox())!.x);
+  expect(copy.left).toBeGreaterThanOrEqual(rail.x);
+  expect(activity.right).toBeLessThanOrEqual(rail.x + rail.width);
+  expect(rail.x + rail.width).toBeLessThanOrEqual(left);
+  expect((await triggered.boundingBox())!.x).toBeCloseTo(left, 0);
+  await side.locator("[data-automation-trigger]").focus();
+  await expect(page.getByRole("tooltip")).toHaveText("Release monitor");
+});

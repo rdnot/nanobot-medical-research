@@ -201,7 +201,7 @@ function projectOrderedTurn(
   };
 
   for (const message of messages) {
-    if (message.kind === "compaction" || message.kind === "tools_summary" || message.renderAs === "text" || message.commandResult !== undefined) {
+    if (message.kind === "compaction" || message.kind === "tools_summary" || message.renderAs === "text" || message.sideChannel) {
       // FORK: the tools-summary recap is a standalone assistant bubble, not
       // part of the answer. It must be a hard boundary like compaction
       // notices — otherwise mergeAssistantAnswers would fold it into the
