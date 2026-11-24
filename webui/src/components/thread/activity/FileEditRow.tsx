@@ -1,3 +1,5 @@
+import "./file-diff.css";
+
 import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { DisclosureContent } from "@/components/ui/disclosure";
 import {
@@ -94,7 +96,7 @@ function FileEditRow({
         ? t("message.fileEditPreparing", { defaultValue: "Preparing file edit…" })
         : (
           <span className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap">
-            <span className={cn("flex min-w-0 shrink overflow-hidden", onOpenFilePreview && "relative z-10")}>
+            <span className="z-10 flex min-w-0 shrink overflow-hidden">
               <FileReferenceChip
                 path={edit.path}
                 tooltipPath={edit.absolute_path || edit.path}
@@ -281,7 +283,7 @@ function FileUnifiedDiff({
 
   return (
     <div className="min-w-0">
-      <div className="relative isolate grid grid-cols-[auto_minmax(0,1fr)] items-center gap-1 rounded-md hover:bg-muted/35">
+      <div className="relative isolate grid grid-cols-[auto_minmax(0,1fr)] items-center gap-1 rounded-md hover:bg-muted/35 [&_[data-activity-marker]]:z-10">
         <button
           type="button"
           aria-label={formatActivityTarget(t, viewDiffLabel, previewPath)}

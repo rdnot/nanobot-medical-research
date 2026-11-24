@@ -9,8 +9,10 @@ import {
   formatActivityDuration,
 } from "@/components/thread/AgentActivityCluster";
 import { sameHistoryRowIdentity, type HistoryRowIdentity, type HistoryRowSource } from "@/components/thread/history-row-identity";
+import { ThreadDivider } from "@/components/thread/ThreadDivider";
 import { AssistantSelectionAction } from "@/components/thread/AssistantSelectionAction";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { useFloatingPortal } from "@/components/ui/floating-portal";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import { useLocalPreferences } from "@/hooks/useLocalPreferences";
 import { leadingDisplayNoopCount, projectActivityTimeline, type TurnUnit } from "@/lib/activity-timeline";
@@ -28,7 +30,6 @@ interface ThreadMessagesProps {
   afterUserMessage?: (message: UIMessage) => ReactNode;
   afterMessages?: ReactNode;
   temporary?: boolean;
-  /** When true, agent turn still in flight — keeps activity timeline expanded. */
   isStreaming?: boolean;
   activeTurnId?: string | null;
   /** Optimistic or canonical active-turn start, in unix seconds. */
@@ -445,6 +446,7 @@ function MessageBlockMenu({
   activity,
 }: MessageBlockMenuProps) {
   const { t } = useTranslation();
+  const portal = useFloatingPortal();
   const label = t("message.actions");
   const actions = <MessageBlockMenuActions
     message={message}
@@ -463,7 +465,8 @@ function MessageBlockMenu({
             <MoreHorizontal className="h-4 w-4" strokeWidth={1.75} aria-hidden />
           </button>
         </DialogTrigger>
-        <DialogContent placement="bottom" aria-describedby={undefined}
+        <DialogContent placement="bottom" portalContainer={portal} aria-describedby={undefined}
+          overlayClassName={portal ? "pointer-events-auto bg-black/25 backdrop-blur-[8px]" : undefined}
           data-message-mobile-sheet data-message-context-menu-block={contextBlockKey}
           className="gap-2 p-4 pt-5 pb-[max(1rem,env(safe-area-inset-bottom))] outline-none"
           onCloseAutoFocus={(event) => { if (activity?.expanded) event.preventDefault(); }}>
@@ -807,10 +810,8 @@ function unitIndexAfterMessageCount(
 
 function ForkBoundaryDivider({ label }: { label: string }) {
   return (
-    <div className="thread-message-row my-5 flex items-center gap-3 text-[11px] text-muted-foreground/80">
-      <span aria-hidden className="h-px flex-1 bg-border/70" />
-      <span className="shrink-0">{label}</span>
-      <span aria-hidden className="h-px flex-1 bg-border/70" />
+    <div className="thread-message-row my-5">
+      <ThreadDivider>{label}</ThreadDivider>
     </div>
   );
 }

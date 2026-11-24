@@ -2304,8 +2304,10 @@ async def test_mcp_presets_routes_require_token_and_return_payload(
                     "brand_color": "#111827",
                     "required_fields": [],
                     "connection_summary": "",
+                    "icons": [],
                 }
             ],
+            "plugin_server_icons": {},
             "installed_count": 0,
         },
     )
@@ -2321,6 +2323,7 @@ async def test_mcp_presets_routes_require_token_and_return_payload(
         preset_calls.append((action, params.values))
         return {
             "presets": [],
+            "plugin_server_icons": {},
             "installed_count": 1,
             "requires_restart": action != "test",
             "last_action": {"ok": True, "message": f"{action}:{params.values['name']}"},
@@ -2335,6 +2338,7 @@ async def test_mcp_presets_routes_require_token_and_return_payload(
         custom_calls.append((action, params.values))
         return {
             "presets": [],
+            "plugin_server_icons": {},
             "installed_count": 1,
             "requires_restart": True,
             "last_action": {
@@ -3760,7 +3764,7 @@ async def test_static_rejects_path_traversal(
     server_task = asyncio.create_task(channel.start())
     try:
         resp = await _http_get("http://127.0.0.1:29906/../secret.txt")
-        # Normalized by httpx into /secret.txt → falls back to index.html, not 'classified'.
+        # HTTPX normalizes the path before dispatch; the response must not expose the sibling file.
         assert "classified" not in resp.text
     finally:
         await channel.stop()
