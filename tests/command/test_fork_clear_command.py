@@ -75,7 +75,11 @@ async def test_session_command_reply_survives_own_worker(
     loop = _make_loop(tmp_path)
     loop.consolidator.archive_session = AsyncMock()  # type: ignore[method-assign]
     replies: list[OutboundMessage] = []
-    loop.bus.outbound_recorder = replies.append  # type: ignore[attr-defined]
+    def _record(msg: OutboundMessage) -> OutboundMessage:
+        replies.append(msg)
+        return msg
+
+    loop.bus.prepare_outbound = _record
 
     # Bind the async session owner with one ordinary turn, as a gateway would.
     await loop._process_message(

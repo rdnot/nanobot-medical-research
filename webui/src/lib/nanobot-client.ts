@@ -209,6 +209,8 @@ function runObservation(event: InboundEvent): RunObservation | null {
     }
     case "goal_status":
       return { ...base, kind: "status", activity: event.status, startedAt: event.started_at };
+    case "turn_failure_notice":
+      return null;
     case "turn_end":
       return { ...base, kind: "completed" };
     case "error":
@@ -249,6 +251,7 @@ export class NanobotClient {
   private receipts = new DeliveryReceipts();
   private statusHandlers = new Set<StatusHandler>();
   private runtimeModelHandlers = new Set<RuntimeModelHandler>();
+  private sessionsChangedHandlers = new Set<() => void>();
   private sessionUpdateHandlers = new Set<SessionUpdateHandler>();
   private sidebarStateUpdateHandlers = new Set<SidebarStateUpdateHandler>();
   private runStatusHandlers = new Set<RunStatusHandler>();
@@ -332,6 +335,11 @@ export class NanobotClient {
     return () => {
       this.runtimeModelHandlers.delete(handler);
     };
+  }
+
+  onSessionsChanged(handler: () => void): Unsubscribe {
+    this.sessionsChangedHandlers.add(handler);
+    return () => { this.sessionsChangedHandlers.delete(handler); };
   }
 
   onSessionUpdate(handler: SessionUpdateHandler): Unsubscribe {
@@ -919,6 +927,10 @@ export class NanobotClient {
     });
   }
 
+  archiveSessions(keys: string[], archived: boolean): Promise<{ ok: true }> {
+    return this.requestMutation("sessions.archive", { keys, archived });
+  }
+
   setSidebarState(state: SidebarStatePayload): Promise<SidebarStatePayload> {
     return this.requestMutation<SidebarStatePayload>("sidebar.update", { state });
   }
@@ -1113,6 +1125,11 @@ export class NanobotClient {
 
     if (parsed.event === "transcription_error") {
       this.rejectTranscription(parsed.request_id, parsed.detail || "error");
+      return;
+    }
+
+    if (parsed.event === "sessions_changed") {
+      for (const handler of this.sessionsChangedHandlers) handler();
       return;
     }
 

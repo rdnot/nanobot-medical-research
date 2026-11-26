@@ -107,3 +107,4 @@ class ToolContext:
     runtime_control: RuntimeControl | None = None
     # FORK: model output budget (agents.defaults.max_tokens) for write/edit size limits.
     max_output_tokens: int | None = None
+    exec_owner_key: Callable[[], str] | None = None
