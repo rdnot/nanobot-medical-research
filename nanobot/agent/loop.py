@@ -20,6 +20,7 @@ from loguru import logger
 from nanobot.agent import context as agent_context
 from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.autocompact import AutoCompact
+from nanobot.agent.automation_turns import AutomationTurnError
 from nanobot.agent.context import ContextBuilder, PersistedPromptContextResolver, TranscriptInput
 from nanobot.agent.cron_turns import CronTurnCoordinator
 from nanobot.agent.execution_policy import ExecutionControlError, ExecutionPolicy, ExecutionScope
@@ -34,7 +35,6 @@ from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
 from nanobot.agent.tools.exec_session import ExecSessionManager
 from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
-from nanobot.agent.tools.message import capture_message_deliveries
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.runtime_control import AgentRuntimeControl
 from nanobot.agent.turn_delivery import (
@@ -118,9 +118,6 @@ from nanobot.utils.document import reference_non_image_attachments
 from nanobot.utils.helpers import image_placeholder_text
 from nanobot.utils.llm_runtime import LLMRuntime
 from nanobot.utils.progress_events import output_events
-from nanobot.utils.runtime import (
-    EMPTY_FINAL_RESPONSE_MESSAGE,
-)
 
 if TYPE_CHECKING:
     from nanobot.config.schema import (
@@ -487,6 +484,7 @@ class AgentLoop:
             max_concurrent_subagents=max_concurrent_subagents,
             consolidator=self.consolidator,
             session_manager=self.sessions,
+            exec_session_manager=self._exec_session_manager,
         )
         self._running = False
         self._runtime_context_providers: list[RuntimeContextProvider] = []
@@ -1464,6 +1462,10 @@ class AgentLoop:
             ))
             result = await self.runner.run(AgentRunSpec(
                 initial_messages=None,
+                reply_target=(
+                    (request_ctx.channel, request_ctx.chat_id)
+                    if initial_message is not None and initial_message.is_user_input else None
+                ),
                 tools=effective_tools,
                 runtime=runtime,
                 max_iterations=self.max_iterations,
@@ -1517,7 +1519,7 @@ class AgentLoop:
         if result.stop_reason == "max_iterations" or result.pending_stream_content is not None:
             # Push final content through stream so streaming channels (e.g. Feishu)
             # update the card instead of leaving it empty.
-            if events.publish is not None and streaming:
+            if events.publish is not None and streaming and not result.reply_delivered:
                 stream_content = (
                     result.pending_stream_content
                     if result.pending_stream_content is not None
@@ -1528,7 +1530,7 @@ class AgentLoop:
         elif result.stop_reason == "error":
             logger.error(
                 "LLM returned error: {}",
-                (result.final_content or "")[:200] if request_ctx.log_content else "[content hidden]",
+                (result.error or result.failure_error_kind or "unknown")[:200] if request_ctx.log_content else "[content hidden]",
             )
         if tool_calls_log is not None:  # FORK
             tool_calls_log.extend(loop_hook.all_tool_calls_log)
@@ -1804,11 +1806,11 @@ class AgentLoop:
                         pending_queue=pending,
                         delivery=delivery,
                     )
-                    await delivery.complete(response, publish_completion=True)
+                    failure = await delivery.complete(response, publish_completion=True)
                     if response is not None and delivery.after_command_reply:
                         delivery.after_command_reply()
                     for coordinator in self._automation_turn_coordinators:
-                        coordinator.complete(msg, response=response)
+                        coordinator.complete(msg, response=response, error=AutomationTurnError(failure) if failure else None)
                 except asyncio.CancelledError as exc:
                     logger.info("Task cancelled for session {}", session_key)
                     if not processing:
@@ -1870,9 +1872,12 @@ class AgentLoop:
                     logger.opt(exception=log_content).error(
                         "Error processing message for session {}", session_key,
                     )
-                    await delivery.fail(publish_completion=True)
-                    for coordinator in self._automation_turn_coordinators:
-                        coordinator.complete(msg, error=exc)
+                    try:
+                        await delivery.fail(publish_completion=True)
+                    finally:
+                        # A failed notice delivery must not strand the automation caller.
+                        for coordinator in self._automation_turn_coordinators:
+                            coordinator.complete(msg, error=exc)
                 finally:
                     if (processing or delivery.completed) and not skip_idle:
                         await delivery.idle()
@@ -2174,14 +2179,13 @@ class AgentLoop:
         self,
         msg: InboundMessage,
         final_content: str,
-        stop_reason: str,
         streamed_content: bool,
         *,
         turn_latency_ms: int | None = None,
     ) -> OutboundMessage | None:
         event = None
         meta = dict(msg.metadata or {})
-        if streamed_content and stop_reason not in {"error", "tool_error"}:
+        if streamed_content:
             event = StreamedResponseEvent()
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)
@@ -2442,49 +2446,36 @@ class AgentLoop:
         ctx.run_started_at = time.time()
         await ctx.delivery.running(started_at=ctx.run_started_at)
         assert ctx.transcript_input is not None
-        with capture_message_deliveries() as message_sends:
-            result = await self._run_agent_loop(
-                ctx.transcript_input,
-                runtime=runtime,
-                streaming=ctx.streaming,
-                session=ctx.session,
-                pending_queue=ctx.pending_queue,
-                ephemeral=ctx.ephemeral,
-                run_extra_hooks_for_ephemeral=ctx.run_extra_hooks_for_ephemeral,
-                hooks=ctx.hooks,
-                hook_factories=ctx.hook_factories,
-                tools=ctx.tools,
-                request_context=ctx.request_context,
-                provider_state=ctx.provider_state,
-                initial_message=ctx.msg,
-                events=ctx.events,
-                commit_session=ctx.commit_session,
-                tool_calls_log=ctx.tool_calls_log,  # FORK
-            )
+        result = await self._run_agent_loop(
+            ctx.transcript_input,
+            runtime=runtime,
+            streaming=ctx.streaming,
+            session=ctx.session,
+            pending_queue=ctx.pending_queue,
+            ephemeral=ctx.ephemeral,
+            run_extra_hooks_for_ephemeral=ctx.run_extra_hooks_for_ephemeral,
+            hooks=ctx.hooks,
+            hook_factories=ctx.hook_factories,
+            tools=ctx.tools,
+            request_context=ctx.request_context,
+            provider_state=ctx.provider_state,
+            initial_message=ctx.msg,
+            events=ctx.events,
+            commit_session=ctx.commit_session,
+            tool_calls_log=ctx.tool_calls_log,  # FORK
+        )
         ctx.final_content = result.final_content
         ctx.all_messages = result.messages
         ctx.summary_checkpoint = result.summary_checkpoint
         ctx.provider_compaction_applied = result.provider_compaction_applied
         ctx.stop_reason = result.stop_reason
         ctx.failure_error_kind = result.failure_error_kind
-        if (
-            ctx.kind is TurnKind.USER
-            and (ctx.delivery.route.channel, ctx.delivery.route.chat_id) in message_sends
-            and (not result.had_injections or result.stop_reason == "empty_final_response")
-        ):
-            ctx.suppress_response = True
+        ctx.suppress_response = result.reply_delivered
         ctx.usage = result.usage
         ctx.delivery.record_usage(result.round_usages)
 
     async def _persist_turn(self, ctx: TurnContext) -> None:
         session = ctx.require_session()
-
-        if (
-            ctx.kind is TurnKind.USER
-            and (ctx.final_content is None or not ctx.final_content.strip())
-            and not ctx.suppress_response
-        ):
-            ctx.final_content = EMPTY_FINAL_RESPONSE_MESSAGE
 
         latency_started_at = (
             ctx.run_started_at
@@ -2533,7 +2524,7 @@ class AgentLoop:
             )
 
     async def _prepare_outbound(self, ctx: TurnContext) -> None:
-        ctx.delivery.record_stop_reason(
+        failure = ctx.delivery.record_stop_reason(
             ctx.stop_reason,
             failure_error_kind=ctx.failure_error_kind,
         )
@@ -2550,21 +2541,22 @@ class AgentLoop:
                 metadata={**(ctx.msg.metadata or {}), "_tools_summary": True},
             ))
 
-        if ctx.kind is TurnKind.SYSTEM:
+        if failure:
+            ctx.outbound = ctx.delivery.failure_response(failure)
+        elif ctx.kind is TurnKind.SYSTEM:
             ctx.outbound = ctx.delivery.background_response(
                 ctx.final_content,
-                stop_reason=ctx.stop_reason,
                 streamed=ctx.streamed_content,
                 latency_ms=ctx.turn_latency_ms,
             )
             return
-        ctx.outbound = self._assemble_outbound(
-            ctx.delivery.delivery_message,
-            cast(str, ctx.final_content),
-            ctx.stop_reason,
-            ctx.streamed_content,
-            turn_latency_ms=ctx.turn_latency_ms,
-        )
+        else:
+            ctx.outbound = self._assemble_outbound(
+                ctx.delivery.delivery_message,
+                cast(str, ctx.final_content),
+                ctx.streamed_content,
+                turn_latency_ms=ctx.turn_latency_ms,
+            )
         if ctx.ephemeral and ctx.outbound is not None:
             ctx.outbound.metadata["_stop_reason"] = ctx.stop_reason
 

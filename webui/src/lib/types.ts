@@ -508,6 +508,7 @@ export interface ModelOptionsCapability {
 }
 
 export interface ChatSummary {
+  archived?: boolean;
   /** Server-side session key, e.g. ``websocket:abcd-...``. */
   key: string;
   /** Local channel + chat_id parts derived from ``key`` for convenience. */
@@ -607,7 +608,6 @@ export interface SidebarViewState {
 export interface SidebarStatePayload {
   schema_version: number;
   pinned_keys: string[];
-  archived_keys: string[];
   session_order: string[];
   title_overrides: Record<string, string>;
   project_name_overrides: Record<string, string>;
@@ -1745,6 +1745,7 @@ export type InboundEvent =
       scope?: "metadata" | "thread" | string;
       workspace_scope?: WorkspaceScopePayload;
     }
+  | { event: "sessions_changed" }
   | {
       event: "sidebar_state_updated";
       state: SidebarStatePayload;
