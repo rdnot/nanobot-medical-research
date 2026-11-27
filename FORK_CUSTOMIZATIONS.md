@@ -13,7 +13,7 @@ is marked `# UPSTREAM` where that helps during merges.
 - `scrapling` – `main` plus a stealth-browser fetch tier. Differs in `web.py`,
   `tests/tools/test_web_fetch_scrapling.py`, `pyproject.toml` (`scrapling[fetchers]`), and `Dockerfile`.
 
-## Customizations (verified November 26, 2026 — upstream `c360a10e8`, merge main `ae364440b`)
+## Customizations (verified November 27, 2026 — upstream `8d3a1ba6b`, merge main `951b4dde0`)
 
 ### `nanobot/agent/tools/web.py`
 - `WebFetchConfig.use_jina_reader` defaults to `False` — upstream moved the class to
@@ -30,7 +30,9 @@ is marked `# UPSTREAM` where that helps during merges.
   failure so the tool reports an error); JSON/HTML/XML/raw branches with `_smart_truncate`,
   `_extract_meta`, `_html_to_text` (trafilatura → readability → strip_tags).
 - Upstream's `_fetch_readability`/`_extract_readable_html`/`_to_markdown` path is removed (the
-  tiers replace it). `_validate_url_safe` is the single URL check (`execute()` + httpx hops).
+  tiers replace it). `_validate_url_safe(url, *, trust_remote_dns=False)` is the single URL check
+  (`execute()` via upstream's `_check_target`, curl_cffi + httpx hops); a configured shared proxy
+  passes `trust_remote_dns=True` (upstream: the proxy owns DNS; private/localhost still blocked).
 - Jina Reader (opt-in) only receives a URL after upstream's local `_open_page` preflight verified
   the whole redirect chain is credential-free (`_fetch_jina(redirect_chain, …)`); images skip Jina.
 - Content is truncated by `_smart_truncate` BEFORE the untrusted banner is prepended, so the banner
@@ -58,8 +60,9 @@ is marked `# UPSTREAM` where that helps during merges.
   `TurnKind.USER` turns only, ahead of upstream's structured turn-failure / background /
   user branching (a failed turn still gets its summary). The log travels via `TurnContext.tool_calls_log` →
   `_run_agent_loop(tool_calls_log=...)`.
-- `AgentLoop.__init__(max_tokens=...)` (from `agents.defaults.max_tokens`) is forwarded to
-  `ToolContext.max_output_tokens` for the write/edit size limits.
+- `self.max_tokens = settings.max_tokens` (upstream injects `settings: AgentDefaults`, i.e.
+  `agents.defaults.max_tokens`) is forwarded to `ToolContext.max_output_tokens` for the write/edit
+  size limits.
 - `_build_tools_summary` puts search queries, URLs and file paths in inline code (backticks
   inside a value are replaced) so the WebUI never auto-links a URL into a text-less link.
 - The `/c` command turn is not persisted, same as `/new`: upstream now gates persistence on
