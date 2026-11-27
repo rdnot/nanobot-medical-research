@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.session_helpers import make_agent_loop
 from nanobot.agent.dream import run_dream
 from nanobot.agent.memory import MemoryStore
 from nanobot.bus.events import OutboundMessage
@@ -31,7 +32,6 @@ async def test_one_dream_reads_full_pages_and_defers_new_history(tmp_path, monke
     # raises it to 768K (all 26 records fit one page). Dream paging is cap-independent.
     from nanobot.agent.tools.filesystem import ReadFileTool
     monkeypatch.setattr(ReadFileTool, "_MAX_CHARS", 128_000)
-    from nanobot.agent.loop import AgentLoop
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.base import GenerationSettings, LLMResponse, ToolCallRequest
 
@@ -40,7 +40,7 @@ async def test_one_dream_reads_full_pages_and_defers_new_history(tmp_path, monke
     provider.supports_tools = True
     provider.generation = GenerationSettings()
     provider.estimate_prompt_tokens.return_value = (200_000, "test-provider")
-    loop = AgentLoop(
+    loop = make_agent_loop(
         bus=MessageBus(), provider=provider, workspace=tmp_path,
         context_window_tokens=512_000,
     )

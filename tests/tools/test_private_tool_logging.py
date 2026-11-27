@@ -183,7 +183,7 @@ async def test_web_private_diagnostics_keep_error_category_not_content(
                 return None
 
             monkeypatch.setattr("nanobot.agent.tools.web._fetch_curl_cffi", _no_curl)
-            monkeypatch.setattr("nanobot.agent.tools.web._validate_url_safe", lambda url: (True, ""))
+            monkeypatch.setattr("nanobot.agent.tools.web._validate_url_safe", lambda url, **_: (True, ""))  # FORK: accepts trust_remote_dns
             monkeypatch.setattr("nanobot.agent.tools.web.httpx.AsyncClient", MagicMock(side_effect=error))
             result = await WebFetchTool().execute(url=url, extract_mode="text")
             assert url in result

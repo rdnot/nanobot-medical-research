@@ -37,7 +37,7 @@ from nanobot.security.network import (
     PinnedDNSAsyncTransport,
     UnsafeURLRequestError,
     httpx_env_proxy_mounts,
-    validate_url_target,
+    resolve_url_target,
 )
 
 _DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"  # FORK: full Chrome UA
@@ -235,14 +235,15 @@ def _image_mime_for(content_type: str, url: str) -> str | None:
 
 
 # UPSTREAM (pinned DNS, SSRF hardening): validate URL and return resolved IPs for pinning
-def _resolve_url_safe(url: str) -> tuple[bool, str, tuple[str, ...]]:
-    from nanobot.security.network import resolve_url_target
-
-    return resolve_url_target(url)
+def _resolve_url_safe(url: str, *, trust_remote_dns: bool = False) -> tuple[bool, str, tuple[str, ...]]:
+    return resolve_url_target(url, trust_remote_dns=trust_remote_dns)
 
 
-def _validate_url_safe(url: str) -> tuple[bool, str]:
-    return validate_url_target(url)
+def _validate_url_safe(url: str, *, trust_remote_dns: bool = False) -> tuple[bool, str]:
+    # FORK: single validation point for execute() and every tier's redirect hop.
+    # ``trust_remote_dns`` is set only when a configured shared proxy resolves DNS.
+    ok, error, _ = _resolve_url_safe(url, trust_remote_dns=trust_remote_dns)
+    return ok, error
 
 
 def _unsafe_url_request_error(exc: BaseException) -> str | None:
@@ -404,7 +405,7 @@ async def _fetch_curl_cffi(
         async with AsyncSession() as session:  # pyright: ignore[reportUnknownVariableType]
             current_url = url
             for _ in range(MAX_REDIRECTS + 1):
-                is_valid, error_msg, _ips = _resolve_url_safe(current_url)
+                is_valid, error_msg, _ips = _resolve_url_safe(current_url, trust_remote_dns=bool(proxy))
                 if not is_valid:
                     raise RedirectBlockedError(f"Redirect blocked: {error_msg}")
                 r: Any = await session.get(  # pyright: ignore[reportUnknownVariableType,reportUnknownMemberType]
@@ -419,7 +420,7 @@ async def _fetch_curl_cffi(
                 r_headers = {str(k).lower(): str(v) for k, v in cast(dict[str, Any], dict(r.headers)).items()}
                 if 300 <= status < 400 and r_headers.get("location"):
                     next_url = urljoin(current_url, r_headers["location"])
-                    is_valid, error_msg = _validate_url_safe(next_url)
+                    is_valid, error_msg = _validate_url_safe(next_url, trust_remote_dns=bool(proxy))
                     if not is_valid:
                         raise RedirectBlockedError(f"Redirect blocked: {error_msg}")
                     current_url = next_url
@@ -446,7 +447,10 @@ async def _fetch_httpx(url: str, proxy: str | None, user_agent: str) -> _FetchRe
                 transport=None if proxy else PinnedDNSAsyncTransport(),
                 mounts=None if proxy else httpx_env_proxy_mounts(),
             ) as client,
-            open_redirected_get(client, url, check_target=_validate_url_safe) as (r, _chain),
+            open_redirected_get(
+                client, url,
+                check_target=lambda u: _validate_url_safe(u, trust_remote_dns=bool(proxy)),
+            ) as (r, _chain),
         ):
             content = await r.aread()
             return content, {k.lower(): v for k, v in r.headers.items()}, r.status_code, "httpx"
@@ -1515,7 +1519,7 @@ class WebFetchTool(Tool):
         url = url.strip(" \t\r\n`\"'")
         extract_mode = kwargs.pop("extractMode", extract_mode)
         max_chars = int(kwargs.pop("maxChars", max_chars) or self.max_chars)
-        is_valid, error_msg = _validate_url_safe(url)  # FORK: single validation point (tests patch it)
+        is_valid, error_msg = self._check_target(url)
         if not is_valid:
             return ToolResult.error(json.dumps({"error": f"URL validation failed: {error_msg}", "url": url}, ensure_ascii=False))
 
@@ -1703,6 +1707,11 @@ class WebFetchTool(Tool):
             logger.warning("WebFetch error for {} ({})", _redact_url_for_log(url), type(e).__name__)
             return ToolResult.error(json.dumps({"error": str(e), "url": url}, ensure_ascii=False))
 
+    def _check_target(self, url: str) -> tuple[bool, str]:
+        # FORK: route through the fork's single validation point (tests patch it);
+        # a configured shared proxy owns final DNS resolution (upstream behavior).
+        return _validate_url_safe(url, trust_remote_dns=bool(self.proxy))
+
     # --- UPSTREAM: Optional Jina Reader support (verified redirect chain only) ---
     @asynccontextmanager
     async def _open_page(
@@ -1717,7 +1726,7 @@ class WebFetchTool(Tool):
                 transport=None if proxy else PinnedDNSAsyncTransport(),
                 mounts=None if proxy else httpx_env_proxy_mounts(),
             ) as client,
-            open_redirected_get(client, url, check_target=validate_url_target) as page,
+            open_redirected_get(client, url, check_target=self._check_target) as page,
         ):
             yield page
 

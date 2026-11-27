@@ -40,6 +40,42 @@ def test_create_from_context_uses_loop_output_budget(tmp_path):
     assert write_default._max_content_chars == _max_content_chars_for_tokens(_DEFAULT_MAX_TOKENS)
 
 
+def test_loop_settings_max_tokens_reach_write_and_edit_tools(tmp_path):
+    """FORK: AgentLoop takes injected ``settings: AgentDefaults``; its ``max_tokens``
+    must still size the registered write_file/edit_file limits."""
+    from unittest.mock import MagicMock
+
+    from nanobot.agent.context import ContextBuilder
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.agent.model_runtime import ModelRuntimeResolver
+    from nanobot.agent.tools.registry import ToolRegistry
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.schema import AgentDefaults, NetworkConfig
+    from nanobot.providers.base import GenerationSettings
+    from nanobot.session.manager import SessionManager
+
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.generation = GenerationSettings()
+    settings = AgentDefaults(workspace=str(tmp_path), idle_compact_check_interval_seconds=0, max_tokens=2000)
+    loop = AgentLoop(
+        bus=MessageBus(),
+        context_builder=ContextBuilder(tmp_path, timezone="UTC"),
+        runtime_resolver=ModelRuntimeResolver.from_provider(provider),
+        session_manager=SessionManager(tmp_path),
+        tool_registry=ToolRegistry(),
+        settings=settings,
+        tools_config=ToolsConfig(),
+        network_config=NetworkConfig(),
+    )
+    assert loop.max_tokens == 2000
+    write = loop.tools.get("write_file")
+    edit = loop.tools.get("edit_file")
+    assert isinstance(write, WriteFileTool) and isinstance(edit, EditFileTool)
+    assert write._max_content_chars == _max_content_chars_for_tokens(2000)
+    assert edit._max_new_text_chars == _max_content_chars_for_tokens(2000) // 2
+
+
 def test_max_content_chars_floor():
     assert _max_content_chars_for_tokens(100) == 4_000
     assert _max_content_chars_for_tokens(8192) == 8192 * 3 - 1_500

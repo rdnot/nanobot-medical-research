@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.session_helpers import make_agent_loop
 from nanobot.agent.loop import _FORCE_FINAL_PROMPT, AgentLoop  # FORK: notice text
 from nanobot.bus.queue import MessageBus
 from nanobot.goal.assembly import install_goal
@@ -52,13 +53,13 @@ class BudgetProvider(LLMProvider):
 
 
 def _make_loop(tmp_path, requests: list[list[dict[str, Any]]]) -> AgentLoop:
-    loop = AgentLoop(
+    loop = make_agent_loop(
         bus=MessageBus(),
         provider=BudgetProvider(requests),
         workspace=tmp_path,
         model="test-model",
         context_window_tokens=128_000,
-        max_iterations=2,
+        max_tool_iterations=2,
         builtin_assembly=install_goal,
     )
     exec_tool = loop.tools.get("exec")
