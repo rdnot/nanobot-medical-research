@@ -61,7 +61,9 @@ def test_loop_settings_max_tokens_reach_write_and_edit_tools(tmp_path):
     loop = AgentLoop(
         bus=MessageBus(),
         context_builder=ContextBuilder(tmp_path, timezone="UTC"),
-        runtime_resolver=ModelRuntimeResolver.from_provider(provider),
+        runtime_resolver=ModelRuntimeResolver.from_provider(
+            provider, context_window_tokens=settings.context_window_tokens,
+        ),
         session_manager=SessionManager(tmp_path),
         tool_registry=ToolRegistry(),
         settings=settings,
